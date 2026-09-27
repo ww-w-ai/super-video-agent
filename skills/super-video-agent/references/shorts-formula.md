@@ -38,7 +38,8 @@ The picture may grow downward when a scene needs more room; the top edge stays a
 
 Bands and pictures fill the frame to its edges; text stays inside the safe box x 80–888,
 y 200–1470 (`references/pipeline.md`, "Safe area"). So the hook title's text sits between
-y 200 and 422, and the spoken caption stays above y 1470 even when the picture runs lower.
+y 200 and 422, and the spoken caption stays above y 1470 even when the picture runs lower. Title,
+caption and the picture in the middle all centre on x 540, not on the safe box's middle (x 484).
 
 Record in `FILM.md` that the film follows this formula, so the later stages keep it.
 

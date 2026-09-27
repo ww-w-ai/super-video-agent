@@ -112,7 +112,8 @@ film goes. Language: the source's.
 
 In either style, pictures fill the whole frame, but text and anything the viewer must see stay
 inside the platform safe area, clear of the player's buttons (`references/pipeline.md`, "Safe
-area"; `textBlock` and `caption` check it for you).
+area"; `textBlock` and `caption` check it for you). Keep the composition centred on the frame
+(x 540): avoiding the button column must not shift titles, captions or pictures left.
 
 ## Hard lines (these protect the owner, not the look)
 

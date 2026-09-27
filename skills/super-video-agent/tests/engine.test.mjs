@@ -128,8 +128,8 @@ test("textBlock: no issue when the box is tall enough", () => {
 test("caption: defaults to 800 56px Pretendard and a boxH that fits two lines but not three", () => {
   Reel.clearIssues();
   const ctxTwoLines = fakeCtx();
-  // n=30 wraps to 2 lines at the 808px safe-area width under the 10px/char fake measurer.
-  const twoLineText = "word ".repeat(30).trim();
+  // n=20 wraps to 2 lines at the 696px centred safe width under the 10px/char fake measurer.
+  const twoLineText = "word ".repeat(20).trim();
   const twoLineResult = Reel.caption(ctxTwoLines, { text: twoLineText }, 0.1, {
     width: 1080,
     height: 1920,
@@ -259,6 +259,15 @@ test("safeArea: 9:16 shorts and ads boxes; other ratios keep 5% margins", () => 
   assert.deepEqual(Reel.safeArea(1080, 1920), { x: 80, y: 288, w: 808, h: 960 });
   Reel.setSafeArea("shorts");
   assert.deepEqual(Reel.safeArea(1920, 1080), { x: 96, y: 54, w: 1728, h: 972 });
+});
+
+test("centeredSafeArea: 9:16 box shares the frame's centre line; caption centres on x 540", () => {
+  assert.deepEqual(Reel.centeredSafeArea(1080, 1920), { x: 192, y: 200, w: 696, h: 1270 });
+  assert.deepEqual(Reel.centeredSafeArea(1920, 1080), Reel.safeArea(1920, 1080));
+  const ctx = fakeCtx();
+  Reel.caption(ctx, { text: "steady caption" }, 0.1, { width: 1080, height: 1920 });
+  const { x } = ctx.calls.fillText[0];
+  assert.equal(x + ("steady caption".length * 10) / 2, 540);
 });
 
 test("textBlock: text outside the safe area is an issue unless marked outsideSafeOk", () => {

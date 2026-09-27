@@ -46,8 +46,9 @@ rules come first.
 | `drawOn(ctx, path, u, key, t, opts)` | reveal a stroke in point order |
 | `imageCover(ctx, img, x, y, w, h)` | cover-fit an image into a box |
 | `textBlock(ctx, text, x, y, w, h, opts)` | wrapped text; a `\n` in the text forces a break where the automatic wrap splits badly; overflow and text outside the safe area recorded to `issues()` |
-| `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area |
+| `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area, centred on the frame |
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads")` | the box text must stay inside |
+| `centeredSafeArea(w, h)` | the part of that box centred on the frame — for centred titles and captions |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
 
 ### Safe area
@@ -66,6 +67,13 @@ icons; bottom — channel name, title, music label and progress bar (and an ad's
 the like/comment/share column. The `ads` top, bottom and right are measured from YouTube's
 official vertical-ad overlay; the rest comes from published TikTok creative guides, taking the
 stricter value where they differ. Other ratios use 5% on every side.
+
+The safe box keeps important things out of the button column; it does not move the middle of
+the picture. The 9:16 box is off-centre (its middle is x 484, the frame's is 540), and centring
+on it pushes the whole film visibly left. Centre everything on the frame, x 540: titles,
+captions, illustrations, cards and charts. Centred text uses `centeredSafeArea` (x 192–888). A
+wide picture may run under the button column; only what the viewer must read or see stays out
+of it.
 
 `textBlock` records `text-outside-safe-area` in `issues()` (so `review.mjs` reports it) unless
 the call passes `outsideSafeOk: true` — for decorative lettering that may be covered.

@@ -188,6 +188,16 @@
     return { x, y, w: width - 2 * x, h: height - 2 * y };
   }
 
+  // centeredSafeArea(width, height) -> the widest box inside the safe area
+  // that shares the frame's centre line. The 9:16 safe box is off-centre
+  // (right margin 192 for the button column, left 80), so text centred on it
+  // sits left of the frame's middle; centred text uses this box instead.
+  function centeredSafeArea(width, height) {
+    const s = safeArea(width, height);
+    const inset = Math.max(s.x, width - (s.x + s.w));
+    return { x: inset, y: s.y, w: width - 2 * inset, h: s.h };
+  }
+
   // Records an issue when drawn text extends outside the safe area.
   function checkSafe(ctx, text, left, top, right, bottom, width, height) {
     const cw = width || (ctx.canvas ? ctx.canvas.width : 1080);
@@ -356,7 +366,7 @@
     const height = o.height == null ? (ctx.canvas ? ctx.canvas.height : 1920) : o.height;
     const fontPx = o.fontPx == null ? captionFontSizePx(height) : o.fontPx;
     const lineHeight = o.lineHeight == null ? Math.round(fontPx * 1.25) : o.lineHeight;
-    const safe = safeArea(width, height);
+    const safe = centeredSafeArea(width, height);
     const boxW = o.boxW == null ? (width > height ? Math.min(safe.w, width * 0.7) : safe.w) : o.boxW;
     const boxH = o.boxH == null ? lineHeight * 2 + 20 : o.boxH;
     const x = o.x == null ? safe.x + (safe.w - boxW) / 2 : o.x;
@@ -522,6 +532,7 @@
     textBlock,
     caption,
     safeArea,
+    centeredSafeArea,
     setSafeArea,
     easeOutCubic,
     easeOutBack,
