@@ -1,0 +1,12 @@
+refs/
+out/
+node_modules/
+.env
+evals/
+intent/
+*.wav
+*.mp4
+.DS_Store
+__pycache__/
+*.pyc
+library/

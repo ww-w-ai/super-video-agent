@@ -1,0 +1,33 @@
+{
+  "name": "super-video-agent",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ww-w-ai/super-video-agent"
+  },
+  "author": "DubDubDub Corp. (https://ww-w.ai)",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "Code-drawn narrated reel renderer: deterministic canvas frames, ffmpeg encode, measured voice timing.",
+  "bin": {
+    "sva-setup": "./scripts/setup.mjs",
+    "sva-new": "./scripts/new-reel.mjs",
+    "sva-validate": "./scripts/validate-plan.mjs",
+    "sva-voice": "./scripts/voice.mjs",
+    "sva-still": "./scripts/still.mjs",
+    "sva-verify": "./scripts/verify.mjs",
+    "sva-render": "./scripts/render.mjs",
+    "sva-review": "./scripts/review.mjs",
+    "sva-assets": "./scripts/assets.mjs"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

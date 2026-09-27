@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  #stage { display: block; }
+  @font-face {
+    font-family: 'Pretendard';
+    src: url('assets/fonts/Pretendard-Regular.otf');
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'Pretendard';
+    src: url('assets/fonts/Pretendard-Bold.otf');
+    font-weight: 700;
+    font-style: normal;
+  }
+{{HANDWRITING_FONT_FACE}}
+</style>
+</head>
+<body>
+<canvas id="stage" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
+<script>
+/* ENGINE:BEGIN — scripts/engine/reel-engine.js, inlined by new-reel.mjs. Not scanned for banned tokens (verify.mjs only scans SCENE). */
+{{ENGINE_SOURCE}}
+/* ENGINE:END */
+</script>
+<script>
+/* AUDIO:BEGIN — scripts/engine/reel-audio.js, inlined by new-reel.mjs. Not scanned for banned tokens (verify.mjs only scans SCENE). */
+{{AUDIO_SOURCE}}
+/* AUDIO:END */
+</script>
+<script>
+/* SCENE:BEGIN */
+(function () {
+  "use strict";
+  var WIDTH = {{WIDTH}};
+  var HEIGHT = {{HEIGHT}};
+  var FPS = {{FPS}};
+  var HAS_HANDWRITING = {{HAS_HANDWRITING}};
+
+  var canvas = document.getElementById("stage");
+  var ctx = canvas.getContext("2d");
+
+  var timings = null;
+  var tl = null;
+  var shots = [];
+  var libManifest = null; // assets/lib/manifest.json, or null when absent
+  var libCues = []; // assets/lib/cues.json's cues, or [] when absent
+
+  // The one allowed network call in scene code (design.md §2.1 exception):
+  // loading local JSON as part of building `ready`. `required` files
+  // (timings.json) throw when missing; optional ones (the asset library's
+  // manifest/cues, design.md §2.5) resolve to null so a reel with no
+  // assets/lib/ folder works exactly as before.
+  function loadJSON(url, required) {
+    return fetch(url).then(function (res) {
+      if (!res.ok) {
+        if (required) throw new Error(url + " not found — run voice.mjs first");
+        return null;
+      }
+      return res.json();
+    });
+  }
+
+  function loadTimings() {
+    return loadJSON("voice/timings.json", true).then(function (data) {
+      timings = data;
+      tl = Reel.timeline(timings);
+      // Shot i spans from line i's start (the first shot from 0) to line
+      // i+1's start (the last shot to the timeline duration), so shots
+      // tile the whole film — including any gapMs silence between lines
+      // — instead of leaving a blank, un-owned scene in each gap.
+      // readAt stays the midpoint of the spoken line, not the shot span.
+      var lines = timings.lines || [];
+      shots = lines.map(function (l, i) {
+        var start = i === 0 ? 0 : l.start;
+        var end = i === lines.length - 1 ? timings.duration : lines[i + 1].start;
+        return { id: l.id, start: start, end: end, readAt: (l.start + l.end) / 2 };
+      });
+      buildSfxCues();
+    });
+  }
+
+  // ---- asset library (design.md §2.5): manifest + cues, then preload
+  // every video clip's frames so clipFrame(id, tLocal) is instant during
+  // seek(t). Absent files (no assets/lib/) leave libManifest null and
+  // libCues empty — nothing else here changes behavior in that case.
+  function loadAssetLibrary() {
+    return Promise.all([
+      loadJSON("assets/lib/manifest.json", false),
+      loadJSON("assets/lib/cues.json", false),
+    ]).then(function (results) {
+      libManifest = results[0];
+      libCues = (results[1] && results[1].cues) || [];
+      return preloadClipFrames();
+    });
+  }
+
+  function frameFileName(index) {
+    var s = String(index);
+    while (s.length < 5) s = "0" + s;
+    return "frame-" + s + ".jpg";
+  }
+
+  function loadImage(src) {
+    return new Promise(function (resolve) {
+      var img = new Image();
+      img.onload = function () {
+        resolve(img);
+      };
+      img.onerror = function () {
+        Reel.recordIssue({ type: "clip-frame-load-failed", src: src });
+        resolve(null);
+      };
+      img.src = src;
+    });
+  }
+
+  function preloadClipFrames() {
+    if (!libManifest || !libManifest.assets) return Promise.resolve();
+    var ids = Object.keys(libManifest.assets);
+    return Promise.all(
+      ids.map(function (id) {
+        var meta = libManifest.assets[id];
+        if (meta.kind !== "video") return null;
+        var frameUrls = [];
+        for (var i = 0; i < meta.frameCount; i++) {
+          frameUrls.push(meta.frameDir + "/" + frameFileName(i));
+        }
+        return Promise.all(frameUrls.map(loadImage)).then(function (frames) {
+          Reel.registerClip(id, frames, meta.fps);
+        });
+      })
+    );
+  }
+
+  // soundCues() -> [{file, at, gainDb, maxSec}] for every library cue whose
+  // resolved `play` is "sound" or "both" (design.md §2.5). render.mjs reads
+  // this through the page and mixes each `file` at its cue time itself —
+  // this page never plays audio.
+  function soundCues() {
+    if (!libManifest || libCues.length === 0 || !timings) return [];
+    var out = [];
+    libCues.forEach(function (cue) {
+      if (cue.play !== "sound" && cue.play !== "both") return;
+      var line = null;
+      for (var i = 0; i < timings.lines.length; i++) {
+        if (timings.lines[i].id === cue.lineId) {
+          line = timings.lines[i];
+          break;
+        }
+      }
+      var meta = libManifest.assets[cue.asset];
+      if (!line || !meta) return;
+      var file = meta.kind === "audio" ? meta.file : meta.audio;
+      if (!file) return; // e.g. a silent video clip cued for sound
+      out.push({
+        file: file,
+        at: Reel.cueTime(cue, line, timings),
+        gainDb: cue.gainDb == null ? 0 : cue.gainDb,
+        maxSec: cue.maxSec,
+        // Sound-only files may start with silence; render.mjs skips it so the
+        // sound lands on the cue. A clip's sound keeps its lead to stay on its picture.
+        soundOnly: meta.kind === "audio",
+      });
+    });
+    return out;
+  }
+
+  // drawLibCues(t) — draws the frame of any picture cue ("picture"|"both")
+  // whose clip window [cueTime, cueTime+durationSec) contains t, on top of
+  // the active scene. A pure function of t: which clip and which of its
+  // frames follow only from the cued asset's own duration and cueTime.
+  function drawLibCues(t) {
+    if (!libManifest || libCues.length === 0 || !timings) return;
+    libCues.forEach(function (cue) {
+      if (cue.play !== "picture" && cue.play !== "both") return;
+      var line = null;
+      for (var i = 0; i < timings.lines.length; i++) {
+        if (timings.lines[i].id === cue.lineId) {
+          line = timings.lines[i];
+          break;
+        }
+      }
+      var meta = libManifest.assets[cue.asset];
+      if (!line || !meta || meta.kind !== "video") return;
+      var at = Reel.cueTime(cue, line, timings);
+      var durationSec = cue.maxSec ? Math.min(cue.maxSec, meta.durationSec) : meta.durationSec;
+      if (t < at || t >= at + durationSec) return;
+      var frame = Reel.clipFrame(cue.asset, t - at);
+      if (frame) Reel.imageCover(ctx, frame, 0, 0, WIDTH, HEIGHT);
+    });
+  }
+
+  // ---- audio: SFX_CUES + renderSfx -----------------------------------
+  // SFX_CUES times should be derived from the measured timeline (tl.line /
+  // tl.phrase), not hardcoded constants, so retiming a line moves its cue
+  // with it. Cue shape: {at, kind, gain, pan, sync}.
+  var SFX_CUES = [];
+  function buildSfxCues() {
+    SFX_CUES = [];
+  }
+
+  // renderSfx(sampleRate) -> [Float32Array-like, Float32Array-like], one per
+  // channel, exactly duration*sampleRate samples (mix()'s length contract).
+  // Builds a ducked music-box bed plus the SFX_CUES onsets, then masters to
+  // -3 dBFS peak. Channels are returned as plain Arrays: page.evaluate's
+  // return value must survive serialization back to Node, and a plain
+  // Array round-trips reliably where a raw Float32Array is not guaranteed to.
+  function renderSfx(sampleRate) {
+    var duration = timings ? timings.duration : 0;
+    var m = ReelAudio.mix(duration, sampleRate);
+    var bed = ReelAudio.musicBed(duration, sampleRate, { bpm: 120, key: "C", gain: 0.18 });
+    var narrationWindows = (timings && timings.lines ? timings.lines : []).map(function (l) {
+      return { start: l.start, end: l.end };
+    });
+    ReelAudio.duck(bed, narrationWindows, { depthDb: -10, rampMs: 120 });
+    m.addStereo(bed, 0, 1);
+    SFX_CUES.forEach(function (cue) {
+      var gen = ReelAudio.sfx[cue.kind];
+      if (!gen) return;
+      var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
+      m.add(buf, cue.at, cue.gain == null ? 1 : cue.gain, cue.pan == null ? 0 : cue.pan);
+    });
+    ReelAudio.master(m, { peakDb: -3 });
+    return [Array.from(m.L), Array.from(m.R)];
+  }
+
+  // document.fonts.ready alone only guarantees a @font-face has been
+  // *parsed*, not fetched — a font that is only ever used on canvas (never
+  // in DOM text) is never triggered to load by the browser, so ctx.fillText
+  // silently falls back to a system font. Explicitly .load() every
+  // declared face before resolving `ready`; a face that fails to load is
+  // reported through issues() (not a hang, not a thrown rejection) so a
+  // missing/broken font file shows up in review instead of hanging capture.
+  function loadDeclaredFonts() {
+    var faces = Array.from(document.fonts); // FontFaceSet is set-like; slice.call gives []
+    return Promise.all(
+      faces.map(function (face) {
+        return face.load().catch(function (err) {
+          Reel.recordIssue({
+            type: "font-load-failed",
+            family: face.family,
+            weight: face.weight,
+            style: face.style,
+            message: String((err && err.message) || err),
+          });
+          return null;
+        });
+      })
+    ).then(function () {
+      return document.fonts.ready;
+    });
+  }
+
+  var ready = Promise.all([
+    loadDeclaredFonts(),
+    loadTimings().then(loadAssetLibrary),
+  ]).then(function () { return undefined; });
+
+  // ---- scene ---------------------------------------------------------
+  // Replace this. Draw your film in the medium you chose (medium.md).
+  // Nothing here is a style suggestion.
+  //
+  // This stub only proves the plumbing works: it clears to a neutral grey,
+  // draws the current line's text plainly at the centre, and applies one
+  // tiny keyed boil offset so a dead-air check doesn't fail on an
+  // unedited scaffold.
+  function drawStub(t, line) {
+    var fontPx = Math.round(HEIGHT * 0.05);
+    var b = Reel.boil("stub:text", t, { amp: 1.5, rot: 0 });
+    ctx.save();
+    ctx.translate(WIDTH / 2 + b.dx, HEIGHT / 2 + b.dy);
+    ctx.font = fontPx + "px sans-serif";
+    ctx.fillStyle = "#fff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(line ? line.text : "", 0, 0);
+    ctx.restore();
+  }
+
+  var SCENES = [drawStub];
+
+  function currentLineIndex(t) {
+    if (!timings) return -1;
+    for (var i = 0; i < timings.lines.length; i++) {
+      var l = timings.lines[i];
+      if (t >= l.start && t < l.end) return i;
+    }
+    // after the last line's end, keep showing the last line's caption
+    if (timings.lines.length && t >= timings.lines[timings.lines.length - 1].end) {
+      return timings.lines.length - 1;
+    }
+    return -1;
+  }
+
+  // seek(t): pure function of t. Background paint + scene dispatch by the
+  // active line index, wrapping if there are fewer scenes than lines.
+  function seek(t) {
+    ctx.save();
+    ctx.fillStyle = "#808080";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+    ctx.restore();
+    var idx = currentLineIndex(t);
+    var line = idx >= 0 ? timings.lines[idx] : null;
+    var sceneFn = SCENES[Math.max(0, idx) % SCENES.length];
+    var u = 0;
+    if (idx >= 0 && tl) {
+      var win = tl.line(idx);
+      if (win) u = win.u(t);
+    }
+    sceneFn(t, line, u);
+    drawLibCues(t);
+  }
+
+  window.__reel = {
+    get width() { return WIDTH; },
+    get height() { return HEIGHT; },
+    get fps() { return FPS; },
+    get duration() { return timings ? timings.duration : 0; },
+    ready: ready,
+    seek: seek,
+    get shots() { return shots; },
+    issues: function () { return Reel.issues(); },
+    audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
+    soundCues: soundCues,
+    get marks() {
+      return SFX_CUES.map(function (c) {
+        return { at: c.at, kind: c.kind, sync: !!c.sync };
+      });
+    },
+  };
+})();
+/* SCENE:END */
+</script>
+</body>
+</html>

@@ -1,0 +1,33 @@
+{
+  "name": "super-video-agent",
+  "version": "0.1.0",
+  "description": "Turn a PDF, essay, card news or topic into a narrated short where every frame is drawn in code. Voice first, read-out rules for any language, one-scene re-renders.",
+  "author": {
+    "name": "ww-w-ai"
+  },
+  "repository": "https://github.com/ww-w-ai/super-video-agent",
+  "license": "Apache-2.0",
+  "keywords": [
+    "video",
+    "shorts",
+    "narration",
+    "tts",
+    "canvas"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Super Video Agent",
+    "shortDescription": "Narrated shorts drawn in code.",
+    "longDescription": "Give it a PDF, an essay, card news or a topic. It writes the script, makes and measures the voice first, draws every frame in code on those times, renders with FFmpeg, and checks its own frames before delivering.",
+    "developerName": "ww-w-ai",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Make a 60-second YouTube Short from this PDF.",
+      "Turn this essay into a narrated 16:9 explainer."
+    ]
+  }
+}

@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ww-w.ai/super-video-agent/plan.schema.json",
+  "title": "Super Video Agent plan.json",
+  "type": "object",
+  "required": ["meta", "lines"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["title"],
+      "additionalProperties": false,
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "lang": { "type": "string", "default": "ko-KR", "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
+        "ratio": { "type": "string", "enum": ["9:16", "1:1", "16:9", "4:5"] },
+        "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30 },
+        "voice": {
+          "type": "object",
+          "required": ["provider"],
+          "additionalProperties": false,
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"]
+            },
+            "voiceId": { "type": "string" },
+            "rate": { "type": "number", "exclusiveMinimum": 0 },
+            "model": {
+              "type": "string",
+              "description": "qwen3: Qwen3-TTS model id, e.g. Qwen/Qwen3-TTS-12Hz-0.6B-Base or the 1.7B variant. elevenlabs: model_id (default eleven_multilingual_v2)."
+            },
+            "phonemeTags": {
+              "type": "boolean",
+              "description": "Set true only when the engine and model read SSML <phoneme alphabet=\"ipa\"> tags; meta.pronounce entries with `ipa` are then sent as tags. Otherwise their `say` is used."
+            },
+            "refAudio": {
+              "type": "string",
+              "description": "qwen3/fishspeech: reference voice clip to clone. Absolute, or relative to the reel dir."
+            },
+            "refText": {
+              "type": "string",
+              "description": "qwen3/fishspeech: transcript of refAudio (required alongside it)."
+            },
+            "refTokens": {
+              "type": "string",
+              "description": "fishspeech only: pre-encoded prompt tokens (.npy) for the reference voice. Absolute, or relative to the reel dir."
+            },
+            "budgetSec": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "description": "qwen3 only: per-line generation time budget in seconds before keeping the best candidate."
+            }
+          }
+        },
+        "pronounce": { "type": "object", "description": "Pronunciation dictionary: {\"<word>\": {\"say\": \"<respelling or replacement>\", \"ipa\": \"<IPA>\"}}. Applied to spoken text only; captions keep `text`. A line's entries override meta.pronounce. See references/readout.md." },
+        "gapMs": { "type": "integer", "minimum": 0, "default": 250 },
+        "tailSec": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0.4,
+          "description": "Trailing silence in seconds after the last line, e.g. to keep a wordless end card. Default 0.4."
+        },
+        "distribution": {
+          "type": "string",
+          "enum": ["personal", "public"],
+          "default": "public",
+          "description": "\"personal\" allows fetching non-commercialSafe library assets without --allow-personal-scope (design.md §2.5)."
+        }
+      }
+    },
+    "style": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "palette": { "type": "array", "items": { "type": "string" } },
+        "fonts": { "type": "object" },
+        "motifs": { "type": "array", "items": { "type": "string" } },
+        "boilHz": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "lines": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1 },
+          "say": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Optional spoken-form override for TTS (e.g. '엠씨피' for 'MCP'). Captions and timings.json `text` always show `text`; voice.mjs synthesizes `say ?? text`."
+          },
+          "pauseAfterMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Silence after this line in ms, overriding meta.gapMs. Short (about 120-200) when the next line continues the same sentence or thought; longer at a scene or topic change."
+          },
+          "rate": {
+            "type": "number",
+            "minimum": 0.5,
+            "maximum": 2,
+            "description": "This line's speech speed, replacing meta.voice.rate for it (e.g. 2 for a deliberately rushed list)."
+          },
+          "pronounce": { "type": "object", "description": "Pronunciation dictionary: {\"<word>\": {\"say\": \"<respelling or replacement>\", \"ipa\": \"<IPA>\"}}. Applied to spoken text only; captions keep `text`. A line's entries override meta.pronounce. See references/readout.md." },
+          "visual": { "type": "string" },
+          "emphasis": { "type": "array", "items": { "type": "string" } },
+          "cues": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["asset", "at"],
+              "additionalProperties": false,
+              "properties": {
+                "asset": { "type": "string", "minLength": 1, "description": "Library asset id (scripts/lib/library.mjs)." },
+                "at": {
+                  "type": "string",
+                  "pattern": "^(start|end|word:.+)$",
+                  "description": "\"start\" | \"end\" | \"word:<text>\" — the first word of the line's caption that contains <text>."
+                },
+                "offsetMs": { "type": "integer", "description": "Shift from `at`, in ms. May be negative." },
+                "gainDb": { "type": "number", "description": "Sound gain in dB, applied after peak-normalizing the clip to -6 dBFS." },
+                "maxSec": { "type": "number", "exclusiveMinimum": 0, "description": "Trim the clip to this many seconds; default is the clip's own length." },
+                "play": {
+                  "type": "string",
+                  "enum": ["sound", "picture", "both"],
+                  "description": "Default: \"sound\" for role sfx, \"both\" for role reaction."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

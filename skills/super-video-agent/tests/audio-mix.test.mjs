@@ -1,0 +1,81 @@
+// Pure unit tests for scripts/lib/audio-mix.mjs's ffmpeg filter_complex
+// builder (design.md §2.5 "Sound") — no ffmpeg involved.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { buildCueMixFilter } from "../scripts/lib/audio-mix.mjs";
+
+// narrationIndex:0 in these tests keeps the label indices readable
+// (narration=0, sfx=1, cues after); render.mjs uses the real default
+// (narrationIndex:1, since the video is always ffmpeg input 0) — see the
+// dedicated default-index test below.
+
+test("buildCueMixFilter: no cues -> mixes narration alone (sanity; render.mjs skips this path entirely when cues is empty)", () => {
+  const { filterComplex, inputCount } = buildCueMixFilter({ narrationIndex: 0, hasSfx: false, cues: [] });
+  assert.equal(inputCount, 1); // narration only
+  assert.match(filterComplex, /^\[0:a\]loudnorm=/);
+  assert.doesNotMatch(filterComplex, /amix/);
+});
+
+test("buildCueMixFilter: one cue, no sfx — trims, fades, normalizes to -6dBFS, delays, mixes with narration", () => {
+  const { filterComplex, inputCount } = buildCueMixFilter({
+    narrationIndex: 0,
+    hasSfx: false,
+    cues: [{ trimSec: 0.8, peakDb: -12, gainDb: 2, atSec: 1.5 }],
+  });
+  assert.equal(inputCount, 2); // narration(0) + cue(1)
+  assert.match(filterComplex, /\[1:a\]atrim=0:0\.8/);
+  assert.match(filterComplex, /afade=t=out:st=0\.77:d=0\.03/); // trimSec - 30ms fade
+  assert.match(filterComplex, /volume=8dB/); // (-6 - -12) + 2 = 8
+  assert.match(filterComplex, /adelay=1500:all=1/);
+  assert.match(filterComplex, /amix=inputs=2:duration=first/);
+  assert.match(filterComplex, /\[aout\]$/);
+});
+
+test("buildCueMixFilter: sfx + two cues — input indices follow narration(0), sfx(1), cue0(2), cue1(3)", () => {
+  const { filterComplex, inputCount } = buildCueMixFilter({
+    narrationIndex: 0,
+    hasSfx: true,
+    cues: [
+      { trimSec: 0.5, peakDb: -6, gainDb: 0, atSec: 0 },
+      { trimSec: 1, peakDb: -20, gainDb: -3, atSec: 2 },
+    ],
+  });
+  assert.equal(inputCount, 4);
+  assert.match(filterComplex, /\[2:a\]atrim=0:0\.5.*\[cue0\]/);
+  assert.match(filterComplex, /\[3:a\]atrim=0:1.*\[cue1\]/);
+  assert.match(filterComplex, /\[0:a\]\[1:a\]\[cue0\]\[cue1\]amix=inputs=4/);
+});
+
+test("buildCueMixFilter: gainDb defaults to 0 when omitted", () => {
+  const { filterComplex } = buildCueMixFilter({
+    narrationIndex: 0,
+    hasSfx: false,
+    cues: [{ trimSec: 1, peakDb: -6, atSec: 0 }],
+  });
+  assert.match(filterComplex, /volume=0dB/); // (-6 - -6) + 0
+});
+
+test("buildCueMixFilter: negative delay clamps to 0ms", () => {
+  const { filterComplex } = buildCueMixFilter({
+    narrationIndex: 0,
+    hasSfx: false,
+    cues: [{ trimSec: 1, peakDb: -6, atSec: -0.2 }],
+  });
+  assert.match(filterComplex, /adelay=0:all=1/);
+});
+
+test("buildCueMixFilter: default narrationIndex is 1 (video is always ffmpeg input 0)", () => {
+  const { filterComplex, inputCount } = buildCueMixFilter({
+    hasSfx: true,
+    cues: [{ trimSec: 0.5, peakDb: -6, atSec: 0 }],
+  });
+  assert.equal(inputCount, 3); // narration + sfx + 1 cue
+  assert.match(filterComplex, /\[3:a\]atrim=0:0\.5.*\[cue0\]/); // narration(1), sfx(2), cue0(3)
+  assert.match(filterComplex, /\[1:a\]\[2:a\]\[cue0\]amix=inputs=3/); // narration at 1, not 0 (0 is the video input)
+});
+
+test("buildCueMixFilter: leadSec skips a sound file's head silence before the delay", () => {
+  const { filterComplex } = buildCueMixFilter({ hasSfx: false, cues: [{ trimSec: 1, peakDb: -6, atSec: 2, leadSec: 0.08 }] });
+  assert.match(filterComplex, /atrim=0\.08:1\.08,asetpts=PTS-STARTPTS/);
+  assert.match(filterComplex, /adelay=2000:all=1/);
+});

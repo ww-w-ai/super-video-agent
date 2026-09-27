@@ -1,0 +1,23 @@
+{
+  "name": "super-video-agent",
+  "version": "0.1.0",
+  "description": "Turn a PDF, essay, card news or topic into a narrated short where every frame is drawn in code. Voice first, read-out rules for any language, one-scene re-renders.",
+  "author": {
+    "name": "ww-w-ai"
+  },
+  "repository": "https://github.com/ww-w-ai/super-video-agent",
+  "license": "Apache-2.0",
+  "keywords": [
+    "video",
+    "shorts",
+    "reels",
+    "explainer",
+    "narration",
+    "tts",
+    "voice-cloning",
+    "canvas",
+    "playwright",
+    "ffmpeg",
+    "korean"
+  ]
+}
