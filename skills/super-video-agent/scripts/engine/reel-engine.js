@@ -264,6 +264,28 @@
   // text — wrap + overflow detection. Reading text never boils.
   // ---------------------------------------------------------------------
 
+  // wrapLines(ctx, text, w) — "\n" in `text` forces a break (a caption the
+  // automatic wrap would split badly); each part then wraps at word
+  // boundaries to fit w.
+  function wrapLines(ctx, text, w) {
+    const lines = [];
+    for (const part of String(text).split("\n")) {
+      const words = part.split(/\s+/).filter(Boolean);
+      let cur = "";
+      for (const word of words) {
+        const test = cur ? cur + " " + word : word;
+        if (ctx.measureText(test).width > w && cur) {
+          lines.push(cur);
+          cur = word;
+        } else {
+          cur = test;
+        }
+      }
+      if (cur) lines.push(cur);
+    }
+    return lines;
+  }
+
   // textBlock(ctx, text, x,y,w,h, opts) — wraps `text` inside the box.
   // Records an issue if the wrapped lines overflow h. Never boils (still).
   function textBlock(ctx, text, x, y, w, h, opts) {
@@ -276,19 +298,7 @@
     ctx.font = font;
     ctx.fillStyle = color;
     ctx.textBaseline = "top";
-    const words = String(text).split(/\s+/).filter(Boolean);
-    const lines = [];
-    let cur = "";
-    for (const word of words) {
-      const test = cur ? cur + " " + word : word;
-      if (ctx.measureText(test).width > w && cur) {
-        lines.push(cur);
-        cur = word;
-      } else {
-        cur = test;
-      }
-    }
-    if (cur) lines.push(cur);
+    const lines = wrapLines(ctx, text, w);
 
     const totalHeight = lines.length * lineHeight;
     if (totalHeight > h) {

@@ -35,7 +35,8 @@ function wordPattern(word) {
  * @returns {string}
  */
 export function spokenText(line, filmPronounce, voiceCfg) {
-  let out = line.say != null ? line.say : line.text;
+  // A "\n" in `text` only breaks the caption; the voice reads it as a space.
+  let out = (line.say != null ? line.say : line.text).replace(/\s*\n\s*/g, " ");
   const pronounce = line.pronounce ? { ...filmPronounce, ...line.pronounce } : filmPronounce;
   if (!pronounce) return out;
   const useTags = !!(voiceCfg && voiceCfg.phonemeTags);

@@ -118,7 +118,10 @@ export async function main(argv) {
 
   const gapMs = plan.meta.gapMs == null ? 250 : plan.meta.gapMs;
   const tailSec = plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec;
-  const voiceCfg = plan.meta.voice || {};
+  const voiceCfg = withShortsRate(plan.meta);
+  if (voiceCfg.rate != null && (plan.meta.voice || {}).rate == null) {
+    process.stderr.write(`note: vertical film without meta.voice.rate; speaking at the Shorts default ${voiceCfg.rate}\n`);
+  }
 
   let onlyLineIds = null;
   if (typeof flags.lines === "string") {
@@ -598,6 +601,23 @@ async function runSttOnly(dir, paths) {
   printSttTable(lines);
   writeJson(paths.timingsJson, timings);
   process.stdout.write(`wrote ${paths.timingsJson}\n`);
+}
+
+// A local voice at its own speed sounds slow in a Short. Korean is set faster
+// than the other languages: at the same rate it still reads as slow.
+const SHORTS_RATE = 1.2;
+const SHORTS_RATE_BY_LANG = { ko: 1.3 };
+
+/**
+ * meta.voice with the Shorts speaking rate filled in: a 9:16 film whose plan
+ * sets no meta.voice.rate speaks at SHORTS_RATE (per language where listed).
+ * A rate the plan sets always wins.
+ */
+export function withShortsRate(meta) {
+  const voice = meta.voice || {};
+  if (voice.rate != null || meta.ratio !== "9:16") return voice;
+  const lang = String(meta.lang || "").toLowerCase().split("-")[0];
+  return { ...voice, rate: SHORTS_RATE_BY_LANG[lang] ?? SHORTS_RATE };
 }
 
 // A line's own `rate` (0.5–2) replaces meta.voice.rate for that line, for a

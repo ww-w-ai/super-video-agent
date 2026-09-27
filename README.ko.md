@@ -189,8 +189,43 @@ node ~/.claude/skills/super-video-agent/scripts/setup.mjs
 
 ### 음성과 음성 확인
 
-음성 합성과 음성 확인(받아쓰기)은 직접 준비한 Python 환경에서 돕니다. 아래 변수로 그 환경을 알려
-줍니다:
+음성은 내 컴퓨터에서 만들고, 음성 모델은 직접 고를 수 있습니다. 기본값은 Qwen3-TTS 1.7B(Apache-2.0)로,
+5~15초 녹음 하나로 목소리를 복제하고 API 비용이 들지 않습니다. 한 번만 준비하면 됩니다:
+
+1. Python 환경을 만들고(Qwen3-TTS가 권장하는 Python 3.12) 음성 모델과 음성 확인 도구를 설치합니다.
+
+   ```bash
+   python3.12 -m venv ~/.venvs/sva
+   ~/.venvs/sva/bin/pip install -U qwen-tts faster-whisper
+   ```
+
+2. 스킬에 그 위치를 알려 줍니다. `~/.zshenv`(또는 쓰는 셸의 설정 파일)에 넣습니다.
+
+   ```bash
+   export SVA_QWEN3_PYTHON=~/.venvs/sva/bin/python
+   export SVA_STT_PYTHON=~/.venvs/sva/bin/python
+   ```
+
+3. 첫 영상을 만들 때 Hugging Face에서 모델을 내려받습니다. 1.7B 음성 모델은 약 4.2GB, 음성 확인용
+   모델(`small`)은 약 0.5GB입니다.
+4. 내 목소리를 5~15초 녹음합니다. 문장이 끝나는 곳에서 녹음을 끝내고, 말한 내용을 그대로 적어 둡니다.
+   스킬은 이 둘을 `meta.voice.refAudio`와 `refText`로 씁니다.
+
+음성 모델 고르기:
+
+| 모델 | 내려받는 용량 | 이럴 때 |
+|---|---|---|
+| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (기본값) | 약 4.2GB | 추천. 발음이 더 또렷하고 말끝이 덜 뭉개집니다 |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 약 2.3GB | 사양이 낮은 컴퓨터, 빠른 초안 |
+
+모든 영상에 적용하려면 `SVA_QWEN3_MODEL`, 한 영상에만 적용하려면 `meta.voice.model`에 적습니다.
+NVIDIA GPU가 있는 컴퓨터라면 `SVA_QWEN3_DEVICE=cuda`로 둡니다.
+
+음성 확인은 음성을 만든 뒤 줄마다 받아써 보고, 크게 잘못 나온 줄만 잡아냅니다. 그래서 기본값인
+`small` 모델(약 0.5GB, 처음 쓸 때 한 번 내려받음)이면 충분합니다. `SVA_STT_PYTHON`을 두지 않으면
+확인을 건너뛴다는 안내만 나옵니다.
+
+스킬이 읽는 변수 전체:
 
 | 변수 | 가리키는 곳 | 필요한 경우 |
 |---|---|---|
@@ -199,6 +234,7 @@ node ~/.claude/skills/super-video-agent/scripts/setup.mjs
 | `SVA_MELO_PYTHON` | MeloTTS가 설치된 Python | 선택적 제공자 |
 | `SVA_FISH_DIR` | `fish-speech/`(체크아웃)와 `.venv-tts/`(그 Python)가 있는 폴더 | 선택 사항(Fish-Speech 모델 가중치는 비상업용 라이선스) |
 | `SVA_QWEN3_DEVICE`, `SVA_FISH_DEVICE` | `mps`(기본값), `cuda` 또는 `cpu` | Apple 외 기기 |
+| `SVA_QWEN3_MODEL` | Qwen3-TTS 모델 이름 (기본값 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | 모든 영상에 다른 음성 모델을 쓸 때. plan의 `meta.voice.model`이 있으면 그쪽이 우선 |
 | `SVA_STT_MODEL` | faster-whisper 모델 이름(기본값 `small`) | 선택 사항 |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | 본인의 ElevenLabs 키와 보이스 | 선택적 호스팅 제공자 |
 | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` | 본인의 Fish Audio 키와 보이스 | 선택적 호스팅 제공자 |

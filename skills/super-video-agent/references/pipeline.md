@@ -45,7 +45,7 @@ rules come first.
 | `rng(key)` / `hash(str)` | the only randomness |
 | `drawOn(ctx, path, u, key, t, opts)` | reveal a stroke in point order |
 | `imageCover(ctx, img, x, y, w, h)` | cover-fit an image into a box |
-| `textBlock(ctx, text, x, y, w, h, opts)` | wrapped text; overflow and text outside the safe area recorded to `issues()` |
+| `textBlock(ctx, text, x, y, w, h, opts)` | wrapped text; a `\n` in the text forces a break where the automatic wrap splits badly; overflow and text outside the safe area recorded to `issues()` |
 | `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area |
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads")` | the box text must stay inside |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
@@ -103,6 +103,8 @@ A segment re-renders when: its `.mp4` is missing, its frame range moved (the sho
 changed duration), fps or output size changed, or any of its three probe hashes changed (the
 drawn pixels changed). After joining, render.mjs checks the A/V duration delta (≤ 50ms) and
 that the joined video's frame count equals `round(duration*fps)`, and fails loudly otherwise.
+The audio is padded with silence and cut at the video's end, so the delivered file keeps every
+frame of the still tail.
 
 To regenerate only some narration lines: `voice.mjs <dir> --lines id,id` re-synthesizes those
 lines, reuses the other lines' existing `voice/line-<id>.wav`, and always rebuilds
@@ -174,3 +176,11 @@ search will hit, its measured `durationSec` (and `width`/`height`, `hasAudio` fo
 
 `new-reel.mjs` copies Pretendard into `assets/fonts/`. For another face, drop a licensed font
 file there and register it in the page's `@font-face`.
+
+- **Symbols the font lacks show as boxes.** Pretendard covers Korean and Latin. Phonetic symbols
+  (ˈ ʊ ə), arrows, math signs or another script may fall back or render as □. Look at a still of
+  every frame that shows one before the final render.
+- **Draw text after the fonts load.** A canvas drawn and cached before the web font is attached
+  (an offscreen stamp, a pre-rendered label) keeps the fallback face for the whole film. Draw
+  such text every frame, or cache it only after `document.fonts.ready`. List loaded faces with
+  `Array.from(document.fonts)`.

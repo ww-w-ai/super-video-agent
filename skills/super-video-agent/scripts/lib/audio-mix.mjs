@@ -48,7 +48,7 @@ export function buildCueMixFilter({ narrationIndex = 1, hasSfx, cues }) {
   if (sumLabels.length > 1) {
     parts.push(`${sumLabels.join("")}amix=inputs=${sumLabels.length}:duration=first:dropout_transition=0[amixed]`);
   }
-  parts.push(`${mixedLabel}${LOUDNORM}[aout]`);
+  parts.push(`${mixedLabel}${LOUDNORM},apad[aout]`);
 
   const inputCount = nextInput - narrationIndex + cues.length; // narration [+ sfx] + cues
   return { filterComplex: parts.join(";"), inputCount };

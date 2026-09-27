@@ -33,6 +33,10 @@ Settle texture or small-text questions on a full-size `still.mjs` PNG, not the r
   numbers only say *something* moves. Report motion feel as unverified.
 - **Audio quality and pronunciation**: numbers confirm length and sync, not whether a name is
   said right. Flag names and English terms for the user to listen to.
+- **Layout between checked frames**: the Layout gate reads `__reel.issues()` at one frame per
+  shot (its `readAt`). Text that overflows or leaves the safe area only mid-shot, during a move
+  or a count-up, is not seen. For such shots, seek every 0.1 s through them and collect
+  `issues()` yourself.
 - **Taste**: a passing sheet is not an approved film. Say "technically verified" and list what a
   human should watch for.
 

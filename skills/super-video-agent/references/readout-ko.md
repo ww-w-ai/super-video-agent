@@ -28,6 +28,7 @@ mark, ㄴ 첨가, the 의 in 우리의 said as [에] — are where a line sounds
 | `4.4` | 사쩜사 | the decimal point is said [쩜] (소수점 [소수쩜]), not [점] |
 | `27.3%` | 이십칠쩜삼 퍼센트 | same, and the unit spoken once |
 | `3개`, `20명`, `2번`, `5살`, `3시` | 세 개, 스무 명, 두 번, 다섯 살, 세 시 | counters of native origin take native numbers |
+| `158개`, `120명` | 백오십팔 개, 백이십 명 | native numbers stop at 아흔아홉; from 100 the whole number is Sino, even before a native counter (not 백쉰여덟) |
 | `3분`, `7점`, `2층`, `3일`, `1,500원` | 삼 분, 칠 점, 이 층, 삼 일, 천오백 원 | Sino counters take Sino numbers |
 | `6월`, `10월` | 유월, 시월 | fixed forms |
 | `3-2` (score) | 삼 대 이 | |

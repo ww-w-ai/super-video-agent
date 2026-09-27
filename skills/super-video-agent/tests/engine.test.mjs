@@ -329,3 +329,11 @@ test("clipFrame: holds the last frame past the clip's own duration, deterministi
 test("clipFrame: unknown clip id returns null", () => {
   assert.equal(Reel.clipFrame("no-such-clip", 0), null);
 });
+
+test("textBlock: a \\n in the text forces a line break even when the words would fit on one line", () => {
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  const result = Reel.textBlock(ctx, "3점을 158개나\n넣었는데", 100, 300, 700, 1000, { lineHeight: 40 });
+  assert.equal(result.lines, 2);
+  assert.deepEqual(ctx.calls.fillText.map((c) => c.text), ["3점을 158개나", "넣었는데"]);
+});

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { synthesizeAll, lineTempo } from "../scripts/voice.mjs";
+import { synthesizeAll, lineTempo, withShortsRate } from "../scripts/voice.mjs";
 import { reelPaths } from "../scripts/lib/reeldir.mjs";
 import * as none from "../scripts/voice/none.mjs";
 
@@ -338,4 +338,13 @@ test("voice: a line's pauseAfterMs overrides meta.gapMs for the silence after it
   assert.ok(Math.abs(c.start - b.end - 0.6) < 0.01, `gap after l2 = ${c.start - b.end}`);
 
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("withShortsRate: a 9:16 film with no rate speaks at 1.2, Korean at 1.3; a set rate and other ratios are untouched", () => {
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "en-US", voice: { provider: "qwen3" } }).rate, 1.2);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: {} }).rate, 1.3);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko" }).rate, 1.3);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: { rate: 1.1 } }).rate, 1.1);
+  assert.equal(withShortsRate({ ratio: "16:9", lang: "ko-KR", voice: {} }).rate, undefined);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ja", voice: { provider: "qwen3" } }).provider, "qwen3");
 });

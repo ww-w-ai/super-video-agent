@@ -11,8 +11,8 @@ the hard lines in SKILL.md still win.
 - **Hook first.** The first line is the hook, said once, right away. No intro, logo reveal or
   greeting — the first two seconds lose the most viewers. After the hook, order the film the
   way this story works best.
-- **Fast.** Short lines, a quick voice, a brief breath after each line so the caption can be
-  read. Quick cuts, no slow dissolves.
+- **Fast.** Short lines, a quick voice (`meta.voice.rate` 1.2, Korean 1.3; `references/voice.md`), a brief
+  breath after each line so the caption can be read. Quick cuts, no slow dissolves.
 - **Ask once, if at all.** One ask (like, save, follow) on the last beat, or none. In Korean,
   say "하트" rather than "좋아요". A brand mark only small, or at the end.
 - **One accent.** In the hook title, one phrase in a single strong color; the rest plain.

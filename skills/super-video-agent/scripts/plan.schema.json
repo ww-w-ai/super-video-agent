@@ -25,10 +25,10 @@
               "enum": ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"]
             },
             "voiceId": { "type": "string" },
-            "rate": { "type": "number", "exclusiveMinimum": 0 },
+            "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.2, Korean 1.3." },
             "model": {
               "type": "string",
-              "description": "qwen3: Qwen3-TTS model id, e.g. Qwen/Qwen3-TTS-12Hz-0.6B-Base or the 1.7B variant. elevenlabs: model_id (default eleven_multilingual_v2)."
+              "description": "qwen3: Qwen3-TTS model id, e.g. Qwen/Qwen3-TTS-12Hz-0.6B-Base (default: env SVA_QWEN3_MODEL, else Qwen/Qwen3-TTS-12Hz-1.7B-Base). elevenlabs: model_id (default eleven_multilingual_v2)."
             },
             "phonemeTags": {
               "type": "boolean",
@@ -88,7 +88,7 @@
         "additionalProperties": false,
         "properties": {
           "id": { "type": "string", "minLength": 1 },
-          "text": { "type": "string", "minLength": 1 },
+          "text": { "type": "string", "minLength": 1, "description": "The caption. A \\n forces a caption line break; the voice reads it as a space (or reads say)." },
           "say": {
             "type": "string",
             "minLength": 1,

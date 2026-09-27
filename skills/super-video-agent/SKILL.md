@@ -47,12 +47,15 @@ use, adapt or ignore; none of it is a template.
 ## Flow
 
 ```
-1. Read the source and the user's direction; ask style (Shorts formula or free), frame size and
-   length if not given; start FILM.md (facts with where they came from, cautions, scope, the
-   style choice, decisions, what the owner must supply)
+1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
+   length, and whether they want to review the script before the voice, if not given; start
+   FILM.md (facts with where they came from, cautions, scope, the style choice, decisions, what
+   the owner must supply)
 2. Write the lines → plan.json, and while writing, pick sound effects and reaction clips from
    the asset library as line `cues` (`assets.mjs search`; skip if nothing fits)
    → review passes until a full read changes nothing
+   → if the user wants to review: show the whole script (text, and say where it differs) and
+     wait; apply their edits, then continue
    → make the voice once → voice/timings.json (measured line times); fix only STT flags
 3. `assets.mjs fetch`, then build scenes onto the measured times: hardest frame first, look at
    it, fix it; then the rest
@@ -87,7 +90,7 @@ you can ask, ask; otherwise infer it from where the film goes.
 
 | `--ratio` | Size | Where |
 |---|---|---|
-| `9:16` | 1080×1920 | vertical — YouTube Shorts, Reels, TikTok |
+| `9:16` | 1080×1920 | vertical — YouTube Shorts, Reels, TikTok; voice at `meta.voice.rate` 1.2 (Korean 1.3) in any style; `voice.mjs` fills it in when the plan sets none |
 | `16:9` | 1920×1080 | horizontal — YouTube long-form, presentations |
 | `1:1` | 1080×1080 | square — feed posts |
 | `4:5` | 1080×1350 | portrait feed — Instagram, LinkedIn |
@@ -99,9 +102,9 @@ Style: at the start, ask the user which one to use.
 | Shorts formula | The shape popular Shorts converge on: hook first, fast, a banded frame with a fixed hook title (`references/shorts-formula.md`); story order and look stay yours |
 | Free style | No preset; you invent the look and structure for this film |
 
-Ask this together with frame size and length, in one question. If the user already said, do
-not ask again. If nobody can answer (an unattended run), use free style and note it in
-`FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
+Ask this together with frame size, length and the script review, in one question. If the user
+already said, do not ask again. If nobody can answer (an unattended run), use free style, skip
+the script review, and note both in `FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
 
 In free style, everything inside the frame (margins, caption size, layout) is your call, or the
 user's if they specify it. Length: from the user; if unstated, ask, or infer it from where the
@@ -131,6 +134,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 |---|---|---|
 | setup | `scripts/setup.mjs` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked |
 | scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9` | page with contract + optional helpers |
+| script check | `scripts/validate-plan.mjs <dir>` — run before the voice | `plan.json` matches the schema; every `word:` cue names a word in its line |
 | voice | `scripts/voice.mjs <dir>` | per-line audio + measured `voice/timings.json` (providers: `references/voice.md`) |
 | look | `scripts/still.mjs <dir> --at <t\|shotId>[,<t\|shotId>...]` | one full-size PNG per value, one browser session |
 | assets | `scripts/assets.mjs search <words>` / `fetch <dir>` | recorded sound effects and reaction clips from `library/` (git-ignored; licenses in `references/pipeline.md`) |

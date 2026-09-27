@@ -196,8 +196,44 @@ node ~/.claude/skills/super-video-agent/scripts/setup.mjs
 
 ### Voice and the speech check
 
-Voice synthesis and the speech-to-text check run in Python environments you set up yourself.
-Point the skill to them with these variables:
+The voice runs on your own computer, and you pick the model. The default is Qwen3-TTS 1.7B
+(Apache-2.0), which clones a voice from a 5–15 s recording with no API cost. Set it up once:
+
+1. Make a Python environment (Python 3.12, as Qwen3-TTS recommends) and install the voice model
+   and the speech check:
+
+   ```bash
+   python3.12 -m venv ~/.venvs/sva
+   ~/.venvs/sva/bin/pip install -U qwen-tts faster-whisper
+   ```
+
+2. Tell the skill where it is. Add these to `~/.zshenv` (or your shell's profile):
+
+   ```bash
+   export SVA_QWEN3_PYTHON=~/.venvs/sva/bin/python
+   export SVA_STT_PYTHON=~/.venvs/sva/bin/python
+   ```
+
+3. The first film downloads the weights from Hugging Face: about 4.2 GB for the 1.7B voice model
+   and 0.5 GB for the speech check (`small`).
+4. Record 5–15 s of your own voice that ends on a finished sentence, and write down exactly what
+   you said. The skill uses the two as `meta.voice.refAudio` and `refText`.
+
+Pick the voice model:
+
+| Model | Download | Choose it for |
+|---|---|---|
+| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (default) | about 4.2 GB | the recommended voice: clearer words, fewer slurred endings |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | about 2.3 GB | a smaller machine, or quicker drafts |
+
+Set it for every film with `SVA_QWEN3_MODEL`, or for one film with `meta.voice.model`. On a
+machine with an NVIDIA GPU, set `SVA_QWEN3_DEVICE=cuda`.
+
+The speech check listens to each line after the voice is made and catches only the ones that
+came out badly wrong, so the default `small` model (about 0.5 GB, downloaded once on first use)
+is enough. Without `SVA_STT_PYTHON` the check is skipped with a notice.
+
+Every variable the skill reads:
 
 | Variable | Points to | Needed for |
 |---|---|---|
@@ -206,6 +242,7 @@ Point the skill to them with these variables:
 | `SVA_MELO_PYTHON` | a Python with MeloTTS | optional provider |
 | `SVA_FISH_DIR` | a folder holding `fish-speech/` (the checkout) and `.venv-tts/` (its Python) | optional (Fish-Speech's model weights are licensed for non-commercial use) |
 | `SVA_QWEN3_DEVICE`, `SVA_FISH_DEVICE` | `mps` (default), `cuda` or `cpu` | non-Apple machines |
+| `SVA_QWEN3_MODEL` | a Qwen3-TTS model id (default `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | another voice model on every film; `meta.voice.model` in a plan still wins |
 | `SVA_STT_MODEL` | a faster-whisper model name (default `small`) | optional |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | your ElevenLabs key and voice | optional hosted provider |
 | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` | your Fish Audio key and voice | optional hosted provider |

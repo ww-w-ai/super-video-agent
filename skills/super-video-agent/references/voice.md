@@ -21,7 +21,7 @@ understand the voice" is a top public complaint).
 
 | Provider | Setup | License of output | Word timings |
 |---|---|---|---|
-| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 0.6B (default) or 1.7B | Apache-2.0 weights — commercial OK | estimated |
+| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default, recommended) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film | Apache-2.0 weights — commercial OK | estimated |
 | `fishspeech` | `SVA_FISH_DIR`; `meta.voice.refTokens` (.npy) + `refText` | **CC-BY-NC-SA-4.0 — non-commercial only**; never for promos or monetized videos | estimated |
 | `melotts` | `SVA_MELO_PYTHON` | MIT | estimated |
 | `fish` | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | estimated |
@@ -125,8 +125,13 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips.
 - Line start/end are measured from the synthesized audio. Word times come from the provider when it
   gives them, otherwise proportional to characters inside the measured line — good enough to land a
-  visual beat on a word within ~0.2 s, not for karaoke captions.
-- Shorts pacing: `meta.voice.rate` 1.1–1.2 tightens slow local voices (ffmpeg atempo, clamped
-  0.8–1.3). If the total is still over target, cut lines rather than speeding further.
+  visual beat on a word within ~0.2 s, not for karaoke captions. Estimates have been up to ~0.4 s
+  off the sound. When a beat must land on the sound itself (a hard cut on a word, a waveform drawn
+  on screen), measure it from `voice/narration.wav`: `ffmpeg -af silencedetect=noise=-38dB:d=0.09`
+  gives the speech intervals, or take the loudest 10 ms step inside the word's estimated window.
+- Shorts pacing: a Short speaks at `meta.voice.rate` 1.2, Korean 1.3 (ffmpeg atempo, clamped
+  0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
+  `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather
+  than speeding further.
 - A line's own `rate` (0.5–2) replaces the film's rate for that line — for a deliberately rushed
   run, such as a quick list of extras that should feel like "and much more".

@@ -52,3 +52,8 @@ test("scripts without spaces match inside a run", () => {
   assert.equal(spokenText({ text: "유월에 만나요" }, { 유월: { say: "유월" }, 만나: { say: "만나" } }), "유월에 만나요");
   assert.equal(spokenText({ text: "六月见" }, { 六月: { say: "liù yuè" } }), "liù yuè见");
 });
+
+test("spokenText: a caption line break is read as a space", () => {
+  assert.equal(spokenText({ text: "3점을 158개나\n넣었는데" }), "3점을 158개나 넣었는데");
+  assert.equal(spokenText({ text: "a\nb", say: "에이\n비" }), "에이 비");
+});

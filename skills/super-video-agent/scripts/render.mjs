@@ -447,7 +447,11 @@ async function probePeakDb(filePath, trimSec) {
   return parseFloat(m[1]);
 }
 
+// The video decides the length: audio is padded with silence (apad) and cut at
+// the video's end, so a narration shorter than the picture never trims the
+// still tail the way -shortest did.
 async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath }) {
+  const videoSec = String(await probeDuration(videoOnlyPath));
   if (cueInputs && cueInputs.length > 0) {
     const { filterComplex } = buildCueMixFilter({ hasSfx: !!sfxPath, cues: cueInputs });
     const audioInputs = [narrationPath, ...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
@@ -469,7 +473,8 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       "192k",
       "-movflags",
       "+faststart",
-      "-shortest",
+      "-t",
+      videoSec,
       outPath,
     ]);
     return;
@@ -484,7 +489,7 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       "-i",
       sfxPath,
       "-filter_complex",
-      `[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[amixed];[amixed]${LOUDNORM}[aout]`,
+      `[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[amixed];[amixed]${LOUDNORM},apad[aout]`,
       "-map",
       "0:v",
       "-map",
@@ -497,7 +502,8 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       "192k",
       "-movflags",
       "+faststart",
-      "-shortest",
+      "-t",
+      videoSec,
       outPath,
     ]);
   } else {
@@ -508,7 +514,7 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       "-i",
       narrationPath,
       "-filter_complex",
-      `[1:a]${LOUDNORM}[aout]`,
+      `[1:a]${LOUDNORM},apad[aout]`,
       "-map",
       "0:v",
       "-map",
@@ -521,7 +527,8 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       "192k",
       "-movflags",
       "+faststart",
-      "-shortest",
+      "-t",
+      videoSec,
       outPath,
     ]);
   }

@@ -1,7 +1,7 @@
 // Qwen3-TTS voice-clone provider (batch-capable): loads the model once for
 // all lines via scripts/voice/py/qwen3_batch.py. Requires plan.json
 // meta.voice.refAudio + refText (zero-shot voice clone, not a preset
-// speaker). Env: SVA_QWEN3_PYTHON, SVA_QWEN3_DEVICE.
+// speaker). Env: SVA_QWEN3_PYTHON, SVA_QWEN3_DEVICE, SVA_QWEN3_MODEL.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ export const name = "qwen3";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const BATCH_SCRIPT = path.join(here, "py", "qwen3_batch.py");
-const DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base";
+const DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"; // 0.6B is lighter and faster, and its takes slur more
 const DEFAULT_BUDGET_SEC = 20;
 
 // The 10 languages Qwen3-TTS names in its README; anything else is auto-detected.
@@ -68,7 +68,7 @@ export async function synthBatch(lines, ctx) {
   fs.writeFileSync(
     jobPath,
     JSON.stringify({
-      model: voiceCfg.model || DEFAULT_MODEL,
+      model: voiceCfg.model || process.env.SVA_QWEN3_MODEL || DEFAULT_MODEL,
       device: process.env.SVA_QWEN3_DEVICE || "mps",
       lang: qwenLanguage(ctx.lang),
       refAudio,

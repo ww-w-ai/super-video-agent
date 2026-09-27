@@ -12,7 +12,7 @@ Usage:
   python qwen3_batch.py <job.json> <outDir>
 
 Job JSON:
-  {"model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base", "device": "mps",
+  {"model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base", "device": "mps",
    "lang": "Korean", "refAudio": "...", "refText": "...", "budgetSec": 20,
    "lines": [{"id": "l1", "say": "..."}]}
 
@@ -42,7 +42,7 @@ LOUD_DB = -35  # a 10 ms window above this is speech
 SILENT_DB = -60  # the first window below this after the last speech is where the voice has stopped
 FADE_MS = 15
 DEFAULT_BUDGET_SEC = 20.0
-DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 
 
 def log(msg):
