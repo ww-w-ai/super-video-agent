@@ -186,6 +186,15 @@ Requires Node 22+, FFmpeg on `PATH`, and a Chromium for Playwright.
 On first use the skill installs its Node dependency and Chromium into its own folder
 (`node scripts/setup.mjs`), then checks FFmpeg.
 
+**As a Codex plugin:**
+
+```bash
+codex plugin marketplace add ww-w-ai/marketplace
+codex plugin add super-video-agent@ww-w-ai
+```
+
+To update, run `codex plugin marketplace upgrade ww-w-ai`, then the same `add` command again.
+
 **As a standalone skill** (Claude Code or Codex):
 
 ```bash

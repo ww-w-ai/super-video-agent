@@ -179,6 +179,16 @@ Node 22+, `PATH`에 있는 FFmpeg, Playwright용 Chromium이 필요합니다.
 처음 사용할 때 스킬이 자신의 폴더 안에 Node 의존성과 Chromium을 설치하고(`node scripts/setup.mjs`),
 이어서 FFmpeg를 확인합니다.
 
+**Codex 플러그인으로 설치:**
+
+```bash
+codex plugin marketplace add ww-w-ai/marketplace
+codex plugin add super-video-agent@ww-w-ai
+```
+
+새 버전으로 올릴 때는 `codex plugin marketplace upgrade ww-w-ai`를 먼저 실행한 뒤 같은 `add` 명령을 다시
+실행합니다.
+
 **독립 스킬로 설치**(Claude Code 또는 Codex):
 
 ```bash
