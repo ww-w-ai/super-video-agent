@@ -3,7 +3,7 @@
 Save what you use into `reels/<slug>/source/` so the film can be rebuilt without the network.
 Note in `FILM.md` which file or URL each fact came from.
 
-## Script, storyboard (콘티) or narration
+## Script, storyboard or narration
 
 It carries the user's own words, so first ask: use the narration as written, or rework it?
 (Unattended: as written, noted in `FILM.md`.) As written means split long sentences only at

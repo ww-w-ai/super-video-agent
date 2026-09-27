@@ -15,11 +15,11 @@ use, adapt or ignore; none of it is a template.
 
 ## What you must hold
 
-1. **A premise, not a transcript.** Whatever the source is (card news, 콘티, article, URL, topic),
+1. **A premise, not a transcript.** Whatever the source is (card news, storyboard, article, URL, topic),
    it is material. Tell it in your own lines for this film.
    Reorder, cut, merge or add a hook as the film needs. Keep the source's facts and every
    caution; never invent numbers, names or claims the source does not contain.
-   **Exception — the user supplied the words.** If the input includes a script, 콘티 or
+   **Exception — the user supplied the words.** If the input includes a script, storyboard or
    narration, ask before writing: use it as written, or let you rework it? If nobody can answer
    (an unattended run), use it as written and note that in `FILM.md`. Used as written, split long
    sentences only at clause boundaries and give each piece its own picture, so no shot is held

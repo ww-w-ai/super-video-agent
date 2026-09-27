@@ -47,9 +47,12 @@ Before and after (`/` separates two lines; the number is the pause between them)
 
 | Choppy | Flows |
 |---|---|
-| A팀은 쏩니다. 에이스는 세 시즌 동안, 삼점 백오십팔 개. / 이 위 선수의, 세 배. | A팀은 일단 쏘고 봐요. 에이스가 세 시즌 동안 삼점을 백오십팔 개 넣었는데 / (150 ms) 이 위 선수의 세 배예요. |
-| 문제는 실책. 세 팀 최다, 이십 점 이 개. | 문제는 실책이에요. 이십 점 이 개로 세 팀 중 가장 많아요. |
-| B팀은 정반대. 페인트는, 우리 것이다. | B팀은 정반대예요. 페인트존은 자기들 거라는 거죠. |
+| Sales grew. Last quarter, twelve percent. / The fastest, in five years. | Sales grew twelve percent last quarter, / (150 ms) the fastest in five years. |
+| The problem: returns. Highest of three brands, eight point two. | The problem is returns: eight point two percent, the most of the three brands. |
+| Brand B, the opposite. The discount aisle, theirs. | Brand B is the opposite. They own the discount aisle. |
+
+The same holds in every language: write each line the way a person would say it aloud, not as
+notes.
 
 ## Read-out (pass 4)
 

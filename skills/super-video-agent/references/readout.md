@@ -22,8 +22,8 @@ Read the file for the film's language (`plan.json` `meta.lang`, primary subtag):
 | `ru` | `references/readout-ru.md` |
 | `it` | `references/readout-it.md` |
 
-No file for the language: apply the checklist below with what you know of the language, and
-listen to the take.
+No file for the language: apply the checklist below with what you know of the language. Listen
+to the take, or accept it on the STT check when nobody can (item 7).
 
 ## Checklist (every language)
 

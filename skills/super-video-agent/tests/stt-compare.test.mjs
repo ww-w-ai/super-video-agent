@@ -70,16 +70,16 @@ test("tailCleared: empty target is trivially cleared", () => {
 });
 
 test("isGrossMismatch: a misheard name or near-homophone passes", () => {
-  const target = "강철팀은 정반대예요 페인트존은 자기들 거라는 거죠";
-  const heard = "강처림은 정반대예요 페인트존은 자기들 거라는 거죠";
+  const target = "하늘카페는 정반대예요 할인 코너는 자기들 거라는 거죠";
+  const heard = "하늘까페는 정반대예요 할인 코너는 자기들 거라는 거죠";
   assert.equal(isGrossMismatch(target, heard, compareLine({ text: target, heard }).cer), false);
 });
 
 test("isGrossMismatch: a dropped clause, a cut take, babble or nonsense is flagged", () => {
-  const target = "문제는 실책이에요 이십 점 이 개로 세 팀 중 가장 많아요";
+  const target = "문제는 반품이에요 팔 점 이 퍼센트로 세 브랜드 중 가장 많아요";
   const cases = [
-    "문제는 실책이에요", // dropped clause
-    "문제는 실책이에요 이십 점 이 개로 세 팀 중 가장 많아요 그리고 좀 더 말하자면 이건", // babble
+    "문제는 반품이에요", // dropped clause
+    "문제는 반품이에요 팔 점 이 퍼센트로 세 브랜드 중 가장 많아요 그리고 좀 더 말하자면 이건", // babble
     "오늘 날씨가 참 좋네요 산책이나 갈까요 저녁은 뭐 먹지", // nonsense
   ];
   for (const heard of cases) {
