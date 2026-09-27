@@ -17,10 +17,11 @@ Extract: `.docx`/`.hwp` → a headless extractor, `.pdf` → `pdftotext -layout`
 
 ## Card news / slide images
 
-The cards are the design: the user wants their look in motion, not a new look. Copy them to
-`source/cards/NN.png` in reading order, read each one, and follow the card system — layout, palette sampled from the pixels
-(`ffmpeg -i card.png -vf scale=1:1 -f rawvideo -`), type, recurring motifs — only what the
-cards actually use. Crop card imagery into `assets/` to reuse it.
+The cards are material, not the film: use them, do not copy them. Cards played back as they
+are make an obvious film; every scene is composed new (SKILL.md, "What you must hold" 1).
+Copy them to `source/cards/NN.png` in reading order and read each one. Take what helps:
+crop card imagery into `assets/`, sample the palette from the pixels
+(`ffmpeg -i card.png -vf scale=1:1 -f rawvideo -`), note the type and recurring motifs.
 
 ## Image bundle / screenshots
 

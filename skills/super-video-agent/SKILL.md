@@ -15,10 +15,15 @@ use, adapt or ignore; none of it is a template.
 
 ## What you must hold
 
-1. **A premise, not a transcript.** Whatever the source is (card news, storyboard, article, URL, topic),
-   it is material. Tell it in your own lines for this film.
-   Reorder, cut, merge or add a hook as the film needs. Keep the source's facts and every
-   caution; never invent numbers, names or claims the source does not contain.
+1. **The source is material, not the film.** Whatever the source is (card news, storyboard, deck,
+   article, URL, topic), take its words and pictures apart and use them.
+   Words: tell it in your own lines for this film. Reorder, cut, merge or add a hook as the film
+   needs. Keep the source's facts and every caution; never invent numbers, names or claims the
+   source does not contain.
+   Pictures: a deck or page is material to take photos, logos and facts from. Reusing a part is
+   fine; reusing a whole scene as it is, is not. In every scene, at least half of the composition,
+   layout and motion is made new for the film. Two things are never a scene: a capture of a page
+   shown as it is, and a rebuild that keeps the page's card arrangement or positions.
    **Exception — the user supplied the words.** If the input includes a script, storyboard or
    narration, ask before writing: use it as written, or let you rework it? If nobody can answer
    (an unattended run), use it as written and note that in `FILM.md`. Used as written, split long
