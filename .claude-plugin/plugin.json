@@ -1,6 +1,6 @@
 {
   "name": "super-video-agent",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Turn a PDF, essay, card news or topic into a narrated short where every frame is drawn in code. Voice first, read-out rules for any language, one-scene re-renders.",
   "author": {
     "name": "ww-w-ai"

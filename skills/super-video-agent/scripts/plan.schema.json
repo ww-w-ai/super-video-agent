@@ -17,7 +17,6 @@
         "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30 },
         "voice": {
           "type": "object",
-          "required": ["provider"],
           "additionalProperties": false,
           "properties": {
             "provider": {
@@ -25,7 +24,7 @@
               "enum": ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"]
             },
             "voiceId": { "type": "string" },
-            "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.2, Korean 1.3." },
+            "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.1." },
             "model": {
               "type": "string",
               "description": "qwen3: Qwen3-TTS model id, e.g. Qwen/Qwen3-TTS-12Hz-0.6B-Base (default: env SVA_QWEN3_MODEL, else Qwen/Qwen3-TTS-12Hz-1.7B-Base). elevenlabs: model_id (default eleven_multilingual_v2)."

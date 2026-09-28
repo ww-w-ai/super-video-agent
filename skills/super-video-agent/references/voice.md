@@ -8,15 +8,15 @@ and writes `voice/narration.wav` + `voice/timings.json`. The film reads only `ti
 ```
 if the user supplied recordings                    → file        (voice/in/<lineId>.wav|mp3|m4a)
 elif local Qwen3-TTS found and a reference voice    → qwen3       (local clone, Apache-2.0, commercial OK)
-elif FISH_AUDIO_API_KEY is set                      → fish        (hosted; cloned or library voice)
+elif FISH_AUDIO_API_KEY (or FISH_API_KEY) is set    → fish        (hosted; cloned or library voice)
 elif ELEVENLABS_API_KEY is set                      → elevenlabs  (hosted; native word timestamps)
 elif local MeloTTS found                            → melotts     (local, MIT, one Korean speaker, fast)
-elif macOS                                          → say         (zero-setup draft voice)
-else                                                → none        (silent; captions carry it)
+else                                                → stop and list what to set up
 ```
 
 `voice.mjs` picks this order when `--provider` is omitted and prints why. Tell the user which
-provider ran. `say` is for drafts and timing only — viewers notice robotic voices ("can't
+provider ran. `none` (silent; captions carry it) and `say` run only when asked for. `say` is
+macOS only and for drafts and timing only — viewers notice robotic voices ("can't
 understand the voice" is a top public complaint).
 
 | Provider | Setup | License of output | Word timings |
@@ -24,9 +24,9 @@ understand the voice" is a top public complaint).
 | `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default, recommended) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film | Apache-2.0 weights — commercial OK | estimated |
 | `fishspeech` | `SVA_FISH_DIR`; `meta.voice.refTokens` (.npy) + `refText` | **CC-BY-NC-SA-4.0 — non-commercial only**; never for promos or monetized videos | estimated |
 | `melotts` | `SVA_MELO_PYTHON` | MIT | estimated |
-| `fish` | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | estimated |
+| `fish` | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | estimated |
 | `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | per ElevenLabs plan | provider alignment |
-| `say` | `SAY_VOICE` (default `Yuna`) | draft use | estimated |
+| `say` | macOS only; `SAY_VOICE` (default `Yuna`); runs only with `--provider say` | draft use | estimated |
 | `file` / `none` | — | user's own | estimated |
 
 ## Local clone (qwen3) — what can go wrong
@@ -129,7 +129,7 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   off the sound. When a beat must land on the sound itself (a hard cut on a word, a waveform drawn
   on screen), measure it from `voice/narration.wav`: `ffmpeg -af silencedetect=noise=-38dB:d=0.09`
   gives the speech intervals, or take the loudest 10 ms step inside the word's estimated window.
-- Shorts pacing: a Short speaks at `meta.voice.rate` 1.2, Korean 1.3 (ffmpeg atempo, clamped
+- Shorts pacing: the user picks 1.0–1.2× at the start (SKILL.md Flow 1); unanswered, a Short speaks at `meta.voice.rate` 1.1 in every language (ffmpeg atempo, clamped
   0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
   `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather
   than speeding further.

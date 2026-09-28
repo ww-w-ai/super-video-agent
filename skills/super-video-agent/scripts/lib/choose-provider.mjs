@@ -6,7 +6,7 @@
 /**
  * @param {{hasVoiceInDir?:boolean, qwen3PythonFound?:boolean, refAudioSet?:boolean,
  *   fishKeySet?:boolean, elevenKeySet?:boolean, melottsPythonFound?:boolean}} ctx
- * @returns {{provider:string, reason:string}}
+ * @returns {{provider:string|null, reason:string}} provider is null when nothing is set up; reason then lists the options
  */
 export function chooseProvider(ctx) {
   const c = ctx || {};
@@ -17,7 +17,7 @@ export function chooseProvider(ctx) {
     return { provider: "qwen3", reason: "qwen3 python venv found and meta.voice.refAudio is set" };
   }
   if (c.fishKeySet) {
-    return { provider: "fish", reason: "FISH_AUDIO_API_KEY is set" };
+    return { provider: "fish", reason: "a Fish Audio key is set (FISH_AUDIO_API_KEY or FISH_API_KEY)" };
   }
   if (c.elevenKeySet) {
     return { provider: "elevenlabs", reason: "ELEVENLABS_API_KEY is set" };
@@ -25,5 +25,11 @@ export function chooseProvider(ctx) {
   if (c.melottsPythonFound) {
     return { provider: "melotts", reason: "melotts python venv found" };
   }
-  return { provider: "say", reason: "zero-key macOS default" };
+  return {
+    provider: null,
+    reason:
+      "no voice provider is set up: set SVA_QWEN3_PYTHON and meta.voice.refAudio (local clone), " +
+      "FISH_AUDIO_API_KEY or ELEVENLABS_API_KEY (hosted), SVA_MELO_PYTHON (MeloTTS), " +
+      "or put recordings in voice/in/",
+  };
 }

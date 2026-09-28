@@ -126,7 +126,7 @@ TTS 라이브러리를 써도 문제가 해결될 때가 많습니다.
   움직입니다. 그래서 자막이 목소리보다 먼저 나가는 일이 없습니다(`scripts/voice.mjs`).
 - **내 목소리로, 또는 원하는 엔진으로.** Qwen3-TTS로 5–15초짜리 녹음에서 내 목소리를 복제해 내
   컴퓨터에서 돌립니다. API 비용이 들지 않습니다. Fish Audio, ElevenLabs, MeloTTS, 직접 녹음한 파일도
-  쓸 수 있고, 빠른 초안은 macOS `say` 목소리로 만듭니다.
+  쓸 수 있습니다.
 - **줄마다 다시 들어 봅니다.** 음성을 만든 뒤 음성인식이 줄마다 받아써서 대본과 비교합니다. 잘못
   읽었거나, 너무 짧거나, 끝이 잘린 줄은 표시하고 다시 만듭니다.
 - **말끝이 깔끔합니다.** 로컬 음성 모델은 마지막 음절을 자주 자릅니다. 그래서 줄마다 뒤에 짧은 단어를
@@ -247,9 +247,19 @@ NVIDIA GPU가 있는 컴퓨터라면 `SVA_QWEN3_DEVICE=cuda`로 둡니다.
 | `SVA_QWEN3_MODEL` | Qwen3-TTS 모델 이름 (기본값 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | 모든 영상에 다른 음성 모델을 쓸 때. plan의 `meta.voice.model`이 있으면 그쪽이 우선 |
 | `SVA_STT_MODEL` | faster-whisper 모델 이름(기본값 `small`) | 선택 사항 |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | 본인의 ElevenLabs 키와 보이스 | 선택적 호스팅 제공자 |
-| `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` | 본인의 Fish Audio 키와 보이스 | 선택적 호스팅 제공자 |
+| `FISH_AUDIO_API_KEY`(또는 `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` | 본인의 Fish Audio 키와 보이스 | 선택적 호스팅 제공자 |
+| `SAY_VOICE` | macOS `say` 목소리 이름(기본값 `Yuna`) | macOS에서 `--provider say`로 실행할 때만 |
 
-이 변수들이 하나도 없어도 macOS `say` 목소리로 초안은 만들 수 있습니다. 복제는 본인 목소리나 허락받은 목소리만 하세요.
+위 음성 제공자 가운데 하나는 설정해야 합니다. 하나도 없으면 음성 단계가 멈추고 무엇을 설정해야 하는지 알려 줍니다. 복제는 본인 목소리나 허락받은 목소리만 하세요.
+
+**설정하는 곳** — 모두 환경변수로 설정합니다. 쓰는 환경에 맞는 곳 하나를 고르세요.
+
+| 환경 | 설정하는 곳 |
+|---|---|
+| Claude Code (모든 OS) | `~/.claude/settings.json`의 `env`: `{"env": {"ELEVENLABS_API_KEY": "..."}}` |
+| macOS · Linux, zsh | `~/.zshenv`에 `export ELEVENLABS_API_KEY="..."` |
+| Linux, bash | `~/.bashrc`에 `export ELEVENLABS_API_KEY="..."` |
+| Windows (PowerShell) | `setx ELEVENLABS_API_KEY "..."` 실행 후 터미널을 새로 엽니다 |
 
 ### 폰트
 

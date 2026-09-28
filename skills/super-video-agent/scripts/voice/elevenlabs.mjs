@@ -14,7 +14,7 @@ export async function synth({ text, voice, voiceCfg, outPath, lineStart = 0 }) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "ELEVENLABS_API_KEY is not set. Export it, or run with --provider say for a zero-key default."
+      "ELEVENLABS_API_KEY is not set. Export it, or pick another provider with --provider."
     );
   }
   const voiceId = voice || process.env.ELEVENLABS_VOICE_ID;

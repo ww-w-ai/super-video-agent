@@ -340,11 +340,11 @@ test("voice: a line's pauseAfterMs overrides meta.gapMs for the silence after it
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("withShortsRate: a 9:16 film with no rate speaks at 1.2, Korean at 1.3; a set rate and other ratios are untouched", () => {
-  assert.equal(withShortsRate({ ratio: "9:16", lang: "en-US", voice: { provider: "qwen3" } }).rate, 1.2);
-  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: {} }).rate, 1.3);
-  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko" }).rate, 1.3);
-  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: { rate: 1.1 } }).rate, 1.1);
+test("withShortsRate: a 9:16 film with no rate speaks at 1.1 in every language; a set rate and other ratios are untouched", () => {
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "en-US", voice: { provider: "qwen3" } }).rate, 1.1);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: {} }).rate, 1.1);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ja" }).rate, 1.1);
+  assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: { rate: 1.25 } }).rate, 1.25);
   assert.equal(withShortsRate({ ratio: "16:9", lang: "ko-KR", voice: {} }).rate, undefined);
   assert.equal(withShortsRate({ ratio: "9:16", lang: "ja", voice: { provider: "qwen3" } }).provider, "qwen3");
 });

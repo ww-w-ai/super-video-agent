@@ -1,4 +1,4 @@
-// fish.audio TTS provider. Env: FISH_AUDIO_API_KEY, FISH_AUDIO_VOICE_ID.
+// fish.audio TTS provider. Env: FISH_AUDIO_API_KEY (or FISH_API_KEY, the name Fish Audio documents), FISH_AUDIO_VOICE_ID.
 import fs from "node:fs";
 import path from "node:path";
 import { ffmpeg } from "../lib/ffmpeg.mjs";
@@ -9,10 +9,10 @@ export const name = "fish";
  * @param {{text:string, voice?:string, outPath:string}} args
  */
 export async function synth({ text, voice, outPath }) {
-  const apiKey = process.env.FISH_AUDIO_API_KEY;
+  const apiKey = process.env.FISH_AUDIO_API_KEY || process.env.FISH_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "FISH_AUDIO_API_KEY is not set. Export it, or run with --provider say for a zero-key default."
+      "FISH_AUDIO_API_KEY (or FISH_API_KEY) is not set. Export it, or pick another provider with --provider."
     );
   }
   const referenceId = voice || process.env.FISH_AUDIO_VOICE_ID;

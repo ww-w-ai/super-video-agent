@@ -29,8 +29,9 @@ test("chooseProvider: fish before elevenlabs before melotts", () => {
   assert.equal(chooseProvider({ fishKeySet: false, elevenKeySet: false, melottsPythonFound: true }).provider, "melotts");
 });
 
-test("chooseProvider: falls back to say when nothing else is available", () => {
+test("chooseProvider: picks nothing when no provider is set up, and says what to set up", () => {
   const { provider, reason } = chooseProvider({});
-  assert.equal(provider, "say");
-  assert.ok(reason.length > 0);
+  assert.equal(provider, null);
+  assert.match(reason, /SVA_QWEN3_PYTHON/);
+  assert.match(reason, /ELEVENLABS_API_KEY/);
 });

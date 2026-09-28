@@ -31,7 +31,8 @@ voice/narration.wav (48kHz mono), and writes voice/timings.json.
 --provider overrides plan.json meta.voice.provider. If neither is given,
 voice.mjs auto-chooses (design.md §2.3): file (if voice/in/ has audio) ->
 qwen3 (if its python venv is found and meta.voice.refAudio is set) -> fish
--> elevenlabs -> melotts (if its python venv is found) -> say. It prints
+-> elevenlabs -> melotts (if its python venv is found); with none of these it
+stops and lists what to set up. say (macOS) runs only when asked for. It prints
 which provider it picked and why.
 
 --lines id,id  regenerate only these lines' audio; reuse the existing
@@ -96,10 +97,14 @@ export async function main(argv) {
       hasVoiceInDir: fs.existsSync(path.join(paths.voiceDir, "in")),
       qwen3PythonFound: !!resolvePythonPath("SVA_QWEN3_PYTHON", null),
       refAudioSet: !!(plan.meta.voice && plan.meta.voice.refAudio),
-      fishKeySet: !!process.env.FISH_AUDIO_API_KEY,
+      fishKeySet: !!(process.env.FISH_AUDIO_API_KEY || process.env.FISH_API_KEY),
       elevenKeySet: !!process.env.ELEVENLABS_API_KEY,
       melottsPythonFound: !!resolvePythonPath("SVA_MELO_PYTHON", null),
     });
+    if (!choice.provider) {
+      fail(choice.reason);
+      return;
+    }
     providerName = choice.provider;
     process.stdout.write(`provider: auto-chose "${providerName}" (${choice.reason})\n`);
   }
@@ -603,21 +608,18 @@ async function runSttOnly(dir, paths) {
   process.stdout.write(`wrote ${paths.timingsJson}\n`);
 }
 
-// A local voice at its own speed sounds slow in a Short. Korean is set faster
-// than the other languages: at the same rate it still reads as slow.
-const SHORTS_RATE = 1.2;
-const SHORTS_RATE_BY_LANG = { ko: 1.3 };
+// A local voice at its own speed sounds slow in a Short. The same rate for every
+// language: the voice already reads each language at that language's own pace.
+const SHORTS_RATE = 1.1;
 
 /**
  * meta.voice with the Shorts speaking rate filled in: a 9:16 film whose plan
- * sets no meta.voice.rate speaks at SHORTS_RATE (per language where listed).
- * A rate the plan sets always wins.
+ * sets no meta.voice.rate speaks at SHORTS_RATE. A rate the plan sets always wins.
  */
 export function withShortsRate(meta) {
   const voice = meta.voice || {};
   if (voice.rate != null || meta.ratio !== "9:16") return voice;
-  const lang = String(meta.lang || "").toLowerCase().split("-")[0];
-  return { ...voice, rate: SHORTS_RATE_BY_LANG[lang] ?? SHORTS_RATE };
+  return { ...voice, rate: SHORTS_RATE };
 }
 
 // A line's own `rate` (0.5–2) replaces meta.voice.rate for that line, for a

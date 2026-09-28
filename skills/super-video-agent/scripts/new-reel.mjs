@@ -139,7 +139,6 @@ export async function scaffold({ dir, width, height, fps, title, ratio }) {
         lang: "ko-KR",
         ratio,
         fps,
-        voice: { provider: "say" },
         gapMs: 250,
       },
       style: {

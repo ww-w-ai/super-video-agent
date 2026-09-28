@@ -1,4 +1,4 @@
-// macOS `say` provider — zero-key default (design.md §2.3).
+// macOS `say` provider. Runs only when asked for (--provider say or meta.voice.provider); never auto-chosen.
 // synth writes AIFF via `say`, then converts to 48kHz mono PCM16 WAV.
 import { spawn } from "node:child_process";
 import path from "node:path";
