@@ -295,6 +295,24 @@ in plain words starts the skill too.
 The skill first asks whether to follow the Shorts formula (hook first, fast lines, a banded frame with a fixed hook title) or free style, plus the frame size and length if it can't infer them. If you hand it a finished
 script or storyboard, it asks whether to use it as written or rework it.
 
+### Adding image and video models
+
+The default needs no image or video model: every frame is drawn in code. When you want more on
+screen — a photo-real background, a product shot, a few seconds of generated motion — name the tool
+and the shot in the same message.
+
+The request below is **an example only**. Swap in the tools and routes you use; the skill does not
+ship with or default to any of them.
+
+```
+/super-video-agent Make a 60-second promo from this deck. Generate the opening background with
+Codex image generation, and a 5-second product clip with Seedance through browser-use.
+```
+
+Say how to reach each tool (a CLI, an API key, or a browser you are logged in to), or generate the
+files yourself and hand them over. Either way, generated media is material: the
+skill composes each scene around it and records every file's source and license in `FILM.md`.
+
 ## Credits
 
 Super Video Agent started from what these Reddit posts showed Claude Opus 5.5 can do when it is
