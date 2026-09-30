@@ -173,7 +173,7 @@ own effort level. Measured on the 88-second film:
 | Stage | Output | Effort | Cost |
 |---|---|---|---|
 | Script | `plan.json`, `FILM.md` (facts with sources) | xhigh | $4.05 |
-| Review | locked `plan.json` after five passes | low | $1.75 |
+| Review | locked `plan.json` after six passes | low | $1.75 |
 | Voice | `voice/` with measured `timings.json` | low | $0 (local) |
 | Film | `reel.html`, `out/final-<timestamp>.mp4` | xhigh | $16.34 |
 

@@ -167,7 +167,7 @@ TTS 라이브러리를 써도 문제가 해결될 때가 많습니다.
 | 단계 | 산출물 | 노력 수준 | 비용 |
 |---|---|---|---|
 | 대본 | `plan.json`, `FILM.md` (출처가 달린 사실) | xhigh | $4.05 |
-| 검토 | 5회 검토를 거쳐 잠근 `plan.json` | low | $1.75 |
+| 검토 | 6회 검토를 거쳐 잠근 `plan.json` | low | $1.75 |
 | 음성 | 측정된 `timings.json`이 들어 있는 `voice/` | low | $0 (로컬) |
 | 영상 | `reel.html`, `out/final-<timestamp>.mp4` | xhigh | $16.34 |
 

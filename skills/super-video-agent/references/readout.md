@@ -2,7 +2,7 @@
 
 A voice model reads the spelling. Numbers, units, versions, acronyms and product names are
 written one way and said another, and every language has sounds its spelling hides. Script
-review pass 4 (`references/script-review.md`) fixes these in the line's `say` text before
+review pass 5 (`references/script-review.md`) fixes these in the line's `say` text before
 synthesis. `text` stays as written: it is the caption.
 
 ## Which file to read
