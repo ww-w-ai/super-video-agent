@@ -83,6 +83,14 @@ not actually cut off.
                      take came from a --takes m1,m2,... tone comparison, also
                      writes the picked mark to plan.json meta.voice.delivery
                      so the remaining lines are made in it.
+--use id=<wav>,id=<wav>
+                     install finished line audio from anywhere (another
+                     reel's voice/line-<id>.wav, a comparison folder, a
+                     recording) without re-synthesis. Taken as final: the
+                     film's speed is NOT applied again (unlike --pick, whose
+                     takes are raw). Leveled, STT-checked, and
+                     narration.wav/timings.json rebuilt as --lines does;
+                     add --retime when its length differs from the old line.
 `;
 
 const PROVIDERS = ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"];
@@ -148,7 +156,7 @@ export async function main(argv) {
     return;
   }
 
-  const gapMs = plan.meta.gapMs == null ? 250 : plan.meta.gapMs;
+  const gapMs = plan.meta.gapMs == null ? 700 : plan.meta.gapMs;
   const tailSec = plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec;
   const voiceCfg = withFishConfidentDelivery(withShortsRate(plan.meta), plan.meta, providerName);
   if (voiceCfg.rate != null && (plan.meta.voice || {}).rate == null) {
@@ -178,6 +186,15 @@ export async function main(argv) {
       fail(refError);
       return;
     }
+  }
+
+  if (flags.use) {
+    try {
+      await runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
   }
 
   if (flags.pick) {
@@ -276,6 +293,9 @@ export async function synthesizeAll({
   retryFlagged = 1,
   keepTiming = true,
   takeWavs = null,
+  // Line ids whose takeWavs file is finished audio (--use): already at the
+  // film's speed, so no tempo is applied again.
+  finishedIds = null,
 }) {
   ensureDir(paths.voiceDir);
   // --lines: each regenerated line's old slot length, when it keeps its slot.
@@ -371,7 +391,7 @@ export async function synthesizeAll({
     }
 
     const wavPath = synthResult.wavPath;
-    if (!reused) await applyLineTempo(wavPath, line, voiceCfg, provider);
+    if (!reused && !(finishedIds && finishedIds.has(line.id))) await applyLineTempo(wavPath, line, voiceCfg, provider);
     if (!reused && voiceCfg.levelLines !== false) {
       const leveled = await levelLineWav(wavPath);
       process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
@@ -1022,6 +1042,61 @@ export function parsePick(pickStr) {
       }
       return { id: id.trim(), k: Number(kStr.trim()) };
     });
+}
+
+/**
+ * `--use id=<wav>,id=<wav>` → [{id, file}]. The file is split at the first
+ * "=" only, so a path may itself contain "=".
+ */
+export function parseUse(useStr) {
+  return String(useStr)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const at = pair.indexOf("=");
+      const id = at > 0 ? pair.slice(0, at).trim() : "";
+      const file = at > 0 ? pair.slice(at + 1).trim() : "";
+      if (!id || !file) throw new Error(`--use: invalid entry "${pair}" (expected id=<path to .wav>)`);
+      return { id, file };
+    });
+}
+
+/**
+ * `--use id=<wav>`: installs finished line audio made elsewhere — another
+ * reel's voice/line-<id>.wav, a take from a comparison folder, a recording —
+ * without re-synthesis. The file is taken as final: no tempo is applied
+ * again (a --takes take is raw and gets the film's speed on --pick; a
+ * finished line already has it). It is still leveled and STT-checked, and
+ * narration.wav/timings.json are rebuilt as --lines does.
+ */
+async function runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+  const uses = parseUse(flags.use).map((u) => ({ ...u, file: path.resolve(u.file) }));
+  const known = new Set(plan.lines.map((l) => l.id));
+  const unknown = uses.filter((u) => !known.has(u.id));
+  if (unknown.length) throw new Error(`--use: unknown line id(s): ${unknown.map((u) => u.id).join(", ")}`);
+  const missing = uses.filter((u) => !fs.existsSync(u.file));
+  if (missing.length) throw new Error(`--use: file(s) not found: ${missing.map((u) => u.file).join(", ")}`);
+  const result = await synthesizeAll({
+    dir,
+    paths,
+    lines: plan.lines,
+    provider: providerMod,
+    providerName,
+    voiceCfg,
+    pronounce: plan.meta.pronounce,
+    lang: plan.meta.lang || "ko-KR",
+    gapMs,
+    tailSec,
+    onlyLineIds: uses.map((u) => u.id),
+    sttEnabled,
+    retryFlagged: 0,
+    keepTiming: !flags.retime,
+    takeWavs: new Map(uses.map((u) => [u.id, u.file])),
+    finishedIds: new Set(uses.map((u) => u.id)),
+  });
+  writeJson(paths.timingsJson, result.timings);
+  process.stdout.write(`installed finished audio: ${uses.map((u) => `${u.id} <- ${u.file}`).join(", ")}\n`);
 }
 
 /**

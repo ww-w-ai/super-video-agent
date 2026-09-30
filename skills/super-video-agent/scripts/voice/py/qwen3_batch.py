@@ -49,6 +49,29 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+def import_qwen_tts_quietly():
+    """Import qwen_tts without the SoX banner.
+
+    qwen_tts imports the `sox` package, which runs `sox -h` in a shell at
+    import and logs "SoX could not be found!" when the binary is absent.
+    qwen3 synthesis never calls SoX, so that banner (and the shell's
+    "sox: command not found") is noise. Only this import is muted; an import
+    error still raises with its traceback.
+    """
+    import logging
+    logging.getLogger("sox").setLevel(logging.ERROR)
+    saved = os.dup(2)
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, 2)
+        from qwen_tts import Qwen3TTSModel
+    finally:
+        os.dup2(saved, 2)
+        os.close(devnull)
+        os.close(saved)
+    return Qwen3TTSModel
+
+
 def tail_peak(wav, sr):
     """RMS over the final TAIL_MS of the waveform."""
     import numpy as np
@@ -236,7 +259,7 @@ def main():
 
     import torch
     import soundfile as sf
-    from qwen_tts import Qwen3TTSModel
+    Qwen3TTSModel = import_qwen_tts_quietly()
 
     log(f"[qwen3_batch] loading model once ({model_id}, {device})...")
     # clone on MPS/CPU requires float32 (float16/bfloat16 -> inf/nan crash).

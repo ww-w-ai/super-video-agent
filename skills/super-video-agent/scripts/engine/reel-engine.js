@@ -252,13 +252,30 @@
   const SAFE_FRACTION_OTHER = 0.05;
   let _safeKind = "shorts";
 
+  // setSafeArea("shorts" | "ads" | "none" | {top, bottom, left, right}).
+  // The presets are for platforms that draw buttons over the video. "none"
+  // frees the whole frame (a messenger, a TV, a site player, the film's own
+  // layout); an object sets the film's own margins in canvas px.
   function setSafeArea(kind) {
-    if (!SAFE_MARGINS_9x16[kind]) throw new Error("unknown safe area: " + kind);
+    if (kind && typeof kind === "object") {
+      const m = { top: kind.top || 0, bottom: kind.bottom || 0, left: kind.left || 0, right: kind.right || 0 };
+      if (![m.top, m.bottom, m.left, m.right].every((v) => Number.isFinite(v) && v >= 0)) {
+        throw new Error("safe area margins must be numbers >= 0");
+      }
+      _safeKind = m;
+      return;
+    }
+    if (kind !== "none" && !SAFE_MARGINS_9x16[kind]) throw new Error("unknown safe area: " + kind);
     _safeKind = kind;
   }
 
   // safeArea(width, height) -> {x, y, w, h} of the text-safe box.
   function safeArea(width, height) {
+    if (_safeKind === "none") return { x: 0, y: 0, w: width, h: height };
+    if (typeof _safeKind === "object") {
+      const m = _safeKind;
+      return { x: m.left, y: m.top, w: width - m.left - m.right, h: height - m.top - m.bottom };
+    }
     if (height > width * 1.5) {
       const m = SAFE_MARGINS_9x16[_safeKind];
       const sx = width / 1080;

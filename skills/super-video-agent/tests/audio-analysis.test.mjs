@@ -75,6 +75,17 @@ test("findOnsetOffsetMs: a late onset reports a positive offset in ms", () => {
   assert.ok(offset > 30 && offset < 90, `offset=${offset}ms, expected ~${lagSec * 1000}ms`);
 });
 
+test("findOnsetOffsetMs: a stem whose sound peaks in its first 10ms (mark at t=0) is found", () => {
+  // A stamp-like hit: loudest at sample 0, decaying. The stem starts on its
+  // own event, so the buffer holds no quiet window before it.
+  const n = Math.round(0.2 * SR);
+  const buf = new Float32Array(n);
+  for (let i = 0; i < n; i++) buf[i] = Math.sin((2 * Math.PI * 800 * i) / SR) * Math.exp(-i / (0.004 * SR));
+  const offset = findOnsetOffsetMs(buf, SR, 0, 0.15);
+  assert.ok(offset != null, "expected the onset at the stem head, got null");
+  assert.ok(Math.abs(offset) <= 10, `offset=${offset}ms, expected ~0`);
+});
+
 test("findOnsetOffsetMs: no rise anywhere in the window returns null", () => {
   const buf = silence(2);
   const offset = findOnsetOffsetMs(buf, SR, 1.0, 0.15);

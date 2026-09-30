@@ -64,7 +64,7 @@
           }
         },
         "pronounce": { "type": "object", "description": "Pronunciation dictionary: {\"<word>\": {\"say\": \"<respelling or replacement>\", \"ipa\": \"<IPA>\"}}. Applied to spoken text only; captions keep `text`. A line's entries override meta.pronounce. See references/readout.md." },
-        "gapMs": { "type": "integer", "minimum": 0, "default": 250 },
+        "gapMs": { "type": "integer", "minimum": 0, "default": 700 },
         "tailSec": {
           "type": "number",
           "minimum": 0,
@@ -114,7 +114,7 @@
           "pauseAfterMs": {
             "type": "integer",
             "minimum": 0,
-            "description": "Silence after this line in ms, overriding meta.gapMs. Short (about 120-200) when the next line continues the same sentence or thought; longer at a scene or topic change."
+            "description": "Silence after this line in ms, overriding meta.gapMs. About 400 when the next line continues the same sentence or thought, meta.gapMs (700) for a new point, about 1000 at a scene or topic change."
           },
           "rate": {
             "type": "number",

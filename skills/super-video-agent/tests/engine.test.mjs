@@ -262,6 +262,18 @@ test("safeArea: 9:16 shorts and ads boxes; other ratios keep 5% margins", () => 
   assert.deepEqual(Reel.safeArea(1920, 1080), { x: 96, y: 54, w: 1728, h: 972 });
 });
 
+test("safeArea: 'none' frees the whole frame; an object sets the film's own margins", () => {
+  Reel.setSafeArea("none");
+  assert.deepEqual(Reel.safeArea(1080, 1920), { x: 0, y: 0, w: 1080, h: 1920 });
+  assert.deepEqual(Reel.safeArea(1920, 1080), { x: 0, y: 0, w: 1920, h: 1080 });
+  Reel.setSafeArea({ top: 60, bottom: 100, left: 40, right: 40 });
+  assert.deepEqual(Reel.safeArea(1080, 1920), { x: 40, y: 60, w: 1000, h: 1760 });
+  assert.throws(() => Reel.setSafeArea({ top: -1 }));
+  assert.throws(() => Reel.setSafeArea("unknown-preset"));
+  Reel.setSafeArea("shorts");
+  assert.deepEqual(Reel.safeArea(1080, 1920), { x: 80, y: 200, w: 808, h: 1270 });
+});
+
 test("centeredSafeArea: 9:16 box shares the frame's centre line; caption centres on x 540", () => {
   assert.deepEqual(Reel.centeredSafeArea(1080, 1920), { x: 192, y: 200, w: 696, h: 1270 });
   assert.deepEqual(Reel.centeredSafeArea(1920, 1080), Reel.safeArea(1920, 1080));

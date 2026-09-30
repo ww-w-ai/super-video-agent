@@ -18,8 +18,8 @@ use, adapt or ignore; none of it is a template.
 1. **The source is material, not the film.** Whatever the source is (card news, storyboard, deck,
    article, URL, topic), take its words and pictures apart and use them.
    Words: tell it in your own lines for this film. Reorder, cut, merge or add a hook as the film
-   needs. Keep the source's facts and every caution; never invent numbers, names or claims the
-   source does not contain.
+   needs. When a source is given, keep its facts and every caution, and never invent numbers,
+   names or claims it does not contain.
    Pictures: a deck or page is material to take photos, logos and facts from. Reusing a part is
    fine; reusing a whole scene as it is, is not. In every scene, at least half of the composition,
    layout and motion is made new for the film. Two things are never a scene: a capture of a page
@@ -33,7 +33,7 @@ use, adapt or ignore; none of it is a template.
    Its measured line and word times (`voice/timings.json`) are the film's timeline; build every
    scene to fit them. Never time scenes by estimate and fit the voice afterwards — synthetic
    voices land seconds away from any estimate. Review the script in passes before any synthesis
-   (`references/script-review.md`: facts, story, spoken wording, read-out, final read) so the
+   (`references/script-review.md`: facts, story, spoken wording, listener, read-out, final read) so the
    voice is made once.
    Every wording change after synthesis costs a re-synthesis and shifts every line after it.
    After the voice is made, change a line only to fix a real error (an STT flag, a misread),
@@ -58,7 +58,8 @@ use, adapt or ignore; none of it is a template.
    (3D/WebGL drawn on CPU, heavy effects) or several languages share one picture, for a 9:16
    film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
    opening line first (default when nobody can answer: no), if not given; start
-   FILM.md (facts with where they came from, cautions, scope, the style choice, the tone
+   FILM.md (the listener: who watches and what they should think or do, and who speaks if a
+   character does; facts with where they came from, cautions, scope, the style choice, the tone
    choice, decisions, what the owner must supply)
 2. Write the lines → plan.json, and while writing, decide what each visible event sounds like in
    this film. Look in the asset library first (`assets.mjs search`) and use a sound as a line
@@ -164,10 +165,13 @@ When the user asks for 3D in any words ("3D", "like a video game", "WebGL", "Thr
 3D film: scaffold with `new-reel.mjs --3d`, render picture first, and follow `references/3d.md`.
 A short request is enough; fill in the camera move, the places and the look yourself.
 
-In either style, pictures fill the whole frame, but text and anything the viewer must see stay
-inside the platform safe area, clear of the player's buttons (`references/pipeline.md`, "Safe
-area"; `textBlock` and `caption` check it for you). Keep the composition centred on the frame
-(x 540): avoiding the button column must not shift titles, captions or pictures left.
+In either style, pictures fill the whole frame. Where the film is shown decides how much of it
+text may use: on a platform that draws buttons over the video (Shorts, TikTok, Reels), text and
+anything the viewer must see stay inside that platform's safe area (`references/pipeline.md`,
+"Safe area"; `textBlock` and `caption` check it for you). Where nothing covers the video (a
+messenger, a TV, a site player), `Reel.setSafeArea("none")` frees the whole frame, or set the
+film's own margins. Keep the composition centred on the frame (x 540): avoiding a button column
+must not shift titles, captions or pictures left.
 
 ## Hard lines (these protect the owner, not the look)
 

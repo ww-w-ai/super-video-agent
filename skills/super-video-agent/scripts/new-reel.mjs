@@ -74,6 +74,8 @@ opening reel.html:
   mkdir -p ${path.join(dir, "assets", "vendor")}
   cp ${path.join(dir, "node_modules", "three", "build", "three.module.js")} ${path.join(dir, "assets", "vendor")}/
   cp ${path.join(dir, "node_modules", "three", "build", "three.core.js")} ${path.join(dir, "assets", "vendor")}/
+Loaders and other addons (e.g. GLTFLoader for GLB models) need an import map
+and their own copy step: references/3d.md "Install three.js".
 Record the installed version and its MIT license in FILM.md (references/3d.md).
 `;
 }
@@ -168,7 +170,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
         lang: "ko-KR",
         ratio,
         fps,
-        gapMs: 250,
+        gapMs: 700,
         ...(threeD ? { look: "3d" } : {}),
       },
       style: {

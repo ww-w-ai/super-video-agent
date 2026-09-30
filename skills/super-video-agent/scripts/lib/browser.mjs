@@ -54,10 +54,19 @@ export async function openReel(url, opts = {}) {
     errors.push(msg.text());
   });
   await page.goto(url, { waitUntil: "load" });
-  await page.waitForFunction(() => !!(window.__reel && window.__reel.ready));
-  await page.evaluate(async () => {
-    await window.__reel.ready;
-  });
+  // A page that throws before assigning window.__reel (or whose `ready`
+  // rejects) would otherwise surface only as a 30s timeout; name the page's
+  // own error so the cause is visible.
+  try {
+    await page.waitForFunction(() => !!(window.__reel && window.__reel.ready));
+    await page.evaluate(async () => {
+      await window.__reel.ready;
+    });
+  } catch (e) {
+    await browser.close();
+    const pageErrors = errors.length ? `\npage error(s):\n  ${errors.join("\n  ")}` : "\n(no page error was reported)";
+    throw new Error(`reel page did not become ready: ${e.message.split("\n")[0]}${pageErrors}`);
+  }
   const meta = await page.evaluate(() => {
     const r = window.__reel;
     return {

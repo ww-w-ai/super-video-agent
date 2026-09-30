@@ -79,6 +79,10 @@ for that line; set `meta.voice.delivery: "none"` to turn the default off for the
 
 ## Local clone (qwen3) — what can go wrong
 
+Library notices in the qwen3 log are not errors and need no action: "flash-attn is not installed"
+(it only affects speed on CUDA) and librosa/audioread deprecation warnings. The SoX banner the
+`sox` package prints on import is muted by `qwen3_batch.py`; qwen3 never uses SoX.
+
 Local clone models sometimes never stop (no end token), return a 0.3 s fragment, or cut the last
 syllable. `voice.mjs` generates each line within a time budget (`meta.voice.budgetSec`, default 20),
 speaks every line with a one-word slate in its own language ("<line>. 끝.", "<line>. End.",
@@ -138,6 +142,17 @@ take 1 installs automatically (copied into `voice/line-<id>.wav`,
 narration.wav/timings.json rebuilt as `--lines` does). Pick a different one on a later run with
 `--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild. Picking a take from a
 tone comparison also writes that mark to `meta.voice.delivery`, so every later line is made in it.
+
+A line made somewhere else — tone variants in a scratch reel, another provider, the other version
+of an A/B, a recording — goes in with `--use <id>=<wav>[,<id>=<wav>]` (add `--retime` when its
+length differs). The file is taken as finished: the film's speed is not applied again. Takes in
+`voice/takes/` are raw and get the speed on `--pick`; a finished `voice/line-<id>.wav` already has
+it, so copying one into `takes/` and picking it speeds it up twice.
+
+Punctuation (`!`, `?`) and delivery marks do not reliably set how a line ends, and engines
+without tags drop the marks. When a line needs a different tone, vary the wording as well — a
+shouted name, a lead-in, a beat before the last word — make the variants in a scratch reel, let
+the user listen, and install the pick with `--use`.
 
 Never runs TTS in parallel — one request at a time, even across takes.
 
@@ -201,7 +216,7 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - Every line is leveled to -16 LUFS integrated (true peak <= -1.5 dBTP), a single measured gain
   per line, before `narration.wav`/`timings.json` are built — set `meta.voice.levelLines: false`
   to turn this off. `dub.mjs` levels each dub line's clip the same way before placing it.
-- Head 0.4 s, gap `meta.gapMs` (default 250 ms) between lines, tail 0.4 s. A line's own
+- Head 0.4 s, gap `meta.gapMs` (default 700 ms) between lines, tail 0.4 s. A line's own
   `pauseAfterMs` replaces the gap after it: short when the next line continues the thought, long
   at a scene change (`references/script-review.md`, "Narration that flows"). Changing pauses
   needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips.

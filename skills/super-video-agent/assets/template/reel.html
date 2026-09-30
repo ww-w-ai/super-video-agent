@@ -323,6 +323,13 @@
     });
   }
 
+  // ORDER TRAP: `ready` starts its loaders right here, before the scene
+  // block below has run. A loader you add (images, a paper texture) may
+  // call a function from that block — functions are hoisted — but a `var`
+  // it reads there (an image-name list, a config object) is still
+  // `undefined` at this point, and the throw leaves window.__reel unset.
+  // Declare such values above this line, or start the loader one tick later
+  // (Promise.resolve().then(loadMyImages)).
   var ready = Promise.all([
     loadDeclaredFonts(),
     loadFilmKey(),
@@ -332,6 +339,7 @@
   // ---- scene ---------------------------------------------------------
   // Replace this. Draw your film in the medium you chose (medium.md).
   // Nothing here is a style suggestion.
+  // Code here runs after `ready` was built above — see ORDER TRAP.
   //
   // This stub only proves the plumbing works: it clears to a neutral grey,
   // draws the current line's text plainly at the centre, and applies one

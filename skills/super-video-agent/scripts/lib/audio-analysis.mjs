@@ -110,8 +110,12 @@ export function findOnsetOffsetMs(samples, sampleRate, markAtSec, windowSec) {
   const RISE_EPSILON = 1e-6; // ignore near-zero "rises" in silence — that's noise floor, not an onset
   let bestRise = RISE_EPSILON;
   let bestIdx = null;
-  let prevRms = rmsWindow(samples, searchStart, winLen);
-  for (let i = searchStart + winLen; i + winLen <= searchEnd; i += winLen) {
+  // A window that reaches before the buffer's first sample (a stem that
+  // starts on its own event, a mark at t=0) compares its first 10ms against
+  // silence; otherwise a sound peaking in that first window shows no rise.
+  const startsAtBufferHead = centerIdx - Math.round(win * sampleRate) <= 0;
+  let prevRms = startsAtBufferHead ? 0 : rmsWindow(samples, searchStart, winLen);
+  for (let i = startsAtBufferHead ? searchStart : searchStart + winLen; i + winLen <= searchEnd; i += winLen) {
     const r = rmsWindow(samples, i, winLen);
     if (r - prevRms > bestRise) {
       bestRise = r - prevRms;

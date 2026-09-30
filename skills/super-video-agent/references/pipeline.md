@@ -48,18 +48,24 @@ rules come first.
 |---|---|
 | `boil(key, t, {hz, amp, rot, moving})` | per-element stepped jitter → `{dx, dy, rot}`; `moving` (0..1, default 0) scales jitter toward zero |
 | `moving(t, intervals, {settleSec})` | 0..1: 1 while `t` is inside a `{start, end}` move interval, ramping to 0 over `settleSec` (default 0.15s) on either side — feed into `boil`'s `moving` opt |
-| `wobblePath(points, key, t, opts)` | hand-drawn shape jitter |
+| `wobblePath(points, key, t, opts)` | hand-drawn shape jitter. `points` are `{x, y}` objects (not `[x, y]` arrays); returns a denser `{x, y}` array — draw it with `p.x`, `p.y` |
 | `hold(t, step)` | quantise time (animate on twos) |
 | `rng(key)` / `hash(str)` | the only randomness |
-| `drawOn(ctx, path, u, key, t, opts)` | reveal a stroke in point order |
+| `drawOn(ctx, path, u, key, t, opts)` | reveal a stroke in point order. `path` is `{x, y}` objects; stroke colour and width come from `opts.color` / `opts.width` (default `#111`, 3), not from `ctx.strokeStyle` |
 | `imageCover(ctx, img, x, y, w, h)` | cover-fit an image into a box |
 | `textBlock(ctx, text, x, y, w, h, opts)` | wrapped text; a `\n` in the text forces a break where the automatic wrap splits badly; overflow and text outside the safe area recorded to `issues()` |
 | `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area, centred on the frame |
-| `safeArea(w, h)` / `setSafeArea("shorts" \| "ads")` | the box text must stay inside |
+| `safeArea(w, h)` / `setSafeArea("shorts" \| "ads" \| "none" \| {top, bottom, left, right})` | the box text must stay inside; `"none"` = the whole frame, an object = the film's own margins in canvas px |
 | `centeredSafeArea(w, h)` | the part of that box centred on the frame — for centred titles and captions |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
 
 ### Safe area
+
+The safe area follows where the film is shown; it is not a rule of the frame size. A film for a
+messenger, a TV or a site player has no buttons over it: call `Reel.setSafeArea("none")` at page
+load (the whole frame is usable) or pass the film's own margins
+(`Reel.setSafeArea({top: 60, bottom: 100, left: 40, right: 40})`). The presets below are for
+platforms that draw over the video.
 
 Shorts, TikTok and Reels draw their own buttons over the video. Pictures, backgrounds and motion
 may fill the whole frame — an empty edge looks unfinished. Text, and anything the viewer must
