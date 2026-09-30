@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Capture frames via seek(t), encode per-segment H.264, concat into the
 // video track, mux narration (+ optional page SFX + library sound cues,
-// design.md §2.5) with loudnorm (design.md §2.3). Segments (shots) are
+// design.md §2.5), then two-pass masters the mix to -16 LUFS with a single
+// static gain (design.md §2.3, scripts/lib/audio-mix.mjs). Segments (shots) are
 // cached under out/segments/<quality>/
 // and reused when their frame range, encoder settings and probe frame
 // hashes still match — see references/pipeline.md "Re-rendering part of a
@@ -10,12 +11,13 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { reelPaths, writeJson } from "./lib/reeldir.mjs";
+import { reelPaths, writeJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
 import { run, ffmpeg, spawnImagePipeEncoder, probeDuration, probeFrameCount } from "./lib/ffmpeg.mjs";
 import { writeWavPCM16 } from "./lib/wav.mjs";
-import { buildCueMixFilter, LOUDNORM } from "./lib/audio-mix.mjs";
+import { buildCueMixFilter, measureMasterGain } from "./lib/audio-mix.mjs";
+import { withTransportRetry } from "./lib/retry.mjs";
 import {
   computeSegments,
   probeFrameIndices,
@@ -24,14 +26,14 @@ import {
   validateOnly,
 } from "./lib/segments.mjs";
 
-const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan]
+const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan] [--no-captions]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
 joining them (concat demuxer, -c copy) into the video track, then muxing
 voice/narration.wav (+ page SFX via __reel.audio.renderSfx, + any library
-sound cues via __reel.soundCues(), design.md §2.5) with loudnorm I=-16,
-aac 192k.
+sound cues via __reel.soundCues(), design.md §2.5), mastered to -16 LUFS
+with a single static gain (two-pass, not loudnorm), aac 192k.
 
 --preview     half resolution, crf 28, preset veryfast -> out/preview-<YYYYMMDD-HHMMSS>.mp4
               (default: full resolution, crf 18, preset medium -> out/final-<YYYYMMDD-HHMMSS>.mp4)
@@ -43,6 +45,17 @@ aac 192k.
               (no render happens) if a segment outside --only no longer
               matches its stored frame range.
 --plan        print REUSE/RENDER per segment and exit without rendering.
+--no-captions loads the page with ?captions=0 (references/pipeline.md
+              "Picture first"), so window.__reel.captionsOn() is false and
+              Reel.caption() draws nothing. Segments go to
+              out/segments/<final|preview>-nocap/, separate from captioned
+              segments. Does not require voice/narration.wav. Writes
+              out/picture-<YYYYMMDD-HHMMSS>.mp4 (video only, no audio) +
+              out/picture.mp4, the page's own sound bed (renderSfx + library
+              cues, no narration) to out/picture-<stamp>.bed.wav +
+              out/picture.bed.wav, and copies the clock it was built on to
+              out/picture.timings.json. Use dub.mjs to lay a language's
+              caption + voice over the picture afterwards.
 
 A segment is reused only when its stored frame range, fps, size and three
 probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
@@ -63,8 +76,13 @@ export async function main(argv) {
     fail(`no reel.html in ${dir} — run new-reel.mjs first`);
     return;
   }
-  if (!fs.existsSync(paths.narrationWav)) {
+  const noCaptions = !!flags["no-captions"];
+  if (!noCaptions && !fs.existsSync(paths.narrationWav)) {
     fail(`no voice/narration.wav in ${dir} — run voice.mjs first`);
+    return;
+  }
+  if (!fs.existsSync(paths.timingsJson)) {
+    fail(`no voice/timings.json in ${dir} — run voice.mjs first`);
     return;
   }
 
@@ -75,7 +93,7 @@ export async function main(argv) {
 
   const started = Date.now();
   try {
-    const result = await render({ dir, paths, preview, workers, only, plan });
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions });
     const elapsed = (Date.now() - started) / 1000;
     if (result.planOnly) {
       process.stdout.write(`--plan: ${result.decisions.length} segment(s), nothing rendered\n`);
@@ -84,6 +102,7 @@ export async function main(argv) {
     const achievedFps = result.frames / elapsed;
     process.stdout.write(
       `wrote ${result.outPath}\n` +
+        (result.bedPath ? `wrote ${result.bedPath}\n` : "") +
         `frames: ${result.frames}  seconds: ${result.seconds.toFixed(3)}  ` +
         `render time: ${elapsed.toFixed(2)}s  fps achieved: ${achievedFps.toFixed(2)}\n`
     );
@@ -92,10 +111,32 @@ export async function main(argv) {
   }
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false }) {
+/**
+ * The URL render.mjs opens the reel at. `?captions=0` (design.md, engine
+ * captionsOn()) makes Reel.caption() draw nothing — a picture-first render
+ * (--no-captions) has no narration or language yet, only the picture.
+ * @param {string} baseUrl serveDir()'s server.url
+ * @param {boolean} noCaptions
+ */
+export function pictureUrl(baseUrl, noCaptions) {
+  return noCaptions ? `${baseUrl}?captions=0` : baseUrl;
+}
+
+/**
+ * out/segments/<name>/ for this render: "final"/"preview" as before, or
+ * "final-nocap"/"preview-nocap" for --no-captions, so a picture-first
+ * render's segments never get reused for (or reuse) a captioned render's.
+ */
+export function segmentDirName(quality, noCaptions) {
+  return noCaptions ? `${quality}-nocap` : quality;
+}
+
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false }) {
   const server = await serveDir(dir);
+  const pageUrl = pictureUrl(server.url, noCaptions);
+  const openAt = { url: pageUrl }; // same shape as `server` for the helpers below; only .url is read
   try {
-    const meta = await probeMeta(server.url);
+    const meta = await probeMeta(pageUrl);
     const fps = meta.fps;
     const duration = meta.duration;
 
@@ -103,7 +144,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
 
     const quality = preview ? "preview" : "final";
-    const segDir = path.join(paths.outDir, "segments", quality);
+    const segDir = path.join(paths.outDir, "segments", segmentDirName(quality, noCaptions));
     fs.mkdirSync(segDir, { recursive: true });
 
     const targetWidth = preview ? Math.round(meta.width / 2) : meta.width;
@@ -115,14 +156,14 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
     if (onlyIds) validateOnlyOrThrow({ segments, onlyIds, segDir });
 
-    const decisions = await decideAll({ server, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers });
+    const decisions = await decideAll({ server: openAt, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers });
     for (const d of decisions) {
       process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
     }
 
     if (plan) return { planOnly: true, decisions };
 
-    await renderNeeded({ server, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
+    await renderNeeded({ server: openAt, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
 
     const videoOnlyPath = path.join(paths.outDir, "_video.mp4");
     await concatMp4(
@@ -131,16 +172,31 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     );
 
     const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
+
+    if (noCaptions) {
+      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions });
+    }
+
     await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
 
     let sfxPath;
-    const sfx = await maybeRenderSfx(server, paths);
+    const sfx = await maybeRenderSfx(openAt, paths);
     if (sfx) sfxPath = sfx;
 
-    const cueInputs = await resolveSoundCues(server, paths.root);
+    const cueInputs = await resolveSoundCues(openAt, paths.root);
+    const narrationWindows = narrationWindowsFor(dir);
+    const sfxDuckDb = sfxDuckDbFor(dir);
 
     const stampedPath = path.join(paths.outDir, `${quality}-${timestamp()}.mp4`);
-    await muxAudio({ videoOnlyPath, narrationPath: paths.narrationWav, sfxPath, cueInputs, outPath: stampedPath });
+    await muxAudio({
+      videoOnlyPath,
+      narrationPath: paths.narrationWav,
+      sfxPath,
+      cueInputs,
+      outPath: stampedPath,
+      narrationWindows,
+      sfxDuckDb,
+    });
     fs.rmSync(videoOnlyPath, { force: true });
     if (sfxPath) fs.rmSync(sfxPath, { force: true });
     const outPath = pointLatest(paths.outDir, `${quality}.mp4`, stampedPath);
@@ -151,8 +207,55 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
   }
 }
 
+/**
+ * Finishes a --no-captions ("picture first", references/pipeline.md) render:
+ * the joined video track becomes out/picture-<stamp>.mp4 (video only, no
+ * audio — no narration exists yet, only the page's own sound bed), a
+ * separate out/picture-<stamp>.bed.wav carries renderSfx + library cues
+ * mixed exactly as muxAudio mixes them (no narration channel), and
+ * voice/timings.json (the clock the picture was built on) is copied to
+ * out/picture.timings.json so dub.mjs can lay a language's caption + voice
+ * over the picture later without re-deriving the shot clock.
+ */
+async function finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions }) {
+  const frameCount = await probeFrameCount(videoOnlyPath);
+  if (frameCount !== expectedFrames) {
+    throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
+  }
+
+  const stamp = timestamp();
+  const stampedPath = path.join(paths.outDir, `picture-${stamp}.mp4`);
+  fs.renameSync(videoOnlyPath, stampedPath);
+  const outPath = pointLatest(paths.outDir, "picture.mp4", stampedPath);
+
+  let sfxPath;
+  const sfx = await maybeRenderSfx(openAt, paths);
+  if (sfx) sfxPath = sfx;
+  const cueInputs = await resolveSoundCues(openAt, paths.root);
+
+  const durationSec = String(await probeDuration(stampedPath));
+  const bedStampedPath = path.join(paths.outDir, `picture-${stamp}.bed.wav`);
+  await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: bedStampedPath });
+  if (sfxPath) fs.rmSync(sfxPath, { force: true });
+  const bedPath = pointLatest(paths.outDir, "picture.bed.wav", bedStampedPath);
+
+  const timingsPath = path.join(paths.outDir, "picture.timings.json");
+  fs.copyFileSync(paths.timingsJson, timingsPath);
+
+  return {
+    outPath,
+    stampedPath,
+    bedPath,
+    timingsPath,
+    frames: expectedFrames,
+    seconds: expectedFrames / fps,
+    segments,
+    decisions,
+  };
+}
+
 /** Local time as YYYYMMDD-HHMMSS, so every render gets its own file name. */
-function timestamp(d = new Date()) {
+export function timestamp(d = new Date()) {
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
@@ -162,13 +265,14 @@ function timestamp(d = new Date()) {
  * A render never overwrites a file a player may still have open; the link is
  * swapped with a rename, so readers see either the old or the new target.
  */
-function pointLatest(outDir, name, stampedPath) {
+export function pointLatest(outDir, name, stampedPath) {
   const linkPath = path.join(outDir, name);
   // A plain file left by an older render keeps its content under its own stamp.
   const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
   if (existing && !existing.isSymbolicLink()) {
-    const stem = path.basename(name, ".mp4");
-    fs.renameSync(linkPath, path.join(outDir, `${stem}-${timestamp(existing.mtime)}.mp4`));
+    const ext = path.extname(name); // ".mp4", ".wav", ... (picture.bed.wav -> ".wav")
+    const stem = path.basename(name, ext);
+    fs.renameSync(linkPath, path.join(outDir, `${stem}-${timestamp(existing.mtime)}${ext}`));
   }
   const tmpLink = `${linkPath}.tmp-${process.pid}`;
   fs.rmSync(tmpLink, { force: true });
@@ -282,8 +386,30 @@ async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, 
       while (idx < toRender.length) {
         const i = idx++;
         const d = toRender[i];
-        if (!session) session = await openReel(server.url, {});
-        await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
+        // Both film sessions had render.mjs die once on a Playwright
+        // transport error mid-segment (no page error involved) and pass
+        // clean on rerun — retry the segment itself, up to 2 more times,
+        // dropping the (possibly broken) session so the next attempt opens
+        // a fresh one. A real page/application error is never retried
+        // (isTransportError rejects it) — see scripts/lib/retry.mjs.
+        await withTransportRetry(
+          async () => {
+            if (!session) session = await openReel(server.url, {});
+            await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
+          },
+          {
+            maxRetries: 2,
+            onRetry: async (attempt, err) => {
+              process.stderr.write(
+                `retrying segment ${d.segment.id} after a transport error (attempt ${attempt}): ${err.message}\n`
+              );
+              if (session) {
+                await session.close().catch(() => {});
+                session = null;
+              }
+            },
+          }
+        );
         writeJson(d.jsonPath, d.current);
       }
     } finally {
@@ -326,7 +452,7 @@ async function concatMp4(segmentPaths, outPath) {
 const AV_DELTA_MS_THRESHOLD = 50;
 
 /** design point 8: A/V duration delta <= 50ms and joined frame count == expected, or fail loudly. */
-async function gateAvSync({ videoOnlyPath, narrationPath, expectedFrames }) {
+export async function gateAvSync({ videoOnlyPath, narrationPath, expectedFrames }) {
   const videoDur = await probeDuration(videoOnlyPath);
   const audioDur = await probeDuration(narrationPath);
   const deltaMs = Math.abs(videoDur - audioDur) * 1000;
@@ -450,13 +576,10 @@ async function probePeakDb(filePath, trimSec) {
 // The video decides the length: audio is padded with silence (apad) and cut at
 // the video's end, so a narration shorter than the picture never trims the
 // still tail the way -shortest did.
-async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath }) {
+async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath, narrationWindows = [], sfxDuckDb = 0 }) {
   const videoSec = String(await probeDuration(videoOnlyPath));
-  if (cueInputs && cueInputs.length > 0) {
-    const { filterComplex } = buildCueMixFilter({ hasSfx: !!sfxPath, cues: cueInputs });
-    const audioInputs = [narrationPath, ...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
-    const inputArgs = [videoOnlyPath, ...audioInputs].flatMap((p) => ["-i", p]);
-    await ffmpeg([
+  const finalMux = (inputArgs, filterComplex) =>
+    ffmpeg([
       "-y",
       ...inputArgs,
       "-filter_complex",
@@ -477,61 +600,120 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       videoSec,
       outPath,
     ]);
+  if (cueInputs && cueInputs.length > 0) {
+    const { filterComplex } = buildCueMixFilter({
+      hasSfx: !!sfxPath,
+      cues: cueInputs,
+      narrationWindows,
+      duckDb: sfxDuckDb,
+    });
+    const audioInputs = [narrationPath, ...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
+    const inputArgs = [videoOnlyPath, ...audioInputs].flatMap((p) => ["-i", p]);
+    const { filter } = await measurePremaster(inputArgs, filterComplex, outPath);
+    await finalMux(inputArgs, `${filterComplex};[premaster]${filter},apad[aout]`);
     return;
   }
   if (sfxPath) {
-    await ffmpeg([
-      "-y",
-      "-i",
-      videoOnlyPath,
-      "-i",
-      narrationPath,
-      "-i",
-      sfxPath,
-      "-filter_complex",
-      `[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[amixed];[amixed]${LOUDNORM},apad[aout]`,
-      "-map",
-      "0:v",
-      "-map",
-      "[aout]",
-      "-c:v",
-      "copy",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-movflags",
-      "+faststart",
-      "-t",
-      videoSec,
-      outPath,
-    ]);
-  } else {
-    await ffmpeg([
-      "-y",
-      "-i",
-      videoOnlyPath,
-      "-i",
-      narrationPath,
-      "-filter_complex",
-      `[1:a]${LOUDNORM},apad[aout]`,
-      "-map",
-      "0:v",
-      "-map",
-      "[aout]",
-      "-c:v",
-      "copy",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-movflags",
-      "+faststart",
-      "-t",
-      videoSec,
-      outPath,
-    ]);
+    const inputArgs = [videoOnlyPath, narrationPath, sfxPath].flatMap((p) => ["-i", p]);
+    const premix = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]";
+    const { filter } = await measurePremaster(inputArgs, premix, outPath);
+    await finalMux(inputArgs, `${premix};[premaster]${filter},apad[aout]`);
+    return;
   }
+  // No sfx, no cues: the premix is just the narration file itself, no
+  // separate pass-1 render needed.
+  const inputArgs = [videoOnlyPath, narrationPath].flatMap((p) => ["-i", p]);
+  const { filter } = await measureMasterGain(narrationPath);
+  await finalMux(inputArgs, `[1:a]${filter},apad[aout]`);
+}
+
+/** Runs pass 1 (renders `filterComplex`'s `[premaster]` label to a temp wav
+ * next to `outPath`, then deletes it) and returns the measured loudness +
+ * pass-2 gain filter (audio-mix.mjs measureMasterGain). */
+async function measurePremaster(inputArgs, filterComplex, outPath) {
+  const premasterPath = `${outPath}.premaster.wav`;
+  await ffmpeg(["-y", ...inputArgs, "-filter_complex", filterComplex, "-map", "[premaster]", "-c:a", "pcm_s16le", premasterPath]);
+  try {
+    return await measureMasterGain(premasterPath);
+  } finally {
+    fs.rmSync(premasterPath, { force: true });
+  }
+}
+
+/**
+ * Builds out/picture-<stamp>.bed.wav: the page's own sound (renderSfx +
+ * library cues), mixed exactly the way muxAudio mixes them into a normal
+ * render, minus the narration channel — there is no narration yet, only
+ * the picture. Reuses buildCueMixFilter's graph (audio-mix.mjs) with
+ * includeNarration:false so the two mixes never drift apart. The bed is not
+ * mastered: it keeps the page's own level, so its balance against a -16 LUFS
+ * voice is the same as in a normal render. dub.mjs masters the final mix.
+ */
+async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
+  if (!sfxPath && (!cueInputs || cueInputs.length === 0)) {
+    // The page has no sound of its own: a silent bed at the picture's length.
+    await ffmpeg([
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=48000:cl=stereo",
+      "-t",
+      durationSec,
+      "-c:a",
+      "pcm_s16le",
+      outPath,
+    ]);
+    return;
+  }
+  if (cueInputs && cueInputs.length > 0) {
+    const { filterComplex } = buildCueMixFilter({ narrationIndex: 0, hasSfx: !!sfxPath, cues: cueInputs, includeNarration: false });
+    const audioInputs = [...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
+    const inputArgs = audioInputs.flatMap((p) => ["-i", p]);
+    await ffmpeg([
+      "-y",
+      ...inputArgs,
+      "-filter_complex",
+      `${filterComplex};[premaster]apad[aout]`,
+      "-map",
+      "[aout]",
+      "-c:a",
+      "pcm_s16le",
+      "-t",
+      durationSec,
+      outPath,
+    ]);
+    return;
+  }
+  // sfx only, no cues: the bed is sfxPath itself, padded to the picture.
+  await ffmpeg([
+    "-y",
+    "-i",
+    sfxPath,
+    "-filter:a",
+    "apad",
+    "-c:a",
+    "pcm_s16le",
+    "-t",
+    durationSec,
+    outPath,
+  ]);
+}
+
+/** voice/timings.json's lines as {start,end} narration windows, for ducking (scripts/lib/duck.mjs). */
+function narrationWindowsFor(dir) {
+  const timings = loadTimings(dir);
+  return (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
+}
+
+/** plan.meta.sound.sfxDuckDb, default -6dB (references/sound.md "Mix"). Shared with dub.mjs. */
+export function sfxDuckDbFromPlan(plan) {
+  const sound = plan.meta && plan.meta.sound;
+  return sound && sound.sfxDuckDb != null ? sound.sfxDuckDb : -6;
+}
+
+function sfxDuckDbFor(dir) {
+  return sfxDuckDbFromPlan(loadPlan(dir));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

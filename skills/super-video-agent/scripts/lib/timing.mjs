@@ -77,6 +77,59 @@ export function wordsProportional(text, start, end) {
 }
 
 /**
+ * Caption words (`text`, split on whitespace like wordsProportional) timed from measured
+ * spoken words — the provider's alignment or the speech-to-text word times. The spoken words
+ * may be spelled differently ("엠씨피를" for "MCP를") or split differently, so:
+ * the same word count pairs them in order; otherwise each caption word takes the time at its
+ * share of the line's letters, read off the measured words.
+ * @param {string} text the caption
+ * @param {{w:string,start:number,end:number}[]} timed measured words, seconds
+ * @param {number} offset added to every time (the line's start when `timed` is clip-relative)
+ * @returns {{w:string,start:number,end:number}[]} empty when `timed` is empty
+ */
+export function wordsOnCaption(text, timed, offset = 0) {
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const heard = (timed || []).filter((t) => typeof t.start === "number" && typeof t.end === "number");
+  if (!words.length || !heard.length) return [];
+  if (words.length === heard.length) {
+    return words.map((w, i) => ({ w, start: heard[i].start + offset, end: heard[i].end + offset }));
+  }
+  const spans = charSpans(heard.map((t) => t.w));
+  // A caption word's start reads from the measured word it begins in; its end, from the one it
+  // ends in — so a pause between measured words stays a gap between caption words.
+  const at = (f, side) => {
+    let i = 0;
+    if (side === "start") {
+      while (i < spans.length - 1 && spans[i][1] <= f) i++;
+    } else {
+      i = spans.length - 1;
+      while (i > 0 && spans[i][0] >= f) i--;
+    }
+    const [c0, c1] = spans[i];
+    const { start, end } = heard[i];
+    const k = c1 > c0 ? Math.min(1, Math.max(0, (f - c0) / (c1 - c0))) : 0;
+    return start + k * (end - start);
+  };
+  return charSpans(words).map(([f0, f1], i) => ({
+    w: words[i],
+    start: at(f0, "start") + offset,
+    end: at(f1, "end") + offset,
+  }));
+}
+
+/** Each word's [start, end) share of the whole, by letter count, in 0–1. */
+function charSpans(words) {
+  const lens = words.map((w) => Math.max(1, w.replace(/[^\p{L}\p{N}]/gu, "").length));
+  const total = lens.reduce((a, b) => a + b, 0);
+  let c = 0;
+  return lens.map((n) => {
+    const span = [c / total, (c + n) / total];
+    c += n;
+    return span;
+  });
+}
+
+/**
  * Word timing from provider character-level alignment, offset onto the
  * absolute narration timeline. `charStarts`/`charEnds` are seconds relative
  * to the synthesized line clip (as ElevenLabs with-timestamps returns).

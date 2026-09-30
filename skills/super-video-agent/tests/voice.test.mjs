@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { synthesizeAll, lineTempo, withShortsRate } from "../scripts/voice.mjs";
+import { synthesizeAll, lineTempo, withShortsRate, withFishConfidentDelivery } from "../scripts/voice.mjs";
 import { reelPaths } from "../scripts/lib/reeldir.mjs";
 import * as none from "../scripts/voice/none.mjs";
 
@@ -347,4 +347,55 @@ test("withShortsRate: a 9:16 film with no rate speaks at 1.1 in every language; 
   assert.equal(withShortsRate({ ratio: "9:16", lang: "ko-KR", voice: { rate: 1.25 } }).rate, 1.25);
   assert.equal(withShortsRate({ ratio: "16:9", lang: "ko-KR", voice: {} }).rate, undefined);
   assert.equal(withShortsRate({ ratio: "9:16", lang: "ja", voice: { provider: "qwen3" } }).provider, "qwen3");
+});
+
+test("voice: a '|' forced-caption-break marker is never counted as a word (wordsProportional path)", async () => {
+  const dir = tmpReelDir();
+  const paths = reelPaths(dir);
+  const lines = [{ id: "l1", text: "It rides a radio wave | to that cell tower | up there," }];
+
+  const { timings } = await synthesizeAll({
+    dir,
+    paths,
+    lines,
+    provider: none,
+    providerName: "none",
+    voiceCfg: {},
+    lang: "en-US",
+    gapMs: 250,
+    sttEnabled: false, // no STT/pitch python needed — this is the wordsProportional fallback path
+  });
+
+  const words = timings.lines[0].words.map((w) => w.w);
+  assert.ok(!words.includes("|"), `words should never include the caption-break marker: ${words.join(" ")}`);
+  assert.deepEqual(words, "It rides a radio wave to that cell tower up there,".split(" "));
+  // the caption itself (text) keeps the marker — render.mjs/reel-engine.js need it to split lines
+  assert.equal(timings.lines[0].text, "It rides a radio wave | to that cell tower | up there,");
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("voice: a '|' marker never reaches the STT comparison target either (compareLine's diffs)", async () => {
+  const { compareLine } = await import("../scripts/lib/stt-compare.mjs");
+  const { stripCaptionBreaks } = await import("../scripts/lib/pronounce.mjs");
+  // compareLine's cer ignores "|" already (normalize() strips all
+  // punctuation), but its token-level diffs split on whitespace, so an
+  // unstripped "|" survives as a phantom extra word — applySttResult must
+  // strip it first, or a perfectly heard line gets a fake "want: |" diff.
+  const withMarker = "지금 그 신호를 | 보내는 겁니다";
+  const stripped = stripCaptionBreaks(withMarker);
+  const heard = "지금 그 신호를 보내는 겁니다";
+  assert.equal(compareLine({ text: stripped, heard }).diffs.length, 0);
+  assert.ok(
+    compareLine({ text: withMarker, heard }).diffs.some((d) => d.want.includes("|")),
+    "unstripped text should (wrongly) show a phantom diff for the marker, proving the strip is load-bearing"
+  );
+});
+
+test("withFishConfidentDelivery: fish + 9:16 with no delivery defaults to confident; a set delivery, other providers, and other ratios are untouched", () => {
+  assert.equal(withFishConfidentDelivery({}, { ratio: "9:16" }, "fish").delivery, "confident");
+  assert.equal(withFishConfidentDelivery({ delivery: "excited" }, { ratio: "9:16" }, "fish").delivery, "excited");
+  assert.equal(withFishConfidentDelivery({ delivery: "none" }, { ratio: "9:16" }, "fish").delivery, "none");
+  assert.equal(withFishConfidentDelivery({}, { ratio: "16:9" }, "fish").delivery, undefined);
+  assert.equal(withFishConfidentDelivery({}, { ratio: "9:16" }, "elevenlabs").delivery, undefined);
 });

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { readJson, reelPaths } from "./lib/reeldir.mjs";
 import { validate } from "./lib/schema-check.mjs";
+import { stripCaptionBreaks } from "./lib/pronounce.mjs";
 
 const HELP = `usage: validate-plan.mjs <reel-dir>
 
@@ -34,7 +35,7 @@ export async function main(argv) {
   }
 
   const { valid, errors } = validate(plan, schema);
-  if (valid) errors.push(...cueWordErrors(plan));
+  if (valid) errors.push(...cueWordErrors(plan), ...captionBreakErrors(plan));
   if (errors.length) {
     process.stderr.write("plan.json is invalid:\n");
     for (const e of errors) process.stderr.write(`  - ${e}\n`);
@@ -52,7 +53,7 @@ export async function main(argv) {
 export function cueWordErrors(plan) {
   const errors = [];
   (plan.lines || []).forEach((line, i) => {
-    const words = String(line.text || "").split(/\s+/);
+    const words = stripCaptionBreaks(line.text || "").split(/\s+/);
     (line.cues || []).forEach((cue, j) => {
       if (typeof cue.at !== "string" || !cue.at.startsWith("word:")) return;
       const w = cue.at.slice(5);
@@ -60,6 +61,32 @@ export function cueWordErrors(plan) {
         errors.push(`lines[${i}].cues[${j}].at: "${cue.at}" matches no word in line "${line.id}" text`);
       }
     });
+  });
+  return errors;
+}
+
+/**
+ * A "|" in a line's `text` forces a caption-chunk break there
+ * (reel-engine.js captionChunks' `opts.breaks`, references/pipeline.md
+ * "Forced caption breaks") and must appear as its own whitespace-separated
+ * token. Rejects "||" (two markers with nothing between) and a "|" that
+ * leads or trails the line — either would force a break before or after
+ * every word, or between two markers with no word between them.
+ */
+export function captionBreakErrors(plan) {
+  const errors = [];
+  (plan.lines || []).forEach((line, i) => {
+    const tokens = String(line.text || "").split(/\s+/).filter(Boolean);
+    if (!tokens.length) return;
+    if (tokens[0] === "|" || tokens[tokens.length - 1] === "|") {
+      errors.push(`lines[${i}].text: "|" must not lead or trail the line in "${line.id}"`);
+    }
+    for (let j = 1; j < tokens.length; j++) {
+      if (tokens[j] === "|" && tokens[j - 1] === "|") {
+        errors.push(`lines[${i}].text: "||" (two "|" markers with no word between them) in "${line.id}"`);
+        break;
+      }
+    }
   });
   return errors;
 }

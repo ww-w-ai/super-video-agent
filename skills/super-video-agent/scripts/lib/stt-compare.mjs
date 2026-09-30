@@ -3,7 +3,10 @@
 // normalize text for comparison, measure character error rate, compare a
 // transcribed line against its intended `text`/`say`, and check whether a
 // synthesized clip's tail (a TAIL voiceFlag candidate) actually finished
-// the last syllable. No I/O, no network — fully unit-testable.
+// the last syllable. No I/O, no network — fully unit-testable. Expression tags
+// (`[confident]`) are never heard as words, so every target is compared without them.
+
+import { stripTags } from "./tags.mjs";
 
 /**
  * Lowercase and strip whitespace/punctuation, keeping letters and digits of
@@ -139,8 +142,8 @@ function tokenDiffs(target, heard) {
  * @returns {{cer:number, against:"text"|"say", diffs:{want:string,heard:string}[]}}
  */
 export function compareLine({ text, say, heard }) {
-  const candidates = [{ key: "text", value: text }];
-  if (say != null) candidates.push({ key: "say", value: say });
+  const candidates = [{ key: "text", value: stripTags(text) }];
+  if (say != null) candidates.push({ key: "say", value: stripTags(say) });
 
   let best = null;
   for (const c of candidates) {
@@ -170,7 +173,7 @@ const MAX_LENGTH_RATIO = 1.4;
  */
 export function isGrossMismatch(target, heard, lineCer) {
   if (lineCer > GROSS_CER) return true;
-  const nt = normalize(target).length;
+  const nt = normalize(stripTags(target)).length;
   if (nt === 0) return false;
   const ratio = normalize(heard).length / nt;
   return ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO;
@@ -184,7 +187,7 @@ export function isGrossMismatch(target, heard, lineCer) {
  * @param {string} heard
  */
 export function tailCleared(target, heard) {
-  const nt = normalize(target);
+  const nt = normalize(stripTags(target));
   const nh = normalize(heard);
   if (nt.length === 0) return true;
   const tail = nt.slice(-2);

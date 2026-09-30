@@ -8,11 +8,13 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, writeJson, readJson, ensureDir } from "./lib/reeldir.mjs";
 import { ffmpeg, probeDuration, applyAtempo } from "./lib/ffmpeg.mjs";
-import { computeLineTimes, wordsProportional, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
+import { computeLineTimes, wordsProportional, wordsOnCaption, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { chooseProvider } from "./lib/choose-provider.mjs";
 import { resolvePythonPath, runPythonBatch } from "./lib/pyenv.mjs";
 import { compareLine, isGrossMismatch, tailCleared } from "./lib/stt-compare.mjs";
-import { spokenText } from "./lib/pronounce.mjs";
+import { spokenText, stripCaptionBreaks } from "./lib/pronounce.mjs";
+import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags.mjs";
+import { levelLineWav } from "./lib/line-level.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STT_SCRIPT = path.join(here, "voice", "py", "stt_check.py");
@@ -61,6 +63,26 @@ not actually cut off.
 --stt-only           run the STT check on the existing voice/line-*.wav
                      files without synthesizing anything; updates
                      timings.json in place and does not touch narration.wav.
+
+--takes N            with --lines: synthesize N (2-5, default 3 when given
+                     with no number) fresh takes of the same text per listed
+                     line, kept as voice/takes/<id>-<k>.wav with their STT
+                     CER and duration; prints a comparison table and
+                     installs take 1.
+--takes <tone>,<tone>[,<tone>]
+                     with --lines: one take per delivery mark instead (2-5
+                     marks, freely chosen from scripts/lib/tags.mjs
+                     EMOTIONS for the film, e.g. "confident") — each line's
+                     own mark is replaced by it for that take. Installing a
+                     tone take with --pick also writes it to plan.json
+                     meta.voice.delivery (see --pick).
+--pick id=k,id=k     on a later run, without --takes: installs take k for
+                     each listed line id from its already-synthesized
+                     voice/takes/<id>-<k>.wav (no re-synthesis) and rebuilds
+                     narration.wav/timings.json as --lines does. If that
+                     take came from a --takes m1,m2,... tone comparison, also
+                     writes the picked mark to plan.json meta.voice.delivery
+                     so the remaining lines are made in it.
 `;
 
 const PROVIDERS = ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"];
@@ -113,6 +135,11 @@ export async function main(argv) {
     return;
   }
 
+  const unknown = [...new Set(plan.lines.flatMap((l) => unknownMarks(l.say ?? l.text)))];
+  if (unknown.length) {
+    process.stderr.write(`note: delivery marks no engine knows, dropped: {${unknown.join("}, {")}} (references/voice.md "Delivery marks")\n`);
+  }
+
   let providerMod;
   try {
     providerMod = await import(`./voice/${providerName}.mjs`);
@@ -123,9 +150,12 @@ export async function main(argv) {
 
   const gapMs = plan.meta.gapMs == null ? 250 : plan.meta.gapMs;
   const tailSec = plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec;
-  const voiceCfg = withShortsRate(plan.meta);
+  const voiceCfg = withFishConfidentDelivery(withShortsRate(plan.meta), plan.meta, providerName);
   if (voiceCfg.rate != null && (plan.meta.voice || {}).rate == null) {
     process.stderr.write(`note: vertical film without meta.voice.rate; speaking at the Shorts default ${voiceCfg.rate}\n`);
+  }
+  if (voiceCfg.delivery != null && (plan.meta.voice || {}).delivery == null) {
+    process.stderr.write(`note: fish Short without meta.voice.delivery; speaking {${voiceCfg.delivery}}\n`);
   }
 
   let onlyLineIds = null;
@@ -148,6 +178,50 @@ export async function main(argv) {
       fail(refError);
       return;
     }
+  }
+
+  if (flags.pick) {
+    try {
+      await runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
+  }
+
+  if (flags.takes) {
+    if (!onlyLineIds || !onlyLineIds.length) {
+      fail("--takes requires --lines id,id");
+      return;
+    }
+    let spec;
+    try {
+      spec = parseTakesSpec(flags.takes);
+    } catch (e) {
+      fail(e.message);
+      return;
+    }
+    try {
+      await synthesizeTakes({
+        dir,
+        paths,
+        plan,
+        lineIds: onlyLineIds,
+        spec,
+        provider: providerMod,
+        providerName,
+        voiceCfg,
+        pronounce: plan.meta.pronounce,
+        lang: plan.meta.lang || "ko-KR",
+        gapMs,
+        tailSec,
+        sttEnabled,
+        keepTiming: !flags.retime,
+      });
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
   }
 
   try {
@@ -201,6 +275,7 @@ export async function synthesizeAll({
   sttEnabled = true,
   retryFlagged = 1,
   keepTiming = true,
+  takeWavs = null,
 }) {
   ensureDir(paths.voiceDir);
   // --lines: each regenerated line's old slot length, when it keeps its slot.
@@ -208,6 +283,9 @@ export async function synthesizeAll({
   // Silence after each line: its own pauseAfterMs, else meta.gapMs.
   let offset = HEAD_SILENCE_SEC;
   const lineResults = [];
+  // Lines whose engine measured its own word times (ElevenLabs alignment); the rest take
+  // their word times from the speech-to-text check.
+  const providerTimed = new Set();
   const segmentFiles = []; // {kind, path, durationSec}
   const warnings = [];
 
@@ -236,10 +314,10 @@ export async function synthesizeAll({
   let batchResults = null;
   if (typeof provider.synthBatch === "function") {
     const batchLines = lines
-      .filter((line) => !onlySet || onlySet.has(line.id))
+      .filter((line) => (!onlySet || onlySet.has(line.id)) && !(takeWavs && takeWavs.has(line.id)))
       .map((line) => ({
         id: line.id,
-        text: spokenText(line, pronounce, voiceCfg),
+        text: forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg),
         outPath: path.join(paths.voiceDir, `line-${line.id}.wav`),
       }));
     const results = batchLines.length
@@ -250,7 +328,10 @@ export async function synthesizeAll({
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const spoken = spokenText(line, pronounce, voiceCfg);
+    const spoken = forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg);
+    // "|" is a caption-break marker (references/pipeline.md "Forced caption
+    // breaks") — never spoken, never counted as a word or STT target.
+    const timedText = stripCaptionBreaks(line.text);
     const outPath = path.join(paths.voiceDir, `line-${line.id}.wav`);
     const reused = onlySet && !onlySet.has(line.id);
 
@@ -261,6 +342,13 @@ export async function synthesizeAll({
           `--lines: no existing audio for line "${line.id}" at ${outPath} — run a full voice.mjs pass first`
         );
       }
+      synthResult = { wavPath: outPath };
+    } else if (takeWavs && takeWavs.has(line.id)) {
+      // --pick / --takes' own "install take 1": the audio is already
+      // synthesized (voice/takes/<id>-<k>.wav) — copy it in and run it
+      // through the same tempo/level/slot-fit/STT pipeline as any other
+      // regenerated line, no new TTS call.
+      fs.copyFileSync(takeWavs.get(line.id), outPath);
       synthResult = { wavPath: outPath };
     } else if (batchResults) {
       synthResult = batchResults.get(line.id);
@@ -284,6 +372,10 @@ export async function synthesizeAll({
 
     const wavPath = synthResult.wavPath;
     if (!reused) await applyLineTempo(wavPath, line, voiceCfg, provider);
+    if (!reused && voiceCfg.levelLines !== false) {
+      const leveled = await levelLineWav(wavPath);
+      process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
+    }
 
     const prevLine = previousById.get(line.id);
     if (keepTiming && onlySet && !reused && prevLine) {
@@ -295,9 +387,9 @@ export async function synthesizeAll({
     const start = offset;
     const end = start + durationSec;
 
-    const words = synthResult.words && synthResult.words.length
-      ? synthResult.words
-      : wordsProportional(line.text, start, end);
+    const measured = synthResult.words && synthResult.words.length ? wordsOnCaption(timedText, synthResult.words) : [];
+    if (measured.length) providerTimed.add(line.id);
+    const words = measured.length ? measured : wordsProportional(timedText, start, end);
 
     const lineOut = { id: line.id, text: line.text, start, end, words };
     if (line.say != null) lineOut.say = line.say;
@@ -341,7 +433,7 @@ export async function synthesizeAll({
       const linesById = new Map(lines.map((l) => [l.id, l]));
       for (const lineOut of lineResults) {
         if (!checkedIds.includes(lineOut.id)) continue;
-        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "");
+        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id));
       }
 
       if (retryFlagged > 0 && !DETERMINISTIC_PROVIDERS.has(providerName)) {
@@ -362,6 +454,7 @@ export async function synthesizeAll({
             dir,
             paths,
             slots,
+            providerTimed,
           });
         }
       }
@@ -446,7 +539,7 @@ async function sttTranscribe(voiceDir, entries, langCode) {
   if (!pythonPath) {
     return { skipped: "no python found (set SVA_STT_PYTHON to a venv with faster-whisper installed)" };
   }
-  if (!entries.length) return { results: new Map() };
+  if (!entries.length) return { results: new Map(), words: new Map() };
 
   const jobDir = fs.mkdtempSync(path.join(voiceDir, ".stt-"));
   const jobPath = path.join(jobDir, "lines.json");
@@ -457,7 +550,10 @@ async function sttTranscribe(voiceDir, entries, langCode) {
       SVA_STT_LANG: langCode,
     });
     const arr = JSON.parse(stdout.trim() || "[]");
-    return { results: new Map(arr.map((r) => [r.id, r.heard])) };
+    return {
+      results: new Map(arr.map((r) => [r.id, r.heard])),
+      words: new Map(arr.map((r) => [r.id, r.words || []])),
+    };
   } catch (e) {
     return { skipped: `stt check failed to run (${e.message.split("\n")[0]})` };
   } finally {
@@ -471,9 +567,15 @@ async function sttTranscribe(voiceDir, entries, langCode) {
  * transcript shows the tail wasn't actually cut off, and sets MISHEARD only
  * on a gross mismatch (references/voice.md).
  */
-function applySttResult(lineOut, line, heard) {
-  const cmp = compareLine({ text: line.text, say: line.say, heard });
-  const targetText = cmp.against === "say" ? line.say : line.text;
+function applySttResult(lineOut, line, heard, sttWords) {
+  const timedText = stripCaptionBreaks(line.text);
+  const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
+  if (sttWords && sttWords.length) {
+    const words = wordsOnCaption(timedText, sttWords, lineOut.start);
+    if (words.length) lineOut.words = words;
+  }
+  const cmp = compareLine({ text: timedText, say: timedSay, heard });
+  const targetText = cmp.against === "say" ? timedSay : timedText;
   lineOut.stt = { heard, cer: cmp.cer, diffs: cmp.diffs };
 
   if (lineOut.voiceFlag === "TAIL" && tailCleared(targetText, heard)) {
@@ -502,10 +604,12 @@ function shiftLine(lineOut, deltaSec) {
  * rate. A duration change on an accepted candidate shifts every later
  * line's start/end (mirrors the `--lines` "moved" mechanism).
  */
-async function retryFlaggedLines({ flagged, lineResults, linesById, provider, voiceCfg, pronounce, lang, langCode, dir, paths, slots }) {
+async function retryFlaggedLines({ flagged, lineResults, linesById, provider, voiceCfg, pronounce, lang, langCode, dir, paths, slots, providerTimed }) {
   for (const lineOut of flagged) {
     const line = linesById.get(lineOut.id);
-    const spoken = spokenText(line, pronounce, voiceCfg);
+    const spoken = forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg);
+    const timedText = stripCaptionBreaks(line.text);
+    const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
     const outPath = path.join(paths.voiceDir, `line-${lineOut.id}.wav`);
     const backupPath = outPath + ".prevbest.wav";
     fs.copyFileSync(outPath, backupPath);
@@ -534,12 +638,16 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, provider, vo
 
     const wavPath = synthResult.wavPath;
     await applyLineTempo(wavPath, line, voiceCfg, provider);
+    if (voiceCfg.levelLines !== false) {
+      const leveled = await levelLineWav(wavPath);
+      process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
+    }
     if (slots.has(line.id)) await fitToSlot(wavPath, slots.get(line.id));
 
     const newDur = await probeDuration(wavPath);
     const sttRes = await sttTranscribe(paths.voiceDir, [{ id: line.id, wav: `line-${line.id}.wav` }], langCode);
     const newHeard = sttRes.results ? sttRes.results.get(line.id) || "" : "";
-    const newCer = sttRes.results ? compareLine({ text: line.text, say: line.say, heard: newHeard }).cer : Infinity;
+    const newCer = sttRes.results ? compareLine({ text: timedText, say: timedSay, heard: newHeard }).cer : Infinity;
     const oldCer = lineOut.stt ? lineOut.stt.cer : Infinity;
 
     if (newCer < oldCer) {
@@ -547,13 +655,13 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, provider, vo
       lineOut.end = lineOut.start + newDur;
       const idx = lineResults.indexOf(lineOut);
       for (let i = idx + 1; i < lineResults.length; i++) shiftLine(lineResults[i], delta);
-      lineOut.words =
-        synthResult.words && synthResult.words.length
-          ? synthResult.words
-          : wordsProportional(line.text, lineOut.start, lineOut.end);
+      const measured = synthResult.words && synthResult.words.length ? wordsOnCaption(timedText, synthResult.words) : [];
+      if (measured.length) providerTimed.add(line.id);
+      else providerTimed.delete(line.id);
+      lineOut.words = measured.length ? measured : wordsProportional(timedText, lineOut.start, lineOut.end);
       delete lineOut.voiceFlag;
       if (synthResult.flag && synthResult.flag !== "OK") lineOut.voiceFlag = synthResult.flag;
-      applySttResult(lineOut, line, newHeard);
+      applySttResult(lineOut, line, newHeard, measured.length ? null : sttRes.words.get(line.id));
       fs.rmSync(backupPath, { force: true });
     } else {
       fs.copyFileSync(backupPath, outPath);
@@ -600,8 +708,10 @@ async function runSttOnly(dir, paths) {
     return;
   }
 
+  // ElevenLabs lines keep the word times the engine measured; the rest take the speech-to-text ones.
+  const engineTimed = timings.provider === "elevenlabs";
   for (const lineOut of lines) {
-    applySttResult(lineOut, lineOut, stt.results.get(lineOut.id) || "");
+    applySttResult(lineOut, lineOut, stt.results.get(lineOut.id) || "", engineTimed ? null : stt.words.get(lineOut.id));
   }
   printSttTable(lines);
   writeJson(paths.timingsJson, timings);
@@ -622,6 +732,21 @@ export function withShortsRate(meta) {
   return { ...voice, rate: SHORTS_RATE };
 }
 
+// Fish Audio reads a Short's lines calm and flat unless tagged — the opening line
+// especially. {confident} gives the upbeat tone a Short's opening wants.
+const FISH_SHORTS_DELIVERY = "confident";
+
+/**
+ * `voice` with the fish default delivery filled in: fish + 9:16 + no
+ * meta.voice.delivery speaks every untagged line with {confident}. Any delivery
+ * the plan sets — including "none" to turn this off — always wins, and so does
+ * a line's own emotion mark (applyDeliveryMark, lib/tags.mjs).
+ */
+export function withFishConfidentDelivery(voice, meta, providerName) {
+  if (voice.delivery != null || providerName !== "fish" || meta.ratio !== "9:16") return voice;
+  return { ...voice, delivery: FISH_SHORTS_DELIVERY };
+}
+
 // A line's own `rate` (0.5–2) replaces meta.voice.rate for that line, for a
 // deliberately rushed or slowed run of lines; it is always applied with
 // atempo. meta.voice.rate goes through atempo only for providers without
@@ -636,6 +761,11 @@ export function lineTempo(line, voiceCfg, provider) {
   }
   if (voiceCfg.rate != null && !provider.nativeRate) return { factor: voiceCfg.rate, range: {} };
   return null;
+}
+
+/** "-16.0" or "n/a" for the leveling log line. */
+function fmtLufs(lufs) {
+  return lufs == null || !Number.isFinite(lufs) ? "n/a" : lufs.toFixed(1);
 }
 
 async function applyLineTempo(wavPath, line, voiceCfg, provider) {
@@ -705,6 +835,247 @@ async function concatWavs(files, outPath) {
   fs.writeFileSync(listPath, listContent, "utf8");
   await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outPath]);
   fs.rmSync(listPath, { force: true });
+}
+
+// --takes N (mode "count"): 2-5 fresh takes of the same text; --takes with no
+// value defaults to 3.
+const TAKES_MIN = 2;
+const TAKES_MAX = 5;
+const TAKES_DEFAULT_N = 3;
+
+/**
+ * `--takes`'s value: a bare flag or an integer 2-5 means "N fresh takes of
+ * the same text" (mode "count"); a comma list of delivery marks means "one
+ * take per tone, that line's own mark replaced" (mode "tone") — 2-5 marks,
+ * freely chosen from scripts/lib/tags.mjs EMOTIONS for the film
+ * (references/voice.md "Comparing takes").
+ * @param {string|true} value flags.takes
+ * @returns {{mode:"count", n:number} | {mode:"tone", marks:string[]}}
+ */
+export function parseTakesSpec(value) {
+  if (value === true) return { mode: "count", n: TAKES_DEFAULT_N };
+  const s = String(value).trim();
+  if (/^[0-9]+$/.test(s)) {
+    const n = Number(s);
+    if (n < TAKES_MIN || n > TAKES_MAX) {
+      throw new Error(`--takes must be ${TAKES_MIN}-${TAKES_MAX}, got ${n}`);
+    }
+    return { mode: "count", n };
+  }
+  const marks = s.split(",").map((m) => m.trim()).filter(Boolean);
+  if (marks.length < TAKES_MIN || marks.length > TAKES_MAX) {
+    throw new Error(`--takes as delivery marks must list ${TAKES_MIN}-${TAKES_MAX}, got ${marks.length}`);
+  }
+  const unknown = marks.filter((m) => !EMOTIONS.includes(m));
+  if (unknown.length) {
+    throw new Error(`--takes: unknown delivery mark(s) ${unknown.join(", ")} — see scripts/lib/tags.mjs EMOTIONS`);
+  }
+  return { mode: "tone", marks };
+}
+
+const EMOTION_MARK_RE = /\{([a-z-]+)\}\s*/g;
+
+/**
+ * `spoken` (spokenText's output, before applyDeliveryMark) with any emotion
+ * mark it already carries stripped and `mark` forced in front — a --takes
+ * tone comparison replaces a line's own mark for that take rather than
+ * layering the tag on top of it.
+ * @param {string} spoken
+ * @param {string} mark one of EMOTIONS
+ */
+export function withForcedTone(spoken, mark) {
+  const stripped = String(spoken ?? "").replace(EMOTION_MARK_RE, (full, name) => (EMOTIONS.includes(name) ? "" : full));
+  return `{${mark}} ${stripped}`.trim();
+}
+
+function takesManifestPath(paths) {
+  return path.join(paths.voiceDir, "takes", "manifest.json");
+}
+
+/** Which `--takes` spec produced each line's candidates, read by --pick to know
+ * whether a picked take is a tone (and if so which mark) or a plain re-take. */
+function loadTakesManifest(paths) {
+  const p = takesManifestPath(paths);
+  if (!fs.existsSync(p)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function saveTakesManifest(paths, manifest) {
+  writeJson(takesManifestPath(paths), manifest);
+}
+
+/**
+ * `--takes`: synthesize spec.n (mode "count") or one take per spec.marks
+ * (mode "tone") for each of `lineIds`, sequentially — never in parallel,
+ * one TTS request at a time, even across takes — as
+ * voice/takes/<id>-<k>.wav with STT CER and duration; prints a comparison
+ * table and installs take 1 (references/voice.md
+ * "Comparing takes"). Pick a different one later with --pick.
+ */
+export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming }) {
+  const takesDir = path.join(paths.voiceDir, "takes");
+  ensureDir(takesDir);
+  const langCode = sttLangCode(lang);
+  const linesById = new Map(plan.lines.map((l) => [l.id, l]));
+  const count = spec.mode === "count" ? spec.n : spec.marks.length;
+  const rows = [];
+  const manifest = loadTakesManifest(paths);
+
+  for (const id of lineIds) {
+    const line = linesById.get(id);
+    if (!line) throw new Error(`--takes: unknown line id "${id}"`);
+    const base = spokenText(line, pronounce, voiceCfg);
+    const strippedText = stripCaptionBreaks(line.text);
+    const strippedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
+
+    for (let k = 1; k <= count; k++) {
+      const mark = spec.mode === "tone" ? spec.marks[k - 1] : null;
+      const withMark = mark ? withForcedTone(base, mark) : applyDeliveryMark(base, voiceCfg.delivery);
+      const spoken = forEngine(withMark, provider, voiceCfg);
+      const outPath = path.join(takesDir, `${id}-${k}.wav`);
+
+      const synthResult = typeof provider.synthBatch === "function"
+        ? (await provider.synthBatch([{ id, text: spoken, outPath }], { lang, voiceCfg, reelDir: dir })).find((r) => r.id === id)
+        : await provider.synth({
+            id,
+            text: spoken,
+            voice: voiceCfg.voiceId,
+            lang,
+            voiceCfg,
+            params: { rate: voiceCfg.rate },
+            outPath,
+            reelDir: dir,
+            lineStart: 0,
+          });
+      if (!synthResult) throw new Error(`voice provider "${providerName}" returned no result for take ${id}-${k}`);
+      const durationSec = await probeDuration(synthResult.wavPath);
+
+      let cerVal = null;
+      if (sttEnabled) {
+        const sttId = `${id}-${k}`;
+        const sttRes = await sttTranscribe(paths.voiceDir, [{ id: sttId, wav: `takes/${id}-${k}.wav` }], langCode);
+        if (!sttRes.skipped) {
+          const heard = sttRes.results.get(sttId) || "";
+          cerVal = compareLine({ text: strippedText, say: strippedSay, heard }).cer;
+        }
+      }
+      rows.push({ id, k, mark, durationSec, cer: cerVal });
+    }
+
+    manifest[id] = spec.mode === "tone" ? { mode: "tone", marks: spec.marks } : { mode: "count", n: spec.n };
+  }
+
+  saveTakesManifest(paths, manifest);
+  printTakesTable(rows);
+
+  const takeWavs = new Map(lineIds.map((id) => [id, path.join(takesDir, `${id}-1.wav`)]));
+  const result = await synthesizeAll({
+    dir,
+    paths,
+    lines: plan.lines,
+    provider,
+    providerName,
+    voiceCfg,
+    pronounce,
+    lang,
+    gapMs,
+    tailSec,
+    onlyLineIds: lineIds,
+    sttEnabled,
+    retryFlagged: 0,
+    keepTiming,
+    takeWavs,
+  });
+  writeJson(paths.timingsJson, result.timings);
+  process.stdout.write(`installed take 1 for: ${lineIds.join(", ")}\n`);
+  return { rows, timings: result.timings };
+}
+
+/** Prints a compact `id | take | tone | cer | duration` comparison table. */
+function printTakesTable(rows) {
+  if (!rows.length) return;
+  process.stdout.write("takes:\n");
+  process.stdout.write("id\ttake\ttone\tcer\tduration\n");
+  for (const r of rows) {
+    const cerStr = r.cer == null ? "-" : r.cer.toFixed(2);
+    process.stdout.write(`${r.id}\t${r.k}\t${r.mark || "-"}\t${cerStr}\t${r.durationSec.toFixed(3)}s\n`);
+  }
+}
+
+/**
+ * `--pick id=k,id=k`'s value into `[{id,k}]`.
+ * @param {string} pickStr
+ */
+export function parsePick(pickStr) {
+  return String(pickStr)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const [id, kStr] = pair.split("=");
+      if (!id || !kStr || !/^[0-9]+$/.test(kStr.trim())) {
+        throw new Error(`--pick: invalid entry "${pair}" (expected id=k)`);
+      }
+      return { id: id.trim(), k: Number(kStr.trim()) };
+    });
+}
+
+/**
+ * `--pick id=k,id=k`: installs each already-synthesized
+ * voice/takes/<id>-<k>.wav without re-synthesis — copies the wav in and
+ * rebuilds that line's timings and narration.wav/timings.json as --lines
+ * does (references/voice.md "Comparing takes"). If a picked take came from
+ * a --takes tone comparison (voice/takes/manifest.json), also writes that
+ * mark to plan.json meta.voice.delivery, so the remaining lines are made
+ * in that tone.
+ */
+async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+  const picks = parsePick(flags.pick);
+  const missing = picks.filter((p) => !fs.existsSync(path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)));
+  if (missing.length) {
+    throw new Error(`--pick: no candidate take(s) for ${missing.map((p) => `${p.id}=${p.k}`).join(", ")} — run --takes first`);
+  }
+
+  const manifest = loadTakesManifest(paths);
+  let deliveryWritten = null;
+  for (const p of picks) {
+    const entry = manifest[p.id];
+    if (entry && entry.mode === "tone" && entry.marks && entry.marks[p.k - 1]) {
+      deliveryWritten = entry.marks[p.k - 1];
+    }
+  }
+  if (deliveryWritten) {
+    plan.meta.voice = { ...(plan.meta.voice || {}), delivery: deliveryWritten };
+    writeJson(paths.planJson, plan);
+  }
+
+  const takeWavs = new Map(picks.map((p) => [p.id, path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)]));
+  const result = await synthesizeAll({
+    dir,
+    paths,
+    lines: plan.lines,
+    provider: providerMod,
+    providerName,
+    voiceCfg,
+    pronounce: plan.meta.pronounce,
+    lang: plan.meta.lang || "ko-KR",
+    gapMs,
+    tailSec,
+    onlyLineIds: picks.map((p) => p.id),
+    sttEnabled,
+    retryFlagged: 0,
+    keepTiming: !flags.retime,
+    takeWavs,
+  });
+  writeJson(paths.timingsJson, result.timings);
+  process.stdout.write(`installed take(s): ${picks.map((p) => `${p.id}=${p.k}`).join(", ")}\n`);
+  if (deliveryWritten) {
+    process.stdout.write(`wrote meta.voice.delivery = "${deliveryWritten}" to plan.json — the remaining lines will be made in this tone\n`);
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

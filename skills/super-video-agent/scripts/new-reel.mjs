@@ -13,7 +13,7 @@ import { ffmpeg } from "./lib/ffmpeg.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, "..");
 
-const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..."] [--fps 30]
+const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..."] [--fps 30] [--3d]
 
 Scaffolds <dir>/ with:
   reel.html          template scene + engine inlined
@@ -21,6 +21,13 @@ Scaffolds <dir>/ with:
   assets/fonts/       Pretendard (+ handwriting font if installed)
   assets/images/      generated placeholder.png
   source/ voice/ out/  empty working directories
+
+--3d scaffolds from the WebGL/three.js template instead (references/3d.md):
+  reel.html           <script type="module"> scene, a detached WebGL canvas
+                       copied into the 2D stage, one lit sample object
+  assets/vendor/       empty — three.js is not bundled; install it yourself
+                       (this command prints the steps)
+  plan.json meta.look  "3d"
 `;
 
 const RATIOS = {
@@ -45,17 +52,33 @@ export async function main(argv) {
   const [width, height] = RATIOS[ratio];
   const fps = flags.fps ? parseInt(flags.fps, 10) : 30;
   const title = flags.title || path.basename(dir);
+  const threeD = !!flags["3d"];
 
   try {
-    await scaffold({ dir, width, height, fps, title, ratio });
+    await scaffold({ dir, width, height, fps, title, ratio, threeD });
   } catch (e) {
     fail(e.message);
     return;
   }
   process.stdout.write(`scaffolded ${dir}\n`);
+  if (threeD) {
+    process.stdout.write(threeInstallSteps(dir));
+  }
 }
 
-export async function scaffold({ dir, width, height, fps, title, ratio }) {
+export function threeInstallSteps(dir) {
+  return `
+three.js is not bundled with this skill. Install it into this reel before
+opening reel.html:
+  npm install three --prefix ${dir}
+  mkdir -p ${path.join(dir, "assets", "vendor")}
+  cp ${path.join(dir, "node_modules", "three", "build", "three.module.js")} ${path.join(dir, "assets", "vendor")}/
+  cp ${path.join(dir, "node_modules", "three", "build", "three.core.js")} ${path.join(dir, "assets", "vendor")}/
+Record the installed version and its MIT license in FILM.md (references/3d.md).
+`;
+}
+
+export async function scaffold({ dir, width, height, fps, title, ratio, threeD }) {
   const paths = reelPaths(dir);
   ensureDir(paths.root);
   ensureDir(path.join(paths.root, "source"));
@@ -109,8 +132,14 @@ export async function scaffold({ dir, width, height, fps, title, ratio }) {
     placeholderPath,
   ]);
 
+  // ---- 3D: empty vendor dir for a user-installed three.js ------------
+  if (threeD) {
+    ensureDir(path.join(paths.assetsDir, "vendor"));
+  }
+
   // ---- reel.html -------------------------------------------------------
-  const templatePath = path.join(REPO_ROOT, "assets", "template", "reel.html");
+  const templateName = threeD ? "reel-3d.html" : "reel.html";
+  const templatePath = path.join(REPO_ROOT, "assets", "template", templateName);
   const engineSrc = fs.readFileSync(
     path.join(REPO_ROOT, "scripts", "engine", "reel-engine.js"),
     "utf8"
@@ -140,6 +169,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio }) {
         ratio,
         fps,
         gapMs: 250,
+        ...(threeD ? { look: "3d" } : {}),
       },
       style: {
         palette: ["#f2efe6", "#111111", "#e0563e", "#fff3a0"],

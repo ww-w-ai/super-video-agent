@@ -24,10 +24,7 @@ const BANNED = [
  */
 export function scanReelHtml(reelHtmlPath) {
   const html = fs.readFileSync(reelHtmlPath, "utf8");
-  const start = html.indexOf("/* SCENE:BEGIN */");
-  const end = html.indexOf("/* SCENE:END */");
-  const sceneFound = start !== -1 && end !== -1 && end > start;
-  const scene = sceneFound ? html.slice(start, end) : html;
+  const { scene, sceneFound } = extractScene(html);
 
   const violations = [];
   for (const rule of BANNED) {
@@ -48,4 +45,52 @@ export function scanReelHtml(reelHtmlPath) {
   }
 
   return { ok: violations.length === 0, violations, sceneFound };
+}
+
+/** Isolates the SCENE:BEGIN..SCENE:END block from a reel.html string. */
+function extractScene(html) {
+  const start = html.indexOf("/* SCENE:BEGIN */");
+  const end = html.indexOf("/* SCENE:END */");
+  const sceneFound = start !== -1 && end !== -1 && end > start;
+  return { scene: sceneFound ? html.slice(start, end) : html, sceneFound };
+}
+
+/**
+ * Counts `boil(` call sites in the scene code and how many pass a `moving`
+ * option (owner: shaking-while-moving reads as a glitch; boil should fade
+ * out via Reel.moving() while an element travels — this is a fact report,
+ * not a gate, since whether a given element *should* pass `moving` is a
+ * craft judgment, not something a script can verify).
+ * @param {string} reelHtmlPath
+ * @returns {{sceneFound: boolean, callSites: number, withMoving: number}}
+ */
+export function boilCallSiteReport(reelHtmlPath) {
+  const html = fs.readFileSync(reelHtmlPath, "utf8");
+  const { scene, sceneFound } = extractScene(html);
+  let callSites = 0;
+  let withMoving = 0;
+  const re = /\bboil\s*\(/g;
+  let m;
+  while ((m = re.exec(scene))) {
+    const argsEnd = findMatchingParen(scene, re.lastIndex - 1);
+    if (argsEnd === -1) continue;
+    callSites++;
+    const args = scene.slice(re.lastIndex, argsEnd);
+    if (/\bmoving\s*:/.test(args)) withMoving++;
+    re.lastIndex = argsEnd + 1;
+  }
+  return { sceneFound, callSites, withMoving };
+}
+
+/** Given the index of an opening `(`, returns the index of its matching `)`. */
+function findMatchingParen(str, openIdx) {
+  let depth = 0;
+  for (let i = openIdx; i < str.length; i++) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }

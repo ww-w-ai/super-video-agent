@@ -4,8 +4,49 @@ import fs from "node:fs";
 import path from "node:path";
 import { ffmpeg } from "../lib/ffmpeg.mjs";
 import { wordsFromCharAlignment } from "../lib/timing.mjs";
+import { tagSpans } from "../lib/tags.mjs";
 
 export const name = "elevenlabs";
+
+const DEFAULT_MODEL = "eleven_multilingual_v2";
+
+// Our delivery marks (lib/tags.mjs) in Eleven v3/v4 audio tags. A mark with no documented
+// audio tag (emphasis, soft, hurry, shout, clear-throat) is dropped; emotions pass as themselves.
+const V3_TAGS = {
+  pause: "[pauses]",
+  "long-pause": "[pauses]",
+  whisper: "[whispers]",
+  laugh: "[laughs]",
+  chuckle: "[laughs]",
+  sigh: "[sighs]",
+  gasp: "[gasps]",
+};
+
+/**
+ * Eleven v3 and v4 models read `[tag]` audio tags; older models would speak them, so every
+ * mark is dropped for those.
+ * @param {{model?:string}} voiceCfg
+ */
+export function tagMap(voiceCfg) {
+  const model = (voiceCfg && voiceCfg.model) || DEFAULT_MODEL;
+  return /^eleven_v[34]/.test(model) ? V3_TAGS : null;
+}
+
+/**
+ * Character alignment with every `[tag]` span removed, so a tag never becomes a caption word.
+ * @param {{characters:string[], character_start_times_seconds:number[], character_end_times_seconds:number[]}} align
+ */
+export function alignmentWithoutTags(align) {
+  const chars = align.characters.join("");
+  const drop = new Set();
+  for (const [s, e] of tagSpans(chars)) for (let i = s; i < e; i++) drop.add(i);
+  const keep = (_, i) => !drop.has(i);
+  return {
+    text: align.characters.filter(keep).join(""),
+    starts: align.character_start_times_seconds.filter(keep),
+    ends: align.character_end_times_seconds.filter(keep),
+  };
+}
 
 /**
  * @param {{text:string, voice?:string, voiceCfg?:{model?:string}, outPath:string, lineStart?:number}} args
@@ -31,7 +72,7 @@ export async function synth({ text, voice, voiceCfg, outPath, lineStart = 0 }) {
         "xi-api-key": apiKey,
         "content-type": "application/json",
       },
-      body: JSON.stringify({ text, model_id: (voiceCfg && voiceCfg.model) || "eleven_multilingual_v2" }),
+      body: JSON.stringify({ text, model_id: (voiceCfg && voiceCfg.model) || DEFAULT_MODEL }),
     }
   );
   if (!res.ok) {
@@ -49,12 +90,8 @@ export async function synth({ text, voice, voiceCfg, outPath, lineStart = 0 }) {
   let words;
   const align = json.alignment || json.normalized_alignment;
   if (align && Array.isArray(align.characters)) {
-    words = wordsFromCharAlignment(
-      align.characters.join(""),
-      align.character_start_times_seconds,
-      align.character_end_times_seconds,
-      lineStart
-    );
+    const spoken = alignmentWithoutTags(align);
+    words = wordsFromCharAlignment(spoken.text, spoken.starts, spoken.ends, lineStart);
   }
   return { wavPath: outPath, words };
 }

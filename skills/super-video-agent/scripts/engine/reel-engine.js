@@ -56,19 +56,55 @@
   // boil(key, t, opts) -> {dx, dy, rot}
   // Quantises t into buckets of 1/hz seconds; identical output within a
   // bucket, reseeded (independent) at the next bucket. hz default 8,
-  // amp in px, rot in degrees.
+  // amp in px, rot in degrees. opts.moving (0..1, default 0) scales the
+  // jitter down: a static scene boils by default (moving=0); while an
+  // element moves, boil fades out (moving=1 -> exactly zero jitter) and
+  // returns once it settles — see `moving()` below for computing this
+  // from move intervals.
   function boil(key, t, opts) {
     const o = opts || {};
     const hz = o.hz == null ? 8 : o.hz;
     const amp = o.amp == null ? 1.2 : o.amp;
     const rotAmp = o.rot == null ? 0.35 : o.rot;
+    const moving = o.moving == null ? 0 : o.moving;
+    const scale = 1 - moving;
     const bucket = Math.floor(t * hz);
     const [r1, r2, r3] = rngValues(key + ":" + bucket, 3);
     return {
-      dx: (r1 * 2 - 1) * amp,
-      dy: (r2 * 2 - 1) * amp,
-      rot: (r3 * 2 - 1) * rotAmp,
+      // `|| 0` turns a -0 result (negative jitter times scale=0) into a
+      // plain 0, so moving=1 gives exactly {dx:0, dy:0, rot:0}.
+      dx: (r1 * 2 - 1) * amp * scale || 0,
+      dy: (r2 * 2 - 1) * amp * scale || 0,
+      rot: (r3 * 2 - 1) * rotAmp * scale || 0,
     };
+  }
+
+  // moving(t, intervals, opts) -> 0..1
+  // Pure function of t: 1 while t falls inside any {start, end} interval in
+  // `intervals` (an element is moving), 0 well outside all of them, ramping
+  // linearly over opts.settleSec (default 0.15s) on the way in and out of
+  // each interval — so boil fades out just before a move starts and fades
+  // back in just after it settles, instead of snapping. Feed the result
+  // straight into boil's `opts.moving`.
+  function moving(t, intervals, opts) {
+    const o = opts || {};
+    const settleSec = o.settleSec == null ? 0.15 : o.settleSec;
+    if (!intervals || !intervals.length) return 0;
+    let m = 0;
+    for (const iv of intervals) {
+      let v;
+      if (t >= iv.start && t <= iv.end) {
+        v = 1;
+      } else if (t < iv.start) {
+        const d = iv.start - t;
+        v = d >= settleSec ? 0 : 1 - d / settleSec;
+      } else {
+        const d = t - iv.end;
+        v = d >= settleSec ? 0 : 1 - d / settleSec;
+      }
+      if (v > m) m = v;
+    }
+    return clamp01(m);
   }
 
   // wobblePath(points, key, t, opts) -> new array of {x,y}
@@ -152,6 +188,54 @@
   }
 
   // ---------------------------------------------------------------------
+  // captions on/off — for a picture-first render (dub.mjs, design.md
+  // "Picture first"): render.mjs --no-captions loads the page with
+  // ?captions=0 so the picture renders once with no caption baked in, and
+  // dub.mjs lays a caption layer + a language's voice over it afterwards.
+  // Read once from location.search at load, never inside seek(t), so
+  // seek stays a pure function of t.
+  // ---------------------------------------------------------------------
+  var _captionsOn = true;
+  try {
+    if (typeof location !== "undefined" && location.search) {
+      var _params = new URLSearchParams(location.search);
+      if (_params.get("captions") === "0") _captionsOn = false;
+    }
+  } catch (e) {
+    _captionsOn = true;
+  }
+  function captionsOn() {
+    return _captionsOn;
+  }
+
+  // ---------------------------------------------------------------------
+  // layer / dubCode — for dub.mjs's "let the reel draw its own captions"
+  // path (references/pipeline.md "Picture first"): ?layer=captions&dub=<code>
+  // tells a page that supports it (declares "captions" in __reel.layers) to
+  // load that dub's placed timings + plan instead of its own, skip the
+  // picture, clear to transparent, and draw only its own caption look.
+  // Read once from location.search at load, never inside seek(t).
+  // ---------------------------------------------------------------------
+  var _layer = null;
+  var _dubCode = null;
+  try {
+    if (typeof location !== "undefined" && location.search) {
+      var _layerParams = new URLSearchParams(location.search);
+      _layer = _layerParams.get("layer") || null;
+      _dubCode = _layerParams.get("dub") || null;
+    }
+  } catch (e) {
+    _layer = null;
+    _dubCode = null;
+  }
+  function layer() {
+    return _layer;
+  }
+  function dubCode() {
+    return _dubCode;
+  }
+
+  // ---------------------------------------------------------------------
   // safe area — where text stays clear of the platform's own buttons.
   // Pictures may fill the whole frame; only text must sit inside.
   // ---------------------------------------------------------------------
@@ -198,16 +282,40 @@
     return { x: inset, y: s.y, w: width - 2 * inset, h: s.h };
   }
 
-  // Records an issue when drawn text extends outside the safe area.
+  // transformedBBox(m, left, top, right, bottom) — the axis-aligned box (in
+  // the space `m` maps *into*) that contains a box's four corners after
+  // `m` (a DOMMatrix-shaped {a,b,c,d,e,f}) is applied. Pure: no ctx, no
+  // canvas — unit-testable on a plain matrix object.
+  function transformedBBox(m, left, top, right, bottom) {
+    const corners = [
+      [left, top],
+      [right, top],
+      [left, bottom],
+      [right, bottom],
+    ].map(([x, y]) => ({ x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f }));
+    const xs = corners.map((p) => p.x);
+    const ys = corners.map((p) => p.y);
+    return { left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys) };
+  }
+
+  // Records an issue when drawn text extends outside the safe area. `left`,
+  // `top`, `right`, `bottom` are in the *local* (pre-transform) coordinate
+  // space text was drawn in; ctx.getTransform() carries whatever
+  // rotate/scale/translate was active when it was drawn (a tilted sticker
+  // label, a scaled stamp), so the box is transformed into canvas space
+  // before it is tested against the safe area — otherwise a rotated or
+  // scaled label can sit outside the safe area with no issue recorded.
   function checkSafe(ctx, text, left, top, right, bottom, width, height) {
     const cw = width || (ctx.canvas ? ctx.canvas.width : 1080);
     const ch = height || (ctx.canvas ? ctx.canvas.height : 1920);
     const s = safeArea(cw, ch);
-    if (left < s.x || top < s.y || right > s.x + s.w || bottom > s.y + s.h) {
+    const m = ctx.getTransform ? ctx.getTransform() : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+    const box = transformedBBox(m, left, top, right, bottom);
+    if (box.left < s.x || box.top < s.y || box.right > s.x + s.w || box.bottom > s.y + s.h) {
       recordIssue({
         type: "text-outside-safe-area",
         text: String(text).slice(0, 80),
-        drawn: { left: Math.round(left), top: Math.round(top), right: Math.round(right), bottom: Math.round(bottom) },
+        drawn: { left: Math.round(box.left), top: Math.round(box.top), right: Math.round(box.right), bottom: Math.round(box.bottom) },
         safe: s,
       });
     }
@@ -274,26 +382,241 @@
   // text — wrap + overflow detection. Reading text never boils.
   // ---------------------------------------------------------------------
 
-  // wrapLines(ctx, text, w) — "\n" in `text` forces a break (a caption the
+  // greedyFillRows(widths, spaceW, w) — packs word indices into rows,
+  // filling each row to w before starting the next (the plain wrap rule).
+  // A single word always starts its own row even if it alone exceeds w.
+  function greedyFillRows(widths, spaceW, w) {
+    const rows = [];
+    let cur = [];
+    let curW = 0;
+    for (let i = 0; i < widths.length; i++) {
+      const next = cur.length ? curW + spaceW + widths[i] : widths[i];
+      if (cur.length && next > w) {
+        rows.push(cur);
+        cur = [i];
+        curW = widths[i];
+      } else {
+        cur.push(i);
+        curW = next;
+      }
+    }
+    if (cur.length) rows.push(cur);
+    return rows;
+  }
+
+  // balanceRows(widths, spaceW, maxW) -> {rows, widths} — same row count as
+  // a plain greedy fill at maxW, but rows are as even as possible instead
+  // of each one packed to the limit (which strands a short last word
+  // alone). Binary-searches the narrowest width, no narrower than the
+  // widest single word, that still greedy-fills to that same row count.
+  function balanceRows(widths, spaceW, maxW) {
+    if (!widths.length) return { rows: [], widths: [] };
+    const greedy = greedyFillRows(widths, spaceW, maxW);
+    const n = greedy.length;
+    const rowWidth = function (row) {
+      return row.reduce(function (sum, i, idx) {
+        return sum + widths[i] + (idx > 0 ? spaceW : 0);
+      }, 0);
+    };
+    if (n <= 1) return { rows: greedy, widths: greedy.map(rowWidth) };
+    const widestWord = Math.max.apply(null, widths);
+    let lo = widestWord;
+    let hi = maxW;
+    for (let iter = 0; iter < 30; iter++) {
+      const mid = (lo + hi) / 2;
+      const rows = greedyFillRows(widths, spaceW, mid);
+      if (rows.length <= n) hi = mid;
+      else lo = mid;
+    }
+    const balanced = greedyFillRows(widths, spaceW, hi);
+    return { rows: balanced, widths: balanced.map(rowWidth) };
+  }
+
+  // wrapParts(ctx, text, w) — "\n" in `text` forces a break (a caption the
   // automatic wrap would split badly); each part then wraps at word
-  // boundaries to fit w.
-  function wrapLines(ctx, text, w) {
-    const lines = [];
+  // boundaries to fit w, balanced (balanceRows above) rather than packed
+  // to the limit. Returns one entry per part: its wrapped line strings and
+  // how many words landed on each row (textBlock's orphan check reads the
+  // latter; wrapLines below just flattens the former).
+  function wrapParts(ctx, text, w) {
+    const spaceW = ctx.measureText(" ").width;
+    const parts = [];
     for (const part of String(text).split("\n")) {
       const words = part.split(/\s+/).filter(Boolean);
-      let cur = "";
-      for (const word of words) {
-        const test = cur ? cur + " " + word : word;
-        if (ctx.measureText(test).width > w && cur) {
-          lines.push(cur);
-          cur = word;
-        } else {
-          cur = test;
+      if (!words.length) continue;
+      const widths = words.map(function (word) {
+        return ctx.measureText(word).width;
+      });
+      const balanced = balanceRows(widths, spaceW, w);
+      const lines = balanced.rows.map(function (row) {
+        return row.map(function (i) {
+          return words[i];
+        }).join(" ");
+      });
+      parts.push({ lines: lines, rowWordCounts: balanced.rows.map(function (row) { return row.length; }) });
+    }
+    return parts;
+  }
+
+  // wrapLines(ctx, text, w) — the flat line strings from wrapParts, for
+  // callers that only need the wrapped text (height, drawing y-offsets).
+  function wrapLines(ctx, text, w) {
+    return wrapParts(ctx, text, w).reduce(function (all, part) {
+      return all.concat(part.lines);
+    }, []);
+  }
+
+  // Phrase-ending punctuation (half- and full-width): a caption chunk
+  // never splits a phrase mid-clause when it doesn't have to.
+  const CAPTION_PHRASE_END = /[,.!?…，。！？]$/;
+
+  // char length of a run of words as captionChunks would render it
+  // (word lengths + one separator char between each).
+  function phraseCharLen(idxs, words) {
+    let total = 0;
+    for (let j = 0; j < idxs.length; j++) {
+      total += String(words[idxs[j]].w).length;
+      if (j > 0) total += 1;
+    }
+    return total;
+  }
+
+  // Splits `idxs` into `k` contiguous groups as even as possible by word
+  // count (remainder words go to the earliest groups). Word-by-word
+  // captions read a chunk at a time, so an even split reads at a steady
+  // pace; a char-length-minimizing split can still strand a short last
+  // group (e.g. one long word pushes everything else forward one chunk).
+  function splitEvenlyByCount(idxs, k) {
+    const n = idxs.length;
+    const groups = [];
+    const base = Math.floor(n / k);
+    let remainder = n % k;
+    let at = 0;
+    for (let g = 0; g < k; g++) {
+      const size = base + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder -= 1;
+      groups.push(idxs.slice(at, at + size));
+      at += size;
+    }
+    return groups;
+  }
+
+  // captionChunks(words, maxChars, opts) -> array of chunks, each an array
+  // of indices into `words` ([{w, start, end}, ...]). The film's own
+  // word-by-word caption code (pipeline.md "Picture first") uses this to
+  // decide where a caption breaks, instead of a running char count that
+  // breaks wherever it happens to cross maxChars — that leaves a lone
+  // trailing word whenever the break lands one word short of the limit
+  // (references/craft.md; the owner's report: "다음 토큰은 뭘까? ...
+  // 답을 만들어" / "가!").
+  //   1. split at phrase-ending punctuation (CAPTION_PHRASE_END) or a
+  //      forced break (opts.breaks — captionBreaksFromText, a plan line's
+  //      own "|" marker) — a phrase runs through the word that carries the
+  //      punctuation or the forced break.
+  //   2. a phrase longer than maxChars splits into k = ceil(len/maxChars)
+  //      chunks, words distributed evenly by count (splitEvenlyByCount).
+  //      A forced-break phrase goes through this same step, so a long
+  //      "|"-delimited piece still balances instead of overflowing.
+  //   3. a one-word chunk of <=3 characters (a lone connector, e.g. "자,")
+  //      merges into its neighbour (next if there is one, else previous).
+  function captionChunks(words, maxChars, opts) {
+    const n = words.length;
+    if (!n) return [];
+    const forcedBreaks = (opts && opts.breaks) || [];
+    const isForcedBreak = {};
+    for (let i = 0; i < forcedBreaks.length; i++) isForcedBreak[forcedBreaks[i]] = true;
+
+    const phrases = [];
+    let cur = [];
+    for (let i = 0; i < n; i++) {
+      cur.push(i);
+      if (CAPTION_PHRASE_END.test(String(words[i].w)) || isForcedBreak[i]) {
+        phrases.push(cur);
+        cur = [];
+      }
+    }
+    if (cur.length) phrases.push(cur);
+
+    let chunks = [];
+    for (const phrase of phrases) {
+      const len = phraseCharLen(phrase, words);
+      if (phrase.length <= 1 || len <= maxChars) {
+        chunks.push(phrase);
+        continue;
+      }
+      const k = Math.min(phrase.length, Math.max(1, Math.ceil(len / maxChars)));
+      chunks = chunks.concat(splitEvenlyByCount(phrase, k));
+    }
+
+    for (let i = 0; i < chunks.length; i++) {
+      if (chunks[i].length !== 1) continue;
+      if (String(words[chunks[i][0]].w).length > 3) continue;
+      if (i + 1 < chunks.length) {
+        chunks[i] = chunks[i].concat(chunks[i + 1]);
+        chunks.splice(i + 1, 1);
+      } else if (i > 0) {
+        chunks[i - 1] = chunks[i - 1].concat(chunks[i]);
+        chunks.splice(i, 1);
+      }
+    }
+
+    // Balancing already made this rare; a chunk it still can't fix (the
+    // merge above only catches <=3-char remnants) is reported, not forced.
+    if (n >= 3) {
+      for (const c of chunks) {
+        if (c.length === 1) {
+          recordIssue({
+            type: "caption-orphan",
+            text: words.map(function (x) { return x.w; }).join(" ").slice(0, 80),
+            lastRow: words[c[0]].w,
+          });
         }
       }
-      if (cur) lines.push(cur);
     }
-    return lines;
+
+    return chunks;
+  }
+
+  // A plan line's own "|" forces a caption-chunk break there (validate-plan.mjs
+  // rejects "||" and a leading/trailing "|" — it must appear as its own
+  // whitespace-separated token). "|" is never spoken (pronounce.mjs's
+  // stripCaptionBreaks removes it before TTS/STT and before a word-timing
+  // split) and never a word itself, so captionBreaksFromText(text) walks the
+  // same whitespace tokenization skipping "|" tokens, returning the index
+  // (into the real, marker-free words — the same indexing captionChunks'
+  // `words` and a word-timing split both use) after which the break falls.
+  function captionBreaksFromText(text) {
+    const tokens = String(text || "").split(/\s+/).filter(function (t) { return t.length > 0; });
+    const breaks = [];
+    let idx = -1;
+    for (let i = 0; i < tokens.length; i++) {
+      if (tokens[i] === "|") {
+        if (idx >= 0) breaks.push(idx);
+        continue;
+      }
+      idx++;
+    }
+    return breaks;
+  }
+
+  // Tokenizes `text` the same way, but as the words themselves (never
+  // counting a "|" marker as a word) — the fallback path for a word index
+  // derived straight from text (cue matching, proportional word-timing) when
+  // no measured per-word timing exists.
+  function textWordsExcludingBreaks(text) {
+    return String(text || "").split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
+  }
+
+  // `text`, with every "|" caption-break marker removed, for the engine's
+  // default Reel.caption() box — the marker is never shown. A `\n` (a plan's
+  // own manual caption line break) is left alone.
+  function stripCaptionBreaksForDisplay(text) {
+    return String(text || "")
+      .split("\n")
+      .map(function (part) {
+        return part.split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; }).join(" ");
+      })
+      .join("\n");
   }
 
   // textBlock(ctx, text, x,y,w,h, opts) — wraps `text` inside the box.
@@ -308,7 +631,10 @@
     ctx.font = font;
     ctx.fillStyle = color;
     ctx.textBaseline = "top";
-    const lines = wrapLines(ctx, text, w);
+    const parts = wrapParts(ctx, text, w);
+    const lines = parts.reduce(function (all, part) {
+      return all.concat(part.lines);
+    }, []);
 
     const totalHeight = lines.length * lineHeight;
     if (totalHeight > h) {
@@ -319,6 +645,24 @@
         neededHeight: totalHeight,
         lines: lines.length,
       });
+    }
+
+    // A row balanced down to one word still happens when a part's other
+    // rows can't shrink further (references/craft.md — a caption row never
+    // holds one short word alone). Report it; balancing already made it
+    // rare, and this is a report, not an enforcement (tools report facts).
+    for (const part of parts) {
+      const n = part.rowWordCounts.length;
+      if (n < 2) continue;
+      const lastRowWords = part.rowWordCounts[n - 1];
+      const prevRowWords = part.rowWordCounts[n - 2];
+      if (lastRowWords === 1 && prevRowWords >= 3) {
+        recordIssue({
+          type: "caption-orphan",
+          text: String(text).slice(0, 80),
+          lastRow: part.lines[n - 1],
+        });
+      }
     }
 
     let left = Infinity;
@@ -360,6 +704,7 @@
   // landscape (16:9) canvas also caps the box at ~70% width so two
   // wrapped lines fit the shorter frame.
   function caption(ctx, line, t, opts) {
+    if (!_captionsOn) return;
     const o = opts || {};
     if (!line || !line.text) return;
     const width = o.width == null ? (ctx.canvas ? ctx.canvas.width : 1080) : o.width;
@@ -373,7 +718,7 @@
     const y = o.y == null ? safe.y + safe.h - boxH - (o.marginBottom == null ? 0 : o.marginBottom) : o.y;
     const font = o.font == null ? "800 " + fontPx + "px 'Pretendard'" : o.font;
     const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight }, o);
-    return textBlock(ctx, line.text, x, y, boxW, boxH, captionOpts);
+    return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
   }
 
   // ---------------------------------------------------------------------
@@ -404,7 +749,7 @@
       }
       // proportional fallback within the measured line, by character count
       const text = l.text || "";
-      const words = text.split(/\s+/).filter(Boolean);
+      const words = textWordsExcludingBreaks(text);
       const w = words[j];
       if (w == null) return null;
       const totalChars = words.reduce((a, ww) => a + ww.length, 0) || 1;
@@ -425,7 +770,7 @@
       const charStart = text.indexOf(substr);
       if (charStart === -1) return null;
       const charEnd = charStart + substr.length; // exclusive
-      const words = text.split(/\s+/).filter(Boolean);
+      const words = textWordsExcludingBreaks(text);
       if (!words.length) return null;
       let cursor = 0;
       let firstWordIdx = null;
@@ -456,7 +801,7 @@
   // Index (within line.text's whitespace-split words) of the first word
   // containing `substr`, or -1.
   function firstWordIndexContaining(text, substr) {
-    const words = String(text || "").split(/\s+/).filter(Boolean);
+    const words = textWordsExcludingBreaks(text);
     for (let i = 0; i < words.length; i++) {
       if (words[i].indexOf(substr) !== -1) return i;
     }
@@ -525,15 +870,23 @@
     hash,
     rng,
     boil,
+    moving,
     wobblePath,
     hold,
     drawOn,
     imageCover,
     textBlock,
+    balanceRows,
+    captionChunks,
+    captionBreaksFromText,
     caption,
+    captionsOn,
+    layer,
+    dubCode,
     safeArea,
     centeredSafeArea,
     setSafeArea,
+    transformedBBox,
     easeOutCubic,
     easeOutBack,
     settle,

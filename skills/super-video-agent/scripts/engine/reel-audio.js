@@ -38,6 +38,49 @@
   }
 
   // ---------------------------------------------------------------------
+  // per-film character (every film's kit sounded the same — the first film
+  // was a basketball promo, and every later film's sounds carried that same
+  // character; measured across 34 reels: pop in 13, thud in 6, whoosh/tick/
+  // ding in 5 each — because every kind's default seed was the literal kind
+  // name. references/sound.md "Kit").
+  // setFilmKey(key), called once at page load, gives each kind's *default*
+  // seed a film-specific prefix and derives small deterministic offsets
+  // (pitch, decay, brightness/filter) per kind from that same key, so the
+  // same kind still sounds like itself but differs film to film. An
+  // explicit `seed` (or, for pop/ding, an explicit `freq`) from the caller
+  // is never touched: default-only, same film -> identical samples, same
+  // key across renders (seek is still a pure function of t).
+  // ---------------------------------------------------------------------
+  var filmKey = "";
+
+  function setFilmKey(key) {
+    filmKey = key == null ? "" : String(key);
+  }
+
+  function defaultSeed(kind) {
+    return filmKey ? filmKey + ":" + kind : kind;
+  }
+
+  var IDENTITY_CHARACTER = { pitchSemi: 0, decayMul: 1, brightMul: 1 };
+
+  // Deterministic per-(film, kind) offsets: pitch +-4 semitones, decay and
+  // brightness/filter each +-30%. No film key set (filmKey === "") ->
+  // identity, so behavior is unchanged for every existing render.
+  function filmCharacter(kind) {
+    if (!filmKey) return IDENTITY_CHARACTER;
+    var rng = rngFor(filmKey + ":char:" + kind);
+    return {
+      pitchSemi: (rng() * 2 - 1) * 4,
+      decayMul: 1 + (rng() * 2 - 1) * 0.3,
+      brightMul: 1 + (rng() * 2 - 1) * 0.3,
+    };
+  }
+
+  function semitoneRatio(semitones) {
+    return Math.pow(2, semitones / 12);
+  }
+
+  // ---------------------------------------------------------------------
   // buffer utilities
   // ---------------------------------------------------------------------
 
@@ -129,32 +172,46 @@
 
   function sfxClick(sampleRate, opts) {
     const o = opts || {};
-    const seed = o.seed || "click";
+    const explicitSeed = o.seed != null;
+    const seed = o.seed || defaultSeed("click");
+    const character = explicitSeed ? IDENTITY_CHARACTER : filmCharacter("click");
     const exciter = noiseBurst(seed, 0.0005, sampleRate); // 0.5ms noise exciter
-    const buf = resonate(exciter, 2800, 0.01, sampleRate, 0.03); // short band-pass body
+    const freq = 2800 * semitoneRatio(character.pitchSemi);
+    const tau = 0.01 * character.decayMul;
+    const buf = resonate(exciter, freq, tau, sampleRate, 0.03); // short band-pass body
     return finishSfx(buf, sampleRate, 0.9, 1.5);
   }
 
   function sfxType(sampleRate, opts) {
     const o = opts || {};
-    const seed = o.seed || "type";
+    const explicitSeed = o.seed != null;
+    const seed = o.seed || defaultSeed("type");
+    const character = explicitSeed ? IDENTITY_CHARACTER : filmCharacter("type");
     const click = sfxClick(sampleRate, { seed: seed + ":click" });
     const bodyExciter = noiseBurst(seed + ":body", 0.001, sampleRate);
-    const body = scaleBuf(resonate(bodyExciter, 550, 0.02, sampleRate, 0.05), 0.35);
+    const bodyFreq = 550 * semitoneRatio(character.pitchSemi);
+    const bodyTau = 0.02 * character.decayMul;
+    const body = scaleBuf(resonate(bodyExciter, bodyFreq, bodyTau, sampleRate, 0.05), 0.35);
     return finishSfx(sumMono([click, body]), sampleRate, 0.85, 1.5);
   }
 
   function sfxThud(sampleRate, opts) {
     const o = opts || {};
-    const seed = o.seed || "thud";
+    const explicitSeed = o.seed != null;
+    const seed = o.seed || defaultSeed("thud");
+    const character = explicitSeed ? IDENTITY_CHARACTER : filmCharacter("thud");
     const exciter = noiseBurst(seed, 0.02, sampleRate); // 20ms low exciter, the "쾅"
-    const buf = resonate(exciter, 95, 0.14, sampleRate, 0.35); // 80-120Hz body
+    const freq = 95 * semitoneRatio(character.pitchSemi); // 80-120Hz body
+    const tau = 0.14 * character.decayMul;
+    const buf = resonate(exciter, freq, tau, sampleRate, 0.35);
     return finishSfx(buf, sampleRate, 0.95, 1.5);
   }
 
   function sfxWhoosh(sampleRate, opts) {
     const o = opts || {};
-    const seed = o.seed || "whoosh";
+    const explicitSeed = o.seed != null;
+    const seed = o.seed || defaultSeed("whoosh");
+    const character = explicitSeed ? IDENTITY_CHARACTER : filmCharacter("whoosh");
     const durSec = o.durSec || 0.28;
     const rng = rngFor(seed);
     const n = Math.round(durSec * sampleRate);
@@ -162,7 +219,7 @@
     let lp = 0;
     for (let i = 0; i < n; i++) {
       const u = i / n;
-      const cutoffHz = 250 + u * 2600; // sweeps upward through the burst
+      const cutoffHz = (250 + u * 2600) * character.brightMul; // sweeps upward through the burst
       const a = Math.exp((-2 * Math.PI * cutoffHz) / sampleRate);
       const x = rng() * 2 - 1;
       lp = (1 - a) * x + a * lp;
@@ -174,7 +231,8 @@
   function pluckBuf(freq, vel, sampleRate, opts) {
     const o = opts || {};
     const v = vel == null ? 1 : vel;
-    const tau = 0.45 * Math.sqrt(440 / freq); // music-box recipe
+    const decayMul = o.decayMul == null ? 1 : o.decayMul;
+    const tau = 0.45 * Math.sqrt(440 / freq) * decayMul; // music-box recipe
     const durSec = Math.max(0.25, tau * 6);
     const n = Math.round(durSec * sampleRate);
     const buf = new Float32Array(n);
@@ -197,14 +255,24 @@
 
   function sfxPop(sampleRate, opts) {
     const o = opts || {};
-    return pluckBuf(o.freq || 700, o.vel == null ? 0.5 : o.vel, sampleRate, { pingGain: 0.05 });
+    const explicitFreq = o.freq != null;
+    const character = explicitFreq ? IDENTITY_CHARACTER : filmCharacter("pop");
+    const freq = (o.freq || 700) * semitoneRatio(character.pitchSemi);
+    return pluckBuf(freq, o.vel == null ? 0.5 : o.vel, sampleRate, {
+      pingGain: 0.05,
+      decayMul: character.decayMul,
+    });
   }
 
   function sfxTick(sampleRate, opts) {
     const o = opts || {};
-    const seed = o.seed || "tick";
+    const explicitSeed = o.seed != null;
+    const seed = o.seed || defaultSeed("tick");
+    const character = explicitSeed ? IDENTITY_CHARACTER : filmCharacter("tick");
     const exciter = noiseBurst(seed, 0.0004, sampleRate);
-    const buf = resonate(exciter, 4200, 0.004, sampleRate, 0.015);
+    const freq = 4200 * semitoneRatio(character.pitchSemi);
+    const tau = 0.004 * character.decayMul;
+    const buf = resonate(exciter, freq, tau, sampleRate, 0.015);
     return finishSfx(buf, sampleRate, 0.5, 1.5);
   }
 
@@ -224,14 +292,28 @@
 
   function sfxDing(sampleRate, opts) {
     const o = opts || {};
-    const freq = o.freq || 523.2511; // C5
-    const tau = 1.2;
+    const explicitFreq = o.freq != null;
+    const character = explicitFreq ? IDENTITY_CHARACTER : filmCharacter("ding");
+    const freq = (o.freq || 523.2511) * semitoneRatio(character.pitchSemi); // C5
+    const tau = 1.2 * character.decayMul;
     const buf = partialTone(freq, [1, 2, 3, 4.2], [1.0, 0.4, 0.2, 0.1], tau, sampleRate, tau * 5);
     return finishSfx(buf, sampleRate, 0.85, 2);
   }
 
-  function sfxPluck(freq, vel, sampleRate) {
-    return pluckBuf(freq, vel, sampleRate, {});
+  // sfxPluck(sampleRate, opts) — same call shape as every other kit effect
+  // (sampleRate first, an opts object second: {freq, vel, ...pluckBuf's
+  // decayMul/partials/partialGains/pingGain}). The old positional shape,
+  // sfxPluck(freq, vel, sampleRate), is still accepted for backward
+  // compatibility: a numeric third argument means the old shape was used.
+  function sfxPluck(a, b, c) {
+    if (typeof c === "number") {
+      return pluckBuf(a, b, c, {}); // old shape: (freq, vel, sampleRate)
+    }
+    const sampleRate = a;
+    const o = b || {};
+    const freq = o.freq == null ? 440 : o.freq;
+    const vel = o.vel == null ? 1 : o.vel;
+    return pluckBuf(freq, vel, sampleRate, o);
   }
 
   // ---------------------------------------------------------------------
@@ -434,6 +516,7 @@
     musicBed,
     applyAttackRamp,
     normalizePeak,
+    setFilmKey,
     sfx: {
       click: sfxClick,
       type: sfxType,

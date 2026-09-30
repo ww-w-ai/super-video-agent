@@ -10,7 +10,7 @@ Read every line in every pass. Fix what the pass finds, then move to the next pa
 |---|---|---|
 | 1. Facts | each number, name, date and claim against the source | it cannot be traced to a page or passage of the source, or it drops a caution the source attached |
 | 2. Story | the whole script read top to bottom | the opening gives no reason to keep watching, a line repeats an earlier one, the order makes a later line land flat, or the ending does not close what the opening opened |
-| 3. Spoken wording | each line read aloud as a person would say it, and each line against the next | it reads like a caption, not speech; it ends on a bare noun; it has a comma that is not there for real emphasis; it packs two ideas; a word will be hard to hear; its pause does not match how it joins the next line (see below) |
+| 3. Spoken wording | each line read aloud as a person would say it, and each line against the next; each line's `cues` | it reads like a caption, not speech; it ends on a bare noun; it has a comma that is not there for real emphasis; it packs two ideas; a word will be hard to hear; its pause does not match how it joins the next line (see below); a signature effect (`sound.md` §1) lands mid-sentence instead of in a pause |
 | 4. Read-out (`say`) | how the voice will pronounce each number, unit, name, abbreviation, English word and symbol | the `say` text is missing where the written form is ambiguous, or it reads a unit twice or drops one (`4.4점` → "사쩜사 점 점", `27.3%` read without "percent"), or a sound the spelling hides is left to chance (see `references/readout.md`) |
 | 5. Final read | the whole script once more, as a viewer | anything above still fails |
 

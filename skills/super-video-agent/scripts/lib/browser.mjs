@@ -43,7 +43,15 @@ export async function openReel(url, opts = {}) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
+    if (msg.type() !== "error") return;
+    // Chromium logs its own "Failed to load resource: ...404..." console
+    // error for ANY failed fetch, including the page's intentionally
+    // optional ones (assets/lib/manifest.json, cues.json — design.md §2.5:
+    // "resolve to null so a reel with no assets/lib/ works exactly as
+    // before"). A REQUIRED missing file (voice/timings.json) still fails
+    // loudly: loadJSON throws inside the page, caught above by pageerror.
+    if (/^Failed to load resource:/.test(msg.text())) return;
+    errors.push(msg.text());
   });
   await page.goto(url, { waitUntil: "load" });
   await page.waitForFunction(() => !!(window.__reel && window.__reel.ready));
@@ -58,6 +66,7 @@ export async function openReel(url, opts = {}) {
       fps: r.fps,
       duration: r.duration,
       shots: r.shots || [],
+      layers: r.layers || [], // e.g. ["captions"] — dub.mjs's own-caption-layer support (references/pipeline.md "Picture first")
     };
   });
   // Headless Chromium's text/font rendering caches are not fully warm the
@@ -152,4 +161,36 @@ export async function scanDeadAirBySeek(page, { duration, stepSec = 0.1, runSecM
   }
 
   return { times, hashes, runs: deadAirRunsFromHashes(times, hashes, runSecMin) };
+}
+
+/**
+ * Dense layout scan: seek(t) through the whole film at a fixed `stepSec`,
+ * clearing and re-reading window.__reel.issues() at every step, so a
+ * problem that only shows up mid-shot (e.g. a label sliding in from
+ * off-screen) is caught — the normal Layout gate (review.mjs) reads
+ * issues() once per shot, at its `readAt` (qa.md "What the tools cannot
+ * see"). Only the issues themselves cross back to Node, same as
+ * scanDeadAirBySeek only returning a hash.
+ * @param {import("playwright-core").Page} page
+ * @param {{duration:number, stepSec?:number}} args
+ * @returns {Promise<{times:number[], issuesByTime:Array[]}>}
+ */
+export async function scanIssuesBySeek(page, { duration, stepSec = 0.1 }) {
+  const times = [];
+  for (let t = 0; t < duration - 1e-9; t += stepSec) times.push(t);
+  times.push(duration); // always include the final instant, however it falls on the step grid
+
+  const issuesByTime = [];
+  for (const t of times) {
+    await page.evaluate(() => window.Reel.clearIssues());
+    await page.evaluate(async (time) => {
+      const r = window.__reel;
+      const result = r.seek(time);
+      if (result && typeof result.then === "function") await result;
+    }, t);
+    const issues = await page.evaluate(() => window.__reel.issues());
+    issuesByTime.push(issues);
+  }
+
+  return { times, issuesByTime };
 }

@@ -5,10 +5,40 @@ import { ffmpeg } from "../lib/ffmpeg.mjs";
 
 export const name = "fish";
 
+// No charge while Fish Audio offers it (announced through 2026-11-30); set meta.voice.model
+// to "s2.1-pro" (the paid twin) once it ends.
+const DEFAULT_MODEL = "s2.1-pro-free";
+
+// Our delivery marks (lib/tags.mjs) in Fish Audio S2's own tags. Emotions pass as themselves.
+const S2_TAGS = {
+  pause: "[break]",
+  "long-pause": "[long-break]",
+  emphasis: "[emphasis]",
+  whisper: "[whispering]",
+  soft: "[soft tone]",
+  hurry: "[in a hurry tone]",
+  shout: "[shouting]",
+  laugh: "[laughing]",
+  chuckle: "[chuckling]",
+  sigh: "[sighing]",
+  gasp: "[gasping]",
+  "clear-throat": "[clear throat]",
+};
+
 /**
- * @param {{text:string, voice?:string, outPath:string}} args
+ * S2 models (s2.1-pro-free, s2.1-pro, s2-pro) read `[tag]` expression tags; s1 uses another
+ * syntax, so every mark is dropped for it.
+ * @param {{model?:string}} voiceCfg
  */
-export async function synth({ text, voice, outPath }) {
+export function tagMap(voiceCfg) {
+  const model = (voiceCfg && voiceCfg.model) || DEFAULT_MODEL;
+  return model.startsWith("s2") ? S2_TAGS : null;
+}
+
+/**
+ * @param {{text:string, voice?:string, voiceCfg?:{model?:string}, outPath:string}} args
+ */
+export async function synth({ text, voice, voiceCfg, outPath }) {
   const apiKey = process.env.FISH_AUDIO_API_KEY || process.env.FISH_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -26,6 +56,7 @@ export async function synth({ text, voice, outPath }) {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "content-type": "application/json",
+      model: (voiceCfg && voiceCfg.model) || DEFAULT_MODEL,
     },
     body: JSON.stringify({ text, reference_id: referenceId, format: "wav" }),
   });

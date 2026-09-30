@@ -17,6 +17,9 @@ shaking slightly made the video look natural instead of paused. Keep it subtle e
 viewers complained about motion sickness when everything moved a lot. Text the viewer must read
 stays still.
 
+Elements at rest boil; while an element moves it does not; boil returns once it arrives (`Reel.moving`).
+A moving element may also step its angle on the beat (a stop-motion feel). That is a motion choice, not boil; use it where it suits the film.
+
 ## Marks are made
 
 Things arrive the way this film's look would make them: a pen draws the circle, a note is slapped on,

@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; }
+  #stage { display: block; }
+  @font-face {
+    font-family: 'Pretendard';
+    src: url('assets/fonts/Pretendard-Regular.otf');
+    font-weight: 400;
+    font-style: normal;
+  }
+  @font-face {
+    font-family: 'Pretendard';
+    src: url('assets/fonts/Pretendard-Bold.otf');
+    font-weight: 700;
+    font-style: normal;
+  }
+{{HANDWRITING_FONT_FACE}}
+</style>
+</head>
+<body>
+<canvas id="stage" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
+<script>
+/* ENGINE:BEGIN — scripts/engine/reel-engine.js, inlined by new-reel.mjs. Not scanned for banned tokens (verify.mjs only scans SCENE). */
+{{ENGINE_SOURCE}}
+/* ENGINE:END */
+</script>
+<script>
+/* AUDIO:BEGIN — scripts/engine/reel-audio.js, inlined by new-reel.mjs. Not scanned for banned tokens (verify.mjs only scans SCENE). */
+{{AUDIO_SOURCE}}
+/* AUDIO:END */
+</script>
+<script type="module">
+/* SCENE:BEGIN */
+(async function () {
+  "use strict";
+  var WIDTH = {{WIDTH}};
+  var HEIGHT = {{HEIGHT}};
+  var FPS = {{FPS}};
+  var HAS_HANDWRITING = {{HAS_HANDWRITING}};
+
+  // Internal 3D render resolution vs the full frame. Headless Chromium has
+  // no GPU (SwiftShader, a CPU WebGL2 implementation) — 0.75 keeps frame
+  // time down (references/3d.md "Speed"). The 3D scene renders at
+  // RW x RH; the 2D overlay (captions, titles) always draws at full size.
+  var RENDER_SCALE = 0.75;
+  var RW = Math.round(WIDTH * RENDER_SCALE);
+  var RH = Math.round(HEIGHT * RENDER_SCALE);
+
+  var canvas = document.getElementById("stage");
+  var ctx = canvas.getContext("2d");
+
+  // ---- three.js: dynamic import so a missing vendor file rejects `ready`
+  // with a clear message instead of crashing the module script load
+  // (references/3d.md "Install three.js"). three.js is never bundled with
+  // this skill — the calling agent installs it into this reel folder.
+  var THREE = null;
+  var threeLoadError = null;
+  try {
+    THREE = await import("./assets/vendor/three.module.js");
+  } catch (e) {
+    threeLoadError = e;
+  }
+  var THREE_MISSING_MESSAGE =
+    "three.js not found at assets/vendor/three.module.js. Install it into this reel, " +
+    "then re-open the page:\n" +
+    "  npm install three --prefix <reel-dir>\n" +
+    "  mkdir -p <reel-dir>/assets/vendor\n" +
+    "  cp <reel-dir>/node_modules/three/build/three.module.js <reel-dir>/assets/vendor/\n" +
+    "  cp <reel-dir>/node_modules/three/build/three.core.js <reel-dir>/assets/vendor/\n" +
+    "Record the installed version and its MIT license in FILM.md (references/3d.md).";
+
+  var timings = null;
+  var tl = null;
+  var shots = [];
+
+  // Reel.layer()/Reel.dubCode() (references/pipeline.md "Picture first"):
+  // ?layer=captions&dub=<code> asks this page to draw only that dub's
+  // captions, skipping the 3D picture — mirrors the 2D template so a 3D
+  // film supports picture-first + per-language dubs the same way.
+  var layer = Reel.layer();
+  var dubCode = Reel.dubCode();
+  var isCaptionLayer = layer === "captions" && !!dubCode;
+  var dubPlan = null;
+
+  function loadJSON(url, required) {
+    return fetch(url).then(function (res) {
+      if (!res.ok) {
+        if (required) throw new Error(url + " not found — run voice.mjs first");
+        return null;
+      }
+      return res.json();
+    });
+  }
+
+  function timingsUrl() {
+    return isCaptionLayer ? "dub/" + dubCode + "/timings.placed.json" : "voice/timings.json";
+  }
+
+  function loadFilmKey() {
+    return loadJSON("plan.json", false).then(function (plan) {
+      var meta = (plan && plan.meta) || {};
+      ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id || "film");
+    }).catch(function () {
+      ReelAudio.setFilmKey("film");
+    });
+  }
+
+  function loadTimings() {
+    return loadJSON(timingsUrl(), true).then(function (data) {
+      timings = data;
+      tl = Reel.timeline(timings);
+      var lines = timings.lines || [];
+      shots = lines.map(function (l, i) {
+        var start = i === 0 ? 0 : l.start;
+        var end = i === lines.length - 1 ? timings.duration : lines[i + 1].start;
+        return { id: l.id, start: start, end: end, readAt: (l.start + l.end) / 2 };
+      });
+    });
+  }
+
+  function loadDubPlan() {
+    if (!isCaptionLayer) return Promise.resolve();
+    return loadJSON("dub/" + dubCode + "/plan.json", true).then(function (data) {
+      dubPlan = data;
+    });
+  }
+
+  function loadDeclaredFonts() {
+    var faces = Array.from(document.fonts);
+    return Promise.all(
+      faces.map(function (face) {
+        return face.load().catch(function (err) {
+          Reel.recordIssue({
+            type: "font-load-failed",
+            family: face.family,
+            weight: face.weight,
+            style: face.style,
+            message: String((err && err.message) || err),
+          });
+          return null;
+        });
+      })
+    ).then(function () {
+      return document.fonts.ready;
+    });
+  }
+
+  // ---- SFX (silent by default; wire cues the way the 2D scaffold does) --
+  var SFX_CUES = [];
+  function renderSfx(sampleRate) {
+    var duration = timings ? timings.duration : 0;
+    var m = ReelAudio.mix(duration, sampleRate);
+    ReelAudio.master(m, { peakDb: -3 });
+    return [Array.from(m.L), Array.from(m.R)];
+  }
+
+  // ======================================================================
+  // 3D world — replace this. A tiny proof scene: one lit object, fog, a
+  // moving camera. Everything below is a pure function of t: the camera
+  // follows a time-keyed spline through fixed keyframes (never a live
+  // clock or carried velocity), and the only randomness (star positions)
+  // is drawn once at build time from Reel.rng, a keyed deterministic RNG
+  // — never a per-frame random call (references/pipeline.md "Page contract").
+  // ======================================================================
+
+  var glCanvas = document.createElement("canvas"); // detached — the page
+  // markup declares only the "stage" canvas tag (verify.mjs's static scan
+  // requires exactly one); this one is created in script and never
+  // appended to the DOM.
+  glCanvas.width = RW;
+  glCanvas.height = RH;
+
+  var renderer = null;
+  var scene = null;
+  var camera = null;
+  var glPixels = null;
+  var smallCanvas = null;
+  var smallCtx = null;
+  var smallImg = null;
+
+  // Cubic Hermite through a handful of time-keyed points (Catmull-Rom
+  // tangents): the camera never jumps, and seeking to any t re-derives the
+  // same position with no state carried from the previous frame.
+  function hermiteTrack(keys) {
+    return function (t) {
+      var n = keys.length;
+      if (t <= keys[0].t) return keys[0].v.slice();
+      if (t >= keys[n - 1].t) return keys[n - 1].v.slice();
+      var i = 0;
+      while (i < n - 2 && t > keys[i + 1].t) i++;
+      var k0 = keys[Math.max(0, i - 1)];
+      var k1 = keys[i];
+      var k2 = keys[i + 1];
+      var k3 = keys[Math.min(n - 1, i + 2)];
+      var u = (t - k1.t) / (k2.t - k1.t);
+      var u2 = u * u;
+      var u3 = u2 * u;
+      var out = [];
+      for (var d = 0; d < 3; d++) {
+        var p0 = k0.v[d], p1 = k1.v[d], p2 = k2.v[d], p3 = k3.v[d];
+        var m1 = (p2 - p0) * 0.5;
+        var m2 = (p3 - p1) * 0.5;
+        var h00 = 2 * u3 - 3 * u2 + 1;
+        var h10 = u3 - 2 * u2 + u;
+        var h01 = -2 * u3 + 3 * u2;
+        var h11 = u3 - u2;
+        out.push(h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2);
+      }
+      return out;
+    };
+  }
+
+  var cameraTrack = null; // built once duration is known (buildWorld)
+  var worldBuilt = false;
+
+  function buildWorld() {
+    renderer = new THREE.WebGLRenderer({
+      canvas: glCanvas,
+      antialias: true,
+      alpha: false,
+      preserveDrawingBuffer: true,
+      powerPreference: "high-performance",
+    });
+    renderer.setPixelRatio(1);
+    renderer.setSize(RW, RH, false);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x05070f);
+    scene.fog = new THREE.Fog(0x05070f, 4, 16);
+
+    camera = new THREE.PerspectiveCamera(50, RW / RH, 0.1, 100);
+
+    var ambient = new THREE.AmbientLight(0x2a3550, 1.2);
+    scene.add(ambient);
+    var key = new THREE.DirectionalLight(0xfdba36, 2.2);
+    key.position.set(3, 4, 2);
+    scene.add(key);
+    var rim = new THREE.PointLight(0x3ac0ed, 6, 12);
+    rim.position.set(-3, 1, -2);
+    scene.add(rim);
+
+    var geo = new THREE.IcosahedronGeometry(1.2, 1);
+    var mat = new THREE.MeshStandardMaterial({ color: 0xe0563e, metalness: 0.35, roughness: 0.4 });
+    var mesh = new THREE.Mesh(geo, mat);
+    scene.add(mesh);
+
+    // Starfield: positions fixed once from a keyed RNG (build time), not
+    // regenerated per seek — the field itself never changes, only the
+    // camera moves through it.
+    var starCount = 400;
+    var starGeo = new THREE.BufferGeometry();
+    var starPos = new Float32Array(starCount * 3);
+    var rng = Reel.rng("stars");
+    for (var i = 0; i < starCount; i++) {
+      starPos[i * 3] = (rng() - 0.5) * 40;
+      starPos[i * 3 + 1] = (rng() - 0.5) * 40;
+      starPos[i * 3 + 2] = (rng() - 0.5) * 40;
+    }
+    starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
+    var starMat = new THREE.PointsMaterial({ color: 0xf4f7fb, size: 0.04, sizeAttenuation: true });
+    scene.add(new THREE.Points(starGeo, starMat));
+
+    var duration = timings ? timings.duration : 10;
+    cameraTrack = hermiteTrack([
+      { t: 0, v: [0, 0.5, 6] },
+      { t: duration * 0.5, v: [4, 1.2, 4] },
+      { t: duration, v: [0, 0.5, 6] },
+    ]);
+
+    worldBuilt = true;
+  }
+
+  function render3D(t) {
+    var pos = cameraTrack(t);
+    camera.position.set(pos[0], pos[1], pos[2]);
+    camera.lookAt(0, 0, 0);
+    var mesh = scene.children.find(function (o) { return o.isMesh; });
+    if (mesh) mesh.rotation.y = t * 0.35; // pure function of t, no carried velocity
+
+    renderer.setRenderTarget(null);
+    renderer.render(scene, camera);
+  }
+
+  // Copies the WebGL framebuffer to the 2D stage byte-for-byte. Never
+  // ctx.drawImage(glCanvas) — copying a live WebGL canvas that way varies
+  // by up to one colour level between draws of the identical frame and
+  // fails verify.mjs's determinism probe (references/3d.md, the day01-3d
+  // build notes). gl.readPixels + putImageData into a plain 2D canvas is
+  // exact; scaling that 2D canvas up with drawImage is then safe, because
+  // the source is a deterministic software (ImageData-backed) canvas, not
+  // a WebGL one.
+  function copyToStage() {
+    var gl = renderer.getContext();
+    if (!glPixels) {
+      glPixels = new Uint8Array(RW * RH * 4);
+      smallCanvas = document.createElement("canvas");
+      smallCanvas.width = RW;
+      smallCanvas.height = RH;
+      smallCtx = smallCanvas.getContext("2d");
+      smallImg = smallCtx.createImageData(RW, RH);
+    }
+    gl.readPixels(0, 0, RW, RH, gl.RGBA, gl.UNSIGNED_BYTE, glPixels);
+    var row = RW * 4;
+    for (var y = 0; y < RH; y++) {
+      smallImg.data.set(glPixels.subarray((RH - 1 - y) * row, (RH - y) * row), y * row);
+    }
+    smallCtx.putImageData(smallImg, 0, 0);
+    ctx.drawImage(smallCanvas, 0, 0, RW, RH, 0, 0, WIDTH, HEIGHT);
+  }
+
+  // ---- 2D overlay: captions and any text always draw here, at full
+  // resolution, on top of the upscaled 3D picture (references/3d.md
+  // "text always in the 2D overlay").
+  function currentLineIndex(t) {
+    if (!timings) return -1;
+    for (var i = 0; i < timings.lines.length; i++) {
+      var l = timings.lines[i];
+      if (t >= l.start && t < l.end) return i;
+    }
+    if (timings.lines.length && t >= timings.lines[timings.lines.length - 1].end) {
+      return timings.lines.length - 1;
+    }
+    return -1;
+  }
+
+  // drawCaptions(t) — this film's own caption look for the picture-first +
+  // dub path (references/pipeline.md "Picture first"); replace
+  // Reel.caption() with custom draw code the same way the 2D scaffold
+  // documents. dubPlan carries that language's own per-line fields.
+  function drawCaptions(t) {
+    var idx = currentLineIndex(t);
+    var line = idx >= 0 ? timings.lines[idx] : null;
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT });
+  }
+
+  function seek(t) {
+    if (isCaptionLayer) {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawCaptions(t);
+      return;
+    }
+    if (!worldBuilt) return;
+    render3D(t);
+    copyToStage();
+    var idx = currentLineIndex(t);
+    var line = idx >= 0 ? timings.lines[idx] : null;
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT });
+  }
+
+  var ready = threeLoadError
+    ? Promise.reject(new Error(THREE_MISSING_MESSAGE))
+    : Promise.all([
+        loadDeclaredFonts(),
+        loadFilmKey(),
+        isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings(),
+      ]).then(function () {
+        if (!isCaptionLayer) buildWorld();
+      });
+
+  window.__reel = {
+    get width() { return WIDTH; },
+    get height() { return HEIGHT; },
+    get fps() { return FPS; },
+    get duration() { return timings ? timings.duration : 0; },
+    ready: ready,
+    seek: seek,
+    get shots() { return shots; },
+    get layers() { return ["captions"]; },
+    issues: function () { return Reel.issues(); },
+    audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
+    get marks() { return []; },
+  };
+})();
+/* SCENE:END */
+</script>
+</body>
+</html>

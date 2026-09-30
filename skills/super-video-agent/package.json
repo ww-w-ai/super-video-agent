@@ -1,6 +1,6 @@
 {
   "name": "super-video-agent",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "private": true,
   "license": "Apache-2.0",
   "repository": {
@@ -21,6 +21,7 @@
     "sva-still": "./scripts/still.mjs",
     "sva-verify": "./scripts/verify.mjs",
     "sva-render": "./scripts/render.mjs",
+    "sva-dub": "./scripts/dub.mjs",
     "sva-review": "./scripts/review.mjs",
     "sva-assets": "./scripts/assets.mjs"
   },

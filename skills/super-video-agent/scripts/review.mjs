@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Contact sheet, dead-air, boil cadence, A/V duration delta, layout issues
+// Contact sheet, dead-air, A/V duration delta, layout issues
 // -> out/review.json + human summary (design.md §2.3, §2.4).
 // "Technical checks do not certify art" — this script reports what it
 // checked, not whether the video looks good.
@@ -8,28 +8,35 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, scanDeadAirBySeek } from "./lib/browser.mjs";
+import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
 import { probeDuration } from "./lib/ffmpeg.mjs";
-import { extractGrayFrames, analyzeMotion, estimateBoilCadence, evaluateBoilCadence } from "./lib/frame-diff.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { excludeEndHold } from "./lib/dead-air.mjs";
+import { groupIssueRuns } from "./lib/layout-scan.mjs";
+import { markOnsetOffset } from "./lib/sync-marks.mjs";
 import {
   measureLoudness,
   decodeMonoPcm,
   longestSilenceAfterFirstSound,
-  findOnsetOffsetMs,
 } from "./lib/audio-analysis.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
+       review.mjs <reel-dir> --scan [stepSec]
 
 Reviews a rendered reel: builds a contact sheet (one frame per shot's
-readAt, with timestamps), scans for dead air, estimates boil cadence,
-compares audio/video duration, and collects layout issues(). Writes
+readAt, with timestamps), scans for dead air, compares audio/video
+duration, and collects layout issues(). Writes
 <reel-dir>/out/review.json and prints a human summary.
 
---mp4  path to an already-rendered video (default: out/final.mp4, or
-       out/preview.mp4, or render a preview now if neither exists).
+--mp4   path to an already-rendered video (default: out/final.mp4, or
+        out/preview.mp4, or render a preview now if neither exists).
+--scan  dense layout scan instead of the normal review: seeks the whole
+        film every [stepSec] seconds (default 0.1s), clearing and
+        re-reading window.__reel.issues() at each step, and reports issue
+        runs with their times — catches a problem the normal one-frame-
+        per-shot Layout check misses (qa.md "What the tools cannot see").
+        Writes <reel-dir>/out/review-scan.json.
 `;
 
 const AV_DELTA_MS_THRESHOLD = 50;
@@ -39,6 +46,7 @@ const SYNC_OFFSET_MIN_MS = -20;
 const SYNC_OFFSET_MAX_MS = 40;
 const DEAD_AIR_STEP_SEC = 0.1;
 const DEAD_AIR_RUN_SEC_MIN = 0.8;
+const DENSE_SCAN_STEP_SEC_DEFAULT = 0.1;
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
@@ -54,12 +62,57 @@ export async function main(argv) {
   }
 
   try {
+    if (flags.scan) {
+      const stepSec = typeof flags.scan === "string" ? parseFloat(flags.scan) : DENSE_SCAN_STEP_SEC_DEFAULT;
+      const report = await scanLayoutDense({ dir, paths, stepSec });
+      writeJson(path.join(paths.outDir, "review-scan.json"), report);
+      printScanSummary(report);
+      return;
+    }
     const report = await reviewReel({ dir, paths, mp4Flag: flags.mp4 ? abs(flags.mp4) : undefined });
     writeJson(path.join(paths.outDir, "review.json"), report);
     printSummary(report);
   } catch (e) {
     fail(e.message);
   }
+}
+
+/** --scan: seeks the whole film at `stepSec` and groups issues() hits into runs (scripts/lib/layout-scan.mjs). */
+export async function scanLayoutDense({ dir, paths, stepSec }) {
+  const server = await serveDir(dir);
+  let session;
+  try {
+    session = await openReel(server.url, {});
+    const { duration } = session.meta;
+    const { times, issuesByTime } = await scanIssuesBySeek(session.page, { duration, stepSec });
+    const runs = groupIssueRuns(times, issuesByTime);
+    const totalIssues = issuesByTime.reduce((n, arr) => n + arr.length, 0);
+    return {
+      reelDir: dir,
+      stepSec,
+      duration,
+      sampleCount: times.length,
+      totalIssues,
+      runs,
+      note: "one frame per shot's readAt is not scanned here — this scans every stepSec seconds of the whole film instead.",
+    };
+  } finally {
+    if (session) await session.close();
+    await server.close();
+  }
+}
+
+function printScanSummary(report) {
+  const lines = [
+    `dense layout scan: ${report.reelDir}`,
+    `step: ${report.stepSec}s over ${report.duration.toFixed(2)}s (${report.sampleCount} samples)`,
+    `issues: ${report.totalIssues} sample-hit(s) in ${report.runs.length} run(s)`,
+  ];
+  for (const r of report.runs) {
+    lines.push(`  ${r.startSec.toFixed(2)}s-${r.endSec.toFixed(2)}s (${r.sampleCount} sample(s), types: ${r.types.join(", ")})`);
+  }
+  if (report.runs.length === 0) lines.push("no layout issues found across the scan");
+  process.stdout.write(lines.join("\n") + "\n");
 }
 
 export async function reviewReel({ dir, paths, mp4Flag }) {
@@ -110,25 +163,6 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
       runSecMin: DEAD_AIR_RUN_SEC_MIN,
     });
 
-    // Boil cadence still uses the ffmpeg pixel-diff scan (design.md §2.4):
-    // at native resolution (or, for a --preview render, whatever "native"
-    // already halved down to) so sub-pixel boil motion survives analysis.
-    const isPreviewMp4 = /^preview(-[0-9-]+)?\.mp4$/.test(path.basename(fs.realpathSync(mp4Path)));
-    const cadenceGray = await extractGrayFrames(mp4Path, fps, { width: null });
-    const cadenceMotion = analyzeMotion(cadenceGray.frames, fps);
-    const cadenceEstimate = estimateBoilCadence(cadenceMotion.fractions, fps);
-    const plannedBoilHz = 8; // matches engine default (design.md §2.2 boil hz=8)
-    const plannedCadenceSec = 1 / plannedBoilHz;
-    const cadenceToleranceSec = 1 / fps; // "±1 frame" (design.md §2.4)
-    const boilCadence = evaluateBoilCadence({
-      cadenceSec: cadenceEstimate.cadenceSec,
-      spikeCount: cadenceEstimate.spikeCount,
-      plannedHz: plannedBoilHz,
-      toleranceSec: cadenceToleranceSec,
-      isPreview: isPreviewMp4,
-      analyzedWidthPx: cadenceGray.w,
-    });
-
     const videoDuration = await probeDuration(mp4Path);
     const audioDuration = duration; // timings.json duration, the timeline authority
     const avDeltaMs = Math.abs(videoDuration - audioDuration) * 1000;
@@ -149,13 +183,27 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     // plan.json meta.tailSec) is not counted as a gap to flag.
     const narrationPcm = pcm.subarray(0, Math.min(pcm.length, Math.round(lastLineEnd * AUDIO_SAMPLE_RATE)));
     const silence = longestSilenceAfterFirstSound(narrationPcm, AUDIO_SAMPLE_RATE, { thresholdDb: -50 });
+    // A mark inside a narration window may sit on a sound render.mjs ducked
+    // (scripts/lib/duck.mjs, references/sound.md "Mix") — flag that here so
+    // a borderline offset reads as expected, not a silent regression.
+    const narrationWindows = (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
+    // Marks are measured on their own effects-only stem (window.__reel.
+    // sfxStems(), the same cue rendered alone — sound.md "Sound cards")
+    // when one exists, so a mark that lands on a spoken word measures the
+    // effect's own onset instead of the voice's. Falls back to the full mix
+    // only when sfxStems() is absent or has no stem for that mark.
+    const hasSfxStems = await session.page.evaluate(() => typeof window.__reel.sfxStems === "function");
+    const stems = hasSfxStems
+      ? await session.page.evaluate((sr) => window.__reel.sfxStems(sr), AUDIO_SAMPLE_RATE)
+      : [];
     const markResults = marks.map((m) => {
-      const offsetMs = findOnsetOffsetMs(pcm, AUDIO_SAMPLE_RATE, m.at, 0.15);
+      const { offsetMs, source } = markOnsetOffset(m, { stems, mixPcm: pcm, sampleRate: AUDIO_SAMPLE_RATE, windowSec: 0.15 });
       const sync = !!m.sync;
+      const duckedByNarration = narrationWindows.some((w) => m.at >= w.start && m.at <= w.end);
       const pass =
         !sync ||
         (offsetMs != null && offsetMs >= SYNC_OFFSET_MIN_MS && offsetMs <= SYNC_OFFSET_MAX_MS);
-      return { at: m.at, kind: m.kind, sync, offsetMs, pass };
+      return { at: m.at, kind: m.kind, sync, offsetMs, source, duckedByNarration, pass };
     });
     const silencePass = silence.longestSilenceSec <= SILENCE_GATE_SEC;
     const marksPass = markResults.every((m) => m.pass);
@@ -171,7 +219,6 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
         avDeltaMsMax: AV_DELTA_MS_THRESHOLD,
         deadAirRunSecMax: DEAD_AIR_RUN_SEC_MIN,
         deadAirStepSec: DEAD_AIR_STEP_SEC,
-        boilCadenceToleranceSec: cadenceToleranceSec,
         syncOffsetMsRange: [SYNC_OFFSET_MIN_MS, SYNC_OFFSET_MAX_MS],
       },
       checks: {
@@ -186,7 +233,6 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           endHoldSec: Math.max(0, videoDuration - lastLineEnd),
           note: "measured from seek() output at native resolution: canvas pixel hash every 0.1s, a run of identical hashes >=0.8s is flagged; the end hold after the last line (meta.tailSec) is not counted",
         },
-        boilCadence,
         layout: {
           pass: allIssues.length === 0,
           issueCount: allIssues.length,
@@ -200,6 +246,10 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           silenceGateSec: SILENCE_GATE_SEC,
           silencePass,
           marks: markResults,
+          onsetSourceNote:
+            "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
+          duckingNote:
+            "render.mjs ducks library asset cue sounds (plan.json line `cues`) by meta.sound.sfxDuckDb (default -6dB, ~80ms ramps) while a narration line speaks; each mark above carries duckedByNarration for whether it fell inside a narration window. The sync tolerance (-20..+40ms) is unchanged, but a mark on a ducked sound near that edge is expected, not a regression.",
         },
       },
       note: "Technical checks do not certify art — this reports what was mechanically checked (motion, sync, layout); a human must read the contact sheet and judge composition, legibility, and taste.",
@@ -219,10 +269,9 @@ function printSummary(report) {
     `contact sheet: ${report.contactSheet}`,
     `A/V duration: video=${report.duration.video.toFixed(3)}s audio=${report.duration.audio.toFixed(3)}s delta=${report.duration.deltaMs.toFixed(1)}ms [${c.avSync.pass ? "PASS" : "FAIL"}]`,
     `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${c.deadAir.pass ? "PASS" : "FAIL"}]`,
-    `boil cadence: planned=${c.boilCadence.plannedIntervalSec.toFixed(3)}s estimated=${c.boilCadence.estimatedIntervalSec == null ? "n/a" : c.boilCadence.estimatedIntervalSec.toFixed(3) + "s"} (analyzed at ${c.boilCadence.analyzedWidthPx}px) [${c.boilCadence.status.toUpperCase()}]`,
     `layout issues: ${c.layout.issueCount} [${c.layout.pass ? "PASS" : "FAIL"}]`,
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s) [${c.audio.silencePass ? "PASS" : "FAIL"}]`,
-    `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
+    `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     report.note,
   ];
   process.stdout.write(lines.join("\n") + "\n");

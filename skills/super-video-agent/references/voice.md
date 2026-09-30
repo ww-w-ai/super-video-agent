@@ -21,13 +21,61 @@ understand the voice" is a top public complaint).
 
 | Provider | Setup | License of output | Word timings |
 |---|---|---|---|
-| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default, recommended) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film | Apache-2.0 weights — commercial OK | estimated |
-| `fishspeech` | `SVA_FISH_DIR`; `meta.voice.refTokens` (.npy) + `refText` | **CC-BY-NC-SA-4.0 — non-commercial only**; never for promos or monetized videos | estimated |
-| `melotts` | `SVA_MELO_PYTHON` | MIT | estimated |
-| `fish` | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | estimated |
-| `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | per ElevenLabs plan | provider alignment |
-| `say` | macOS only; `SAY_VOICE` (default `Yuna`); runs only with `--provider say` | draft use | estimated |
-| `file` / `none` | — | user's own | estimated |
+| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default, recommended) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film | Apache-2.0 weights — commercial OK | speech-to-text |
+| `fishspeech` | `SVA_FISH_DIR`; `meta.voice.refTokens` (.npy) + `refText` | **CC-BY-NC-SA-4.0 — non-commercial only**; never for promos or monetized videos | speech-to-text |
+| `melotts` | `SVA_MELO_PYTHON` | MIT | speech-to-text |
+| `fish` | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | speech-to-text |
+| `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | per ElevenLabs plan | engine alignment |
+| `say` | macOS only; `SAY_VOICE` (default `Yuna`); runs only with `--provider say` | draft use | speech-to-text |
+| `file` / `none` | — | user's own | speech-to-text |
+
+Hosted models (`meta.voice.model`):
+
+| Provider | Default | Other models | Cost |
+|---|---|---|---|
+| `fish` | `s2.1-pro-free` | `s2.1-pro` (its paid twin; set it once the free model ends), `s2-pro`, `s1` | billed per UTF-8 byte of input ($15 per million; Korean is 3 bytes a character). The default `s2.1-pro-free` is the same model at no cost while Fish Audio offers it (announced through 2026-11-30); its requests may be used to train their models. A private cloned voice can be created with an API key alone (POST /model); Fish's web app needs a paid plan for one |
+| `elevenlabs` | `eleven_multilingual_v2` | `eleven_v3`, `eleven_v4`, `eleven_flash_v2_5` | billed per character; instant cloning and commercial use from the Starter plan. A restricted API key needs the text-to-speech and voice permissions |
+
+Neither provider documents a per-request minimum, so one request per line costs the same as one
+long request, and keeps each line regenerable on its own.
+
+## Delivery marks
+
+Write delivery directions as our own marks in curly braces, in the line's `say`, never in
+`text` (the caption). Each voice provider translates them into its model's own tags (`tagMap`
+in `scripts/voice/<provider>.mjs`); a mark the model has no tag for is dropped, and an engine
+that reads no tags (qwen3, MeloTTS, say, Fish s1, ElevenLabs before v3) gets the line without
+any. The same plan works on every engine.
+
+```json
+{ "id": "l14", "text": "텔레칩스도 할 수 있고, 해야 합니다.",
+  "say": "{confident} 텔레칩스도 할 수 있고, {pause} 해야 합니다." }
+```
+
+| Mark | Fish Audio S2 | ElevenLabs v3/v4 |
+|---|---|---|
+| `{pause}` / `{long-pause}` | `[break]` / `[long-break]` | `[pauses]` / `[pauses]` |
+| `{emphasis}` | `[emphasis]` | dropped |
+| `{whisper}` | `[whispering]` | `[whispers]` |
+| `{soft}` / `{hurry}` / `{shout}` | `[soft tone]` / `[in a hurry tone]` / `[shouting]` | dropped |
+| `{laugh}` / `{chuckle}` | `[laughing]` / `[chuckling]` | `[laughs]` / `[laughs]` |
+| `{sigh}` / `{gasp}` | `[sighing]` / `[gasping]` | `[sighs]` / `[gasps]` |
+| `{clear-throat}` | `[clear throat]` | dropped |
+| an emotion: `{confident}` `{determined}` `{excited}` `{calm}` `{proud}` `{hopeful}` `{happy}` `{sad}` `{nervous}` `{curious}` `{surprised}` `{grateful}` `{serious}` `{warm}` `{sarcastic}` `{annoyed}` | the same word in brackets | the same word in brackets |
+
+A mark outside this list is dropped everywhere, and `voice.mjs` names it. A square-bracket tag
+in one model's own words (`[whispers sweetly]` for Fish S2) passes only to an engine that reads
+tags; prefer marks so the plan stays portable. The speech-to-text check ignores marks and tags,
+and ElevenLabs word timings drop them, so neither shows up as a caption word. Use a mark where
+the plain read falls flat (a line that must sound sure, a beat before a turn), not on every line.
+
+Set one delivery for the whole film with `meta.voice.delivery` (an EMOTIONS value) instead of
+repeating the same `{emotion}` mark on every line's `say` — a different emotion picked per line
+makes the voice jump around; a line's own emotion mark still overrides it.
+
+Fish Audio reads a Short's lines calm and flat unless tagged, so a 9:16 film on the fish provider
+defaults every untagged line to `{confident}`. Tag a line with its own emotion mark to change it
+for that line; set `meta.voice.delivery: "none"` to turn the default off for the whole film.
 
 ## Local clone (qwen3) — what can go wrong
 
@@ -73,6 +121,37 @@ not flagged, and need no action.
 - Missing Python or `faster-whisper` never fails the voice step — it prints `STT check skipped:
   <reason>` and continues.
 
+## Comparing takes
+
+`--takes` synthesizes more than one candidate for a line before committing to one — for a count
+(`--takes N`, same text, fresh samples) or for tone (`--takes <tone>,<tone>`, one take per
+delivery mark, freely chosen from `scripts/lib/tags.mjs` `EMOTIONS` for the film, e.g.
+`confident` — a line's own mark is replaced by it for that take). Requires `--lines`.
+
+The intended use is a tone comparison on the opening line only: compare 2–4 tones, the user
+picks, the pick becomes `meta.voice.delivery`, and the remaining lines are made once in it —
+SKILL.md's flow asks whether to compare tones before building a film; if not chosen, or
+unattended, one take.
+
+Each take is kept as `voice/takes/<id>-<k>.wav` with its STT CER and duration, printed as a table;
+take 1 installs automatically (copied into `voice/line-<id>.wav`,
+narration.wav/timings.json rebuilt as `--lines` does). Pick a different one on a later run with
+`--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild. Picking a take from a
+tone comparison also writes that mark to `meta.voice.delivery`, so every later line is made in it.
+
+Never runs TTS in parallel — one request at a time, even across takes.
+
+## When to confirm the voice before building the film
+
+Re-voicing after the picture is cheap when the render itself is cheap to redo: a picture-first
+film (`dub.mjs`) only re-dubs the audio track; a 2D film whose new take keeps its slot only
+remixes the audio, and re-rendering the shots a longer take moved takes minutes. In those cases,
+build the film and fix the voice after.
+
+Voice-first films where a length change shifts every later shot — 3D chief among them — are the
+expensive case: a 40 s 3D film took 11–20 min to render, so a wrong tone found only after that
+render means redoing it. There, play the whole narration and confirm it before building any
+scenes.
 
 **End the reference on a finished sentence.** A clip cut mid-sentence (and its `refText`) makes
 the clone continue it: the last word of the reference leaks onto the start of generated lines.
@@ -119,16 +198,20 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 
 ## Timing model
 
+- Every line is leveled to -16 LUFS integrated (true peak <= -1.5 dBTP), a single measured gain
+  per line, before `narration.wav`/`timings.json` are built — set `meta.voice.levelLines: false`
+  to turn this off. `dub.mjs` levels each dub line's clip the same way before placing it.
 - Head 0.4 s, gap `meta.gapMs` (default 250 ms) between lines, tail 0.4 s. A line's own
   `pauseAfterMs` replaces the gap after it: short when the next line continues the thought, long
   at a scene change (`references/script-review.md`, "Narration that flows"). Changing pauses
   needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips.
-- Line start/end are measured from the synthesized audio. Word times come from the provider when it
-  gives them, otherwise proportional to characters inside the measured line — good enough to land a
-  visual beat on a word within ~0.2 s, not for karaoke captions. Estimates have been up to ~0.4 s
-  off the sound. When a beat must land on the sound itself (a hard cut on a word, a waveform drawn
-  on screen), measure it from `voice/narration.wav`: `ffmpeg -af silencedetect=noise=-38dB:d=0.09`
-  gives the speech intervals, or take the loudest 10 ms step inside the word's estimated window.
+- Line start/end are measured from the synthesized audio. Word times are measured too, and always
+  carry the caption's words (`text`, "MCP를"), even where the voice read a respelling ("엠씨피를"):
+  ElevenLabs reports its own; for every other engine the speech-to-text check reports when each
+  word was said, trimmed to where its sound starts and stops, so a pause shows as a gap between
+  words. Without `SVA_STT_PYTHON` (or with `--no-stt`) word times fall back to an even spread by
+  letters across the line, which has been up to ~0.4 s off the sound and misses pauses. Word ends
+  inside continuous speech are less exact than word starts; land beats on starts.
 - Shorts pacing: the user picks 1.0–1.2× at the start (SKILL.md Flow 1); unanswered, a Short speaks at `meta.voice.rate` 1.1 in every language (ffmpeg atempo, clamped
   0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
   `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather

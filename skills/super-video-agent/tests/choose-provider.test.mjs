@@ -1,6 +1,6 @@
 // Pure priority-order test for voice.mjs's provider auto-choice
 // (scripts/lib/choose-provider.mjs) — file > qwen3 > fish > elevenlabs >
-// melotts > say.
+// melotts; nothing set up gives no provider.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chooseProvider } from "../scripts/lib/choose-provider.mjs";

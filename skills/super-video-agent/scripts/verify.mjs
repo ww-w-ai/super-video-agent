@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
-import { scanReelHtml } from "./lib/static-scan.mjs";
+import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle } from "./lib/determinism.mjs";
@@ -20,6 +20,9 @@ Runs two checks against <reel-dir>/reel.html:
   2. Determinism probe: seeks >=12 times (shot boundaries, boil bucket
      edges, spread samples) in order and shuffled order, hashes each
      captured PNG, and requires identical hashes at every probe time.
+
+Also prints an info line counting boil() call sites in the scene code and
+how many pass a \`moving\` option — a fact report, not a gate.
 
 Also warns (does not fail) when plan.json's line cues (design.md §2.5)
 don't match assets/lib/cues.json, i.e. \`assets.mjs fetch\` hasn't run since
@@ -59,6 +62,11 @@ export async function main(argv) {
     return;
   }
   process.stdout.write("static scan: ok\n");
+
+  const boilReport = boilCallSiteReport(paths.reelHtml);
+  process.stdout.write(
+    `boil: ${boilReport.callSites} call site(s), ${boilReport.withMoving} pass moving\n`
+  );
 
   warnOnCueDrift(dir, paths);
 

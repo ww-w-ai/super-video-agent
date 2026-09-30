@@ -123,7 +123,7 @@ test("validate: accepts meta.distribution personal|public, rejects other values"
   assert.equal(validate(plan, schema).valid, false);
 });
 
-import { cueWordErrors } from "../scripts/validate-plan.mjs";
+import { cueWordErrors, captionBreakErrors } from "../scripts/validate-plan.mjs";
 
 test("validate-plan: a word cue must name a word in its line text", () => {
   const plan = { lines: [
@@ -133,4 +133,39 @@ test("validate-plan: a word cue must name a word in its line text", () => {
   const errs = cueWordErrors(plan);
   assert.equal(errs.length, 1);
   assert.match(errs[0], /lines\[1\]\.cues\[0\]/);
+});
+
+// --- captionBreakErrors: "|" forced caption breaks (references/pipeline.md
+// "Forced caption breaks") must appear as their own token, never doubled,
+// never leading/trailing.
+
+test("validate-plan: a single '|' between words is accepted", () => {
+  const plan = { lines: [{ id: "a", text: "It rides a radio wave | to that cell tower | up there," }] };
+  assert.deepEqual(captionBreakErrors(plan), []);
+});
+
+test("validate-plan: a line with no '|' at all is accepted", () => {
+  const plan = { lines: [{ id: "a", text: "just a plain line" }] };
+  assert.deepEqual(captionBreakErrors(plan), []);
+});
+
+test("validate-plan: '||' (two markers, nothing between) is rejected", () => {
+  const plan = { lines: [{ id: "a", text: "wave | | tower" }] };
+  const errs = captionBreakErrors(plan);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /lines\[0\]\.text/);
+});
+
+test("validate-plan: a leading '|' is rejected", () => {
+  const plan = { lines: [{ id: "a", text: "| wave to tower" }] };
+  const errs = captionBreakErrors(plan);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /lead or trail/);
+});
+
+test("validate-plan: a trailing '|' is rejected", () => {
+  const plan = { lines: [{ id: "a", text: "wave to tower |" }] };
+  const errs = captionBreakErrors(plan);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /lead or trail/);
 });

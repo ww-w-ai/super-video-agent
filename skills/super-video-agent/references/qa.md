@@ -7,7 +7,7 @@
 | Contract | `verify.mjs` static scan | no `Math.random`, `Date`, `performance.now`, `requestAnimationFrame`, timers, `fetch` in scene code |
 | Determinism | `verify.mjs` probe | shuffled-seek PNG hashes equal in-order hashes at ≥ 12 times (shot edges, boil bucket edges) |
 | Dead air | `review.mjs` | seek(t) every 0.1 s through the timeline, hash the native-resolution canvas; no run of identical hashes ≥ 0.8 s before the last line ends. The end hold after it (`meta.tailSec`) is reported as `endHoldSec`, not flagged |
-| Boil present | `review.mjs` | small changes keep happening during holds |
+| Boil call sites | `verify.mjs` | not a gate — counts `boil(` call sites in the scene code and how many pass a `moving` option, printed as one info line |
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
@@ -29,14 +29,17 @@ Settle texture or small-text questions on a full-size `still.mjs` PNG, not the r
 
 ## What the tools cannot see
 
-- **Motion feel**: whether a move is too fast, floaty, or nauseating. The dead-air and cadence
-  numbers only say *something* moves. Report motion feel as unverified.
+- **Motion feel**: whether a move is too fast, floaty, or nauseating. The dead-air number only
+  says *something* moves. Boil is checked in the scene source (the `boil:` info line from
+  `verify.mjs`), not in frames — whether the tremble reads as hand-made or as jitter is a taste
+  call, not something a script can see. Report motion feel as unverified.
 - **Audio quality and pronunciation**: numbers confirm length and sync, not whether a name is
   said right. Flag names and English terms for the user to listen to.
 - **Layout between checked frames**: the Layout gate reads `__reel.issues()` at one frame per
   shot (its `readAt`). Text that overflows or leaves the safe area only mid-shot, during a move
-  or a count-up, is not seen. For such shots, seek every 0.1 s through them and collect
-  `issues()` yourself.
+  or a count-up, is not seen (a label sliding in from off-screen is a real example this missed).
+  Run `review.mjs <dir> --scan [stepSec]` (default 0.1 s) instead: it seeks the whole film at that
+  step and reports issue runs with their times.
 - **Taste**: a passing sheet is not an approved film. Say "technically verified" and list what a
   human should watch for.
 

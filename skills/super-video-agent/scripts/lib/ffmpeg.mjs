@@ -92,6 +92,33 @@ export async function probeFrameCount(filePath) {
   return val;
 }
 
+/** Pixel dimensions and frame rate of `filePath`'s first video stream, via ffprobe. Used by dub.mjs to size the caption layer to the picture without re-opening reel.html. */
+export async function probeVideoInfo(filePath) {
+  const { stdout } = await ffprobe(
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height,r_frame_rate",
+      "-of",
+      "csv=s=x:p=0",
+      filePath,
+    ],
+    {}
+  );
+  const [w, h, rate] = stdout.toString().trim().split("x");
+  const [num, den] = String(rate).split("/").map(Number);
+  const fps = den ? num / den : Number(rate);
+  const width = Number(w);
+  const height = Number(h);
+  if (!Number.isFinite(width) || !Number.isFinite(height) || !Number.isFinite(fps)) {
+    throw new Error(`ffprobe returned no usable video stream info for ${filePath}`);
+  }
+  return { width, height, fps };
+}
+
 const ATEMPO_MIN = 0.8;
 const ATEMPO_MAX = 1.3;
 

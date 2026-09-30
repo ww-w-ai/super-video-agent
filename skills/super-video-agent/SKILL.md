@@ -53,22 +53,46 @@ use, adapt or ignore; none of it is a template.
 
 ```
 1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
-   length, whether they want to review the script before the voice, and for a 9:16 film the
-   voice speed (1.0–1.2×, default 1.1), if not given; start
-   FILM.md (facts with where they came from, cautions, scope, the style choice, decisions, what
-   the owner must supply)
-2. Write the lines → plan.json, and while writing, pick sound effects and reaction clips from
-   the asset library as line `cues` (`assets.mjs search`; skip if nothing fits)
+   length, whether they want to review the script before the voice, the order — voice first
+   (default) or picture first — recommend picture first when the picture renders slowly
+   (3D/WebGL drawn on CPU, heavy effects) or several languages share one picture, for a 9:16
+   film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
+   opening line first (default when nobody can answer: no), if not given; start
+   FILM.md (facts with where they came from, cautions, scope, the style choice, the tone
+   choice, decisions, what the owner must supply)
+2. Write the lines → plan.json, and while writing, decide what each visible event sounds like in
+   this film. Look in the asset library first (`assets.mjs search`) and use a sound as a line
+   `cue` only if it fits the event and the film's world (fit 8 or more, `references/sound.md`
+   "Sound cards"); where nothing fits, make the sound for this film
    → review passes until a full read changes nothing
    → if the user wants to review: show the whole script (text, and say where it differs) and
      wait; apply their edits, then continue
+   → if a tone comparison was requested: make the opening line in 2–4 tones chosen freely for
+     this film from the full emotion list (`EMOTIONS` in `scripts/lib/tags.mjs`; e.g.
+     `confident`) with `voice.mjs --lines <openingId> --takes <tone>,<tone>`, show the comparison
+     table, and install the user's pick (`--pick <id>=<k>`); the pick becomes the film's
+     delivery (`meta.voice.delivery`) for every other line (`references/voice.md`)
    → make the voice once → voice/timings.json (measured line times); fix only STT flags
+   → 3D in voice-first order: play the whole narration to the user and get a confirm before
+     building scenes (a changed line length re-renders every later shot, and a 40 s 3D film
+     took 11–20 min to render). Every other case: build the film and fix voice lines after
+     (a 2D film re-renders only the changed shots in minutes; picture first only re-dubs)
 3. `assets.mjs fetch`, then build scenes onto the measured times: hardest frame first, look at
    it, fix it; then the rest
-4. Render → look at a contact sheet → fix → repeat until it holds
+4. Render → look at a contact sheet → fix → repeat until it holds. After the sounds are built:
+   write `sound-cards.json` → `sfx-cards.mjs measure`, `judge`, `report` (`references/sound.md`
+   "Sound cards"); redesign any sound scoring fit < 8, re-measure, re-judge, up to 3 rounds
 5. Final render; report numbers, what you looked at, what you did not check, and a few
    timestamps for the owner to listen to
 ```
+
+**Skill defects.** Do not edit the skill's own files; work around a defect inside the reel. List
+each one in the final report under "Skill defects" (what broke, how you worked around it). Then
+ask the user whether to report them to the makers. Only on a yes: open a prefilled issue at
+https://github.com/ww-w-ai/super-video-agent/issues/new?template=skill-defect.md (or `gh issue
+create --repo ww-w-ai/super-video-agent` when `gh` is signed in), containing the defect, the
+workaround, the steps to reproduce, the skill version and the tool output — never the user's
+source, script, film or file paths.
 
 ### Four stages, four sessions
 
@@ -91,12 +115,27 @@ When the user asks to fix only some scenes, change only those: regenerate only t
 lines' voice (`voice.mjs --lines`), re-render only those shots (`render.mjs --only`), and let
 the renderer splice them into the existing film (`references/pipeline.md`).
 
+### Picture first
+
+The picture's clock still comes from one language's voice — build that language's `voice/` first,
+same as always. Then the picture itself renders once, with no caption baked in
+(`render.mjs --no-captions`), and every language — including that first one — is laid over it with
+`dub.mjs`, each in its own `dub/<code>/`. A language whose lines run longer than the first
+language's is sped up to fit (up to 1.2×) or the film reports which lines to shorten; the picture
+never moves and no other language's lines run long because of it (`references/pipeline.md`).
+A film with its own caption look (word-by-word highlight, emphasis colours) keeps that look in
+every dub — write `drawCaptions(t)` in `reel.html` (the scaffold's reference implementation) and
+declare `"captions"` in `__reel.layers`; otherwise `dub.mjs` falls back to the engine's default
+caption box and says so. Each language's line should fill about 80-100% of its slot; when
+`dub.mjs` warns a line's fill is below ~0.75 or it needed atempo, rewrite that line's wording and
+re-make only it with `voice.mjs --lines`, up to 3 rounds, without asking (`references/pipeline.md`).
+
 Frame size: let the user pick one of these (`new-reel.mjs --ratio`). If they did not say and
 you can ask, ask; otherwise infer it from where the film goes.
 
 | `--ratio` | Size | Where |
 |---|---|---|
-| `9:16` | 1080×1920 | vertical — YouTube Shorts, Reels, TikTok; voice speed from the user (1.0–1.2×) into `meta.voice.rate`; unanswered, 1.1 in every language and style, which `voice.mjs` fills in when the plan sets none |
+| `9:16` | 1080×1920 | vertical — YouTube Shorts, Reels, TikTok; voice speed from the user (1.0–1.2×) into `meta.voice.rate`; unanswered, 1.1 in every language and style, which `voice.mjs` fills in when the plan sets none (Fish: confident delivery by default) |
 | `16:9` | 1920×1080 | horizontal — YouTube long-form, presentations |
 | `1:1` | 1080×1080 | square — feed posts |
 | `4:5` | 1080×1350 | portrait feed — Instagram, LinkedIn |
@@ -108,13 +147,22 @@ Style: at the start, ask the user which one to use.
 | Shorts formula | The shape popular Shorts converge on: hook first, fast, a banded frame with a fixed hook title (`references/shorts-formula.md`); story order and look stay yours |
 | Free style | No preset; you invent the look and structure for this film |
 
-Ask this together with frame size, length, the script review and (for 9:16) the voice speed, in
-one question. If the user already said, do not ask again. If nobody can answer (an unattended
-run), use free style, skip the script review, leave the speed at 1.1, and note these in `FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
+Ask this together with frame size, length, the script review, the voice-first-or-picture-first
+order and (for 9:16) the voice speed, in one question. If the user already said, do not ask
+again. If nobody can answer (an unattended run), use free style, skip the script review, leave
+the speed at 1.1, use voice first unless the brief names a slow 3D picture (then picture first),
+and note these in `FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
 
 In free style, everything inside the frame (margins, caption size, layout) is your call, or the
 user's if they specify it. Length: from the user; if unstated, ask, or infer it from where the
 film goes. Language: the source's.
+
+When the user asks for an upload version with an opening or ending attached to a film (a channel
+end card, a title card, a series episode), read `references/bookends.md`; otherwise skip it.
+
+When the user asks for 3D in any words ("3D", "like a video game", "WebGL", "Three.js"), make a
+3D film: scaffold with `new-reel.mjs --3d`, render picture first, and follow `references/3d.md`.
+A short request is enough; fill in the camera move, the places and the look yourself.
 
 In either style, pictures fill the whole frame, but text and anything the viewer must see stay
 inside the platform safe area, clear of the player's buttons (`references/pipeline.md`, "Safe
@@ -140,20 +188,26 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | Step | Script | Gives you |
 |---|---|---|
 | setup | `scripts/setup.mjs` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked |
-| scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9` | page with contract + optional helpers |
+| scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--3d]` | page with contract + optional helpers; `--3d` scaffolds a WebGL/three.js reel (`references/3d.md`) |
 | script check | `scripts/validate-plan.mjs <dir>` — run before the voice | `plan.json` matches the schema; every `word:` cue names a word in its line |
 | voice | `scripts/voice.mjs <dir>` | per-line audio + measured `voice/timings.json` (providers: `references/voice.md`) |
 | look | `scripts/still.mjs <dir> --at <t\|shotId>[,<t\|shotId>...]` | one full-size PNG per value, one browser session |
 | assets | `scripts/assets.mjs search <words>` / `fetch <dir>` | recorded sound effects and reaction clips from `library/` (git-ignored; licenses in `references/pipeline.md`) |
-| check | `scripts/verify.mjs <dir>` | determinism + contract scan |
+| sound cards | `scripts/sfx-cards.mjs measure\|judge\|report <dir>` | fills each sound card's measured audio features, scores its fit (Jev or the current model), and warns on fit < 8 (`references/sound.md` "Sound cards") |
+| check | `scripts/verify.mjs <dir>` | determinism + contract scan + `boil(` call-site info line |
 | review | `scripts/render.mjs <dir> --preview` then `scripts/review.mjs <dir>` | contact sheet, dead-air runs, A/V sync, loudness, sync marks |
+| dense layout scan | `scripts/review.mjs <dir> --scan [stepSec]` | issue runs with times from seeking the whole film every `stepSec` (default 0.1s), catching a layout bug the once-per-shot Layout gate misses |
 | final | `scripts/render.mjs <dir>` | `out/final-<YYYYMMDD-HHMMSS>.mp4` at -16 LUFS; `out/final.mp4` links to the newest |
+| picture (picture first) | `scripts/render.mjs <dir> --no-captions` | `out/picture.mp4` (video only) + `out/picture.bed.wav` + `out/picture.timings.json` — the picture, rendered once, no caption baked in |
+| language (picture first) | `scripts/dub.mjs <dir> --lang <code>` | `out/final-<code>.mp4` — that language's caption + voice laid over `out/picture.mp4` |
+| upload version (on demand) | `scripts/join.mjs <out.mp4> <part1> <part2> [...]` | joins an opening + body + ending (any count, any order) into one file, and reports each join's loudness, click risk and frame match (`references/bookends.md`) |
 
 ## Support reading (optional, read when useful)
 
 | File | What is in it |
 |---|---|
 | `references/community.md` | How the viral Opus 5.5 films were prompted and built — read first |
+| `references/3d.md` | WebGL/three.js films — when to use them, capture path, determinism, speed |
 | `references/shorts-formula.md` | The Shorts formula: structure, pacing, banded layout, captions — only when the user chose it |
 | `references/sources.md` | Getting material out of each source type |
 | `references/craft.md` | Observations from earlier films and the failures viewers called out |

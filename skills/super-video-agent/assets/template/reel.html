@@ -51,6 +51,16 @@
   var libManifest = null; // assets/lib/manifest.json, or null when absent
   var libCues = []; // assets/lib/cues.json's cues, or [] when absent
 
+  // Reel.layer()/Reel.dubCode() (references/pipeline.md "Picture first"):
+  // ?layer=captions&dub=<code> asks this page to draw only that dub's
+  // captions, skipping the picture. __reel.layers below declares that this
+  // scaffold supports it — dub.mjs falls back to its own default caption
+  // look for a page that doesn't.
+  var layer = Reel.layer();
+  var dubCode = Reel.dubCode();
+  var isCaptionLayer = layer === "captions" && !!dubCode;
+  var dubPlan = null; // dub/<code>/plan.json, loaded only in caption-layer mode
+
   // The one allowed network call in scene code (design.md §2.1 exception):
   // loading local JSON as part of building `ready`. `required` files
   // (timings.json) throw when missing; optional ones (the asset library's
@@ -66,8 +76,25 @@
     });
   }
 
+  function timingsUrl() {
+    return isCaptionLayer ? "dub/" + dubCode + "/timings.placed.json" : "voice/timings.json";
+  }
+
+  // plan.json's meta.filmKey/meta.title/meta.id -> ReelAudio.setFilmKey
+  // (reel-audio.js: gives this film's kit sfx a character of their own —
+  // references/sound.md "Kit"). Optional: a reel with no plan.json (should
+  // not happen) falls back to "film" rather than failing ready.
+  function loadFilmKey() {
+    return loadJSON("plan.json", false).then(function (plan) {
+      var meta = (plan && plan.meta) || {};
+      ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id || "film");
+    }).catch(function () {
+      ReelAudio.setFilmKey("film");
+    });
+  }
+
   function loadTimings() {
-    return loadJSON("voice/timings.json", true).then(function (data) {
+    return loadJSON(timingsUrl(), true).then(function (data) {
       timings = data;
       tl = Reel.timeline(timings);
       // Shot i spans from line i's start (the first shot from 0) to line
@@ -82,6 +109,17 @@
         return { id: l.id, start: start, end: end, readAt: (l.start + l.end) / 2 };
       });
       buildSfxCues();
+    });
+  }
+
+  // dub/<code>/plan.json — that language's per-line fields (e.g. an
+  // `emphasis` word list) for a film's own caption code to key off, keeping
+  // pace with the dub text rather than the base language's. Only loaded in
+  // caption-layer mode; a normal render never fetches plan.json.
+  function loadDubPlan() {
+    if (!isCaptionLayer) return Promise.resolve();
+    return loadJSON("dub/" + dubCode + "/plan.json", true).then(function (data) {
+      dubPlan = data;
     });
   }
 
@@ -226,8 +264,36 @@
       var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
       m.add(buf, cue.at, cue.gain == null ? 1 : cue.gain, cue.pan == null ? 0 : cue.pan);
     });
-    ReelAudio.master(m, { peakDb: -3 });
+    // master() normalizes to a PEAK, not a loudness — with no SFX_CUES (the
+    // unedited scaffold), this mix is just the ducked bed, and peakDb: -3
+    // pushed the bed itself up to near-clipping: a promo session measured
+    // the resulting music ending up as loud as the voice after render.mjs's
+    // final mastering. -15 here (12dB lower) keeps the bed well under a
+    // -16 LUFS voice by default (references/sound.md "Mix"): about -28 LUFS
+    // short-term during narration windows, on top of the -10dB duck above.
+    // A real signature effect (a `sync:true` cue) is a much shorter,
+    // punchier signal than the bed alone and will not be pinned this quiet.
+    ReelAudio.master(m, { peakDb: -15 });
     return [Array.from(m.L), Array.from(m.R)];
+  }
+
+  // sfxStems(sampleRate) -> Promise<[{id, at, L, R}]> — each SFX_CUES kit
+  // effect rendered alone (no bed, no other cues, no master gain), for
+  // scripts/sfx-cards.mjs's `measure` (references/sound.md "Sound cards").
+  // Optional: a page that never calls this still works with everything
+  // else; sfx-cards.mjs then falls back to measuring library cue files
+  // directly and reports which cards it could not measure. `id` is the
+  // cue's own `id` when SFX_CUES sets one (recommended, so it matches a
+  // sound card's id exactly); otherwise "<kind>@<at>".
+  function sfxStems(sampleRate) {
+    var out = SFX_CUES.map(function (cue) {
+      var gen = ReelAudio.sfx[cue.kind];
+      if (!gen) return null;
+      var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
+      var arr = Array.from(buf);
+      return { id: cue.id || (cue.kind + "@" + cue.at), at: cue.at, L: arr, R: arr };
+    }).filter(Boolean);
+    return Promise.resolve(out);
   }
 
   // document.fonts.ready alone only guarantees a @font-face has been
@@ -259,7 +325,8 @@
 
   var ready = Promise.all([
     loadDeclaredFonts(),
-    loadTimings().then(loadAssetLibrary),
+    loadFilmKey(),
+    isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings().then(loadAssetLibrary),
   ]).then(function () { return undefined; });
 
   // ---- scene ---------------------------------------------------------
@@ -298,14 +365,56 @@
     return -1;
   }
 
+  // activeShotIndex(t) — which tiled shot t falls in. `shots` (built in
+  // loadTimings) spans line i's start to line i+1's start (the last shot to
+  // the film's end), one shot per line, so a gap between one line's spoken
+  // end and the next line's start still belongs to the shot before it.
+  // Unlike currentLineIndex (the *spoken* window, which is -1 in a gap),
+  // this never falls through to -1 once shots exist: seek() uses it to pick
+  // the scene function so the picture holds the previous line's scene
+  // through a gap instead of jumping back to SCENES[0].
+  function activeShotIndex(t) {
+    if (!shots.length) return -1;
+    for (var i = 0; i < shots.length; i++) {
+      if (t >= shots[i].start && t < shots[i].end) return i;
+    }
+    return shots.length - 1; // at or after the film's end: hold the last shot
+  }
+
+  // drawCaptions(t) — this film's own caption look, drawn when
+  // Reel.layer()==="captions" (dub.mjs "let the reel draw its own
+  // captions", references/pipeline.md "Picture first"). Replace the
+  // Reel.caption() call below with your own draw code (e.g. a word-by-word
+  // highlight) — dubPlan (dub/<code>/plan.json, that language's own lines)
+  // carries whatever per-line fields it needs to key off, such as an
+  // `emphasis` word list, for the language currently loaded.
+  function drawCaptions(t) {
+    var idx = currentLineIndex(t);
+    var line = idx >= 0 ? timings.lines[idx] : null;
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT });
+  }
+
   // seek(t): pure function of t. Background paint + scene dispatch by the
-  // active line index, wrapping if there are fewer scenes than lines.
+  // active line index, wrapping if there are fewer scenes than lines. In
+  // caption-layer mode the picture is skipped entirely: clear to
+  // transparent (dub.mjs composites this over the picture) and draw only
+  // captions.
   function seek(t) {
+    if (isCaptionLayer) {
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+      drawCaptions(t);
+      return;
+    }
     ctx.save();
     ctx.fillStyle = "#808080";
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
     ctx.restore();
-    var idx = currentLineIndex(t);
+    // Scene selection follows the tiled shot (activeShotIndex), not the
+    // spoken-line window (currentLineIndex): shots span line i's start to
+    // line i+1's start, one shot per line (loadTimings), so a gap between
+    // lines still resolves to the shot — and that shot's line data — before
+    // it, instead of wrapping to SCENES[0] with no line.
+    var idx = activeShotIndex(t);
     var line = idx >= 0 ? timings.lines[idx] : null;
     var sceneFn = SCENES[Math.max(0, idx) % SCENES.length];
     var u = 0;
@@ -325,8 +434,10 @@
     ready: ready,
     seek: seek,
     get shots() { return shots; },
+    get layers() { return ["captions"]; },
     issues: function () { return Reel.issues(); },
     audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
+    sfxStems: sfxStems,
     soundCues: soundCues,
     get marks() {
       return SFX_CUES.map(function (c) {

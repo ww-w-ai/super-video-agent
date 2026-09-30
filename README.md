@@ -2,15 +2,72 @@
 
 English | [한국어](README.ko.md)
 
-**Give Claude Opus 5.5 a PDF, an essay or a topic, and get back a narrated vertical short in your own
-cloned voice. Every frame is drawn in code.** Super Video Agent is a Claude Code plugin that works the way
-the code-drawn films Reddit shared in September 2026 were made, plus three things those films did not have:
-read-out rules and a pronunciation dictionary for any language, a four-session pipeline tuned for cost, and a sound-effect library cued
-from the script.
+**Give Claude Opus 5.5 a PDF, an essay or a topic, and get back a narrated film in your own cloned
+voice: a YouTube Short, a 16:9 explainer, a square feed post or a 3D flight. Every frame is drawn in
+code, and after the render you can swap one voice line, one scene or one language without touching
+the rest.** Super Video Agent is a Claude Code plugin that works the way the code-drawn films Reddit
+shared in September 2026 were made, plus what those films did not have: read-out rules and a
+pronunciation dictionary for any language, edits after the render that leave the rest of the film
+alone, any frame size and format, a four-session pipeline tuned for cost, and a sound-effect library
+cued from the script.
 
 Measured on a real job, three 10-page basketball scouting PDFs → an 88-second short:
 script $4.05, script review $1.75, film $16.34. That's about $22 and one hour of model time. Voice
 synthesis ran locally with no API cost.
+
+## Gallery
+
+We use this skill to take on one hard challenge at a time, and each one upgrades the skill for
+the films that come after it.
+
+| Date | Challenge | Film | What the skill gained |
+|---|---|---|---|
+| 2026-09-29 | **3D flight.** A 40-second YouTube Short: one continuous camera flight from a phone screen, over a night city, down an undersea cable, into a data center and a GPU chip, and back to the phone as the answer appears. Drawn entirely in code with Three.js/WebGL, no video or image model. | [<img src="docs/gallery/poster-en.png" width="160" alt="3D flight film poster: the night city the flight passes over">](docs/gallery/3d-flight-en.mp4)<br>▶ [English (MP4, 7.5 MB)](docs/gallery/3d-flight-en.mp4) · [Korean](docs/gallery/3d-flight-ko.mp4) | A `--3d` scaffold for WebGL films ([`references/3d.md`](skills/super-video-agent/references/3d.md)). A byte-exact WebGL capture (`gl.readPixels` + `putImageData`), so the determinism check holds on a CPU-only headless renderer. One picture render shared by both languages (`dub.mjs`). Voice and caption fixes after the render. An opening and ending attached for upload (`join.mjs`). |
+
+## Use
+
+Install it first ([Install](#install)). Then, in Claude Code with Opus 5.5, run the skill and say what you want:
+
+```
+/super-video-agent Make a YouTube Short from this PDF. Use my voice from me.wav (transcript: "…").
+```
+
+Installed as a plugin, the command shows up as `/super-video-agent:super-video-agent`; type
+`/super-video-agent` and pick it from the list. You can also skip the command: asking for a video
+in plain words starts the skill too.
+
+The skill first asks whether to follow the Shorts formula (hook first, fast lines, a banded frame with a fixed hook title) or free style, plus the frame size and length if it can't infer them. If you hand it a finished
+script or storyboard, it asks whether to use it as written or rework it.
+
+### 3D films
+
+Say "3D" and the skill takes the 3D path by itself:
+
+```
+/super-video-agent Show what happens after you press Enter on an AI prompt, in 3D like a video game
+```
+
+three.js is not bundled; the agent installs it into your reel the first time. WebGL renders on
+the CPU in headless Chromium: the 40-second gallery film took about 11 minutes with 4 workers.
+Details: [`references/3d.md`](skills/super-video-agent/references/3d.md).
+
+### Adding image and video models
+
+The default needs no image or video model: every frame is drawn in code. When you want more on
+screen — a photo-real background, a product shot, a few seconds of generated motion — name the tool
+and the shot in the same message.
+
+The request below is **an example only**. Swap in the tools and routes you use; the skill does not
+ship with or default to any of them.
+
+```
+/super-video-agent Make a 60-second promo from this deck. Generate the opening background with
+Codex image generation, and a 5-second product clip with Seedance through browser-use.
+```
+
+Say how to reach each tool (a CLI, an API key, or a browser you are logged in to), or generate the
+files yourself and hand them over. Either way, generated media is material: the
+skill composes each scene around it and records every file's source and license in `FILM.md`.
 
 ## Why
 
@@ -24,10 +81,21 @@ We tried it for our own channel and hit the same three walls every time:
 2. **Voices misread.** Numbers, names and English words come out wrong, and you only notice after the render.
 3. **Every fix is a full re-render.** Changing one line meant regenerating the voice and the whole film.
 
-Super Video Agent keeps the model's freedom (no templates for the look, no preset layouts) and adds what
-the model cannot do by itself. Three of those carry the skill:
+So we built Super Video Agent: a skill that gets past those three walls and leaves the model free
+to design each film.
 
-## 1. Read-out rules for every language
+## Key features
+
+Super Video Agent keeps the model's freedom (no templates for the look unless you bring one) and
+adds five things the model cannot do by itself:
+
+1. [Read-out rules for every language](#1-read-out-rules-for-every-language): the voice says numbers, names and English words right the first time.
+2. [Fix only what changed, after the render](#2-fix-only-what-changed-after-the-render): swap one line, one scene or one language; the rest stays.
+3. [Any frame, any format, your own template](#3-any-frame-any-format-your-own-template): Shorts, 16:9, square, 3D, series episodes.
+4. [Four stages, four sessions, tuned effort](#4-four-stages-four-sessions-tuned-effort): about $22 for an 88-second film.
+5. [Sound effects cued from the script](#5-sound-effects-cued-from-the-script): placed on the word, scored for fit.
+
+### 1. Read-out rules for every language
 
 A synthetic voice reads the spelling, and no language is spoken exactly as it is spelled.
 Super Video Agent writes the spoken form into the script before any voice is made. It works in
@@ -60,9 +128,44 @@ Every generated line is then transcribed back with speech-to-text. Only a gross 
 regenerated — more than half of the line wrong, or a take under 70% or over 140% of the line's
 length — because STT has its own error on names and homophones. A pronunciation fix keeps the
 line's time slot, so the film does not re-render.
-(`references/readout.md`, `scripts/lib/pronounce.mjs`, `scripts/lib/stt-compare.mjs`, `scripts/voice.mjs --lines`)
+([`references/readout.md`](skills/super-video-agent/references/readout.md), [`scripts/lib/pronounce.mjs`](skills/super-video-agent/scripts/lib/pronounce.mjs), [`scripts/lib/stt-compare.mjs`](skills/super-video-agent/scripts/lib/stt-compare.mjs), `scripts/voice.mjs --lines`)
 
-## 2. Four stages, four sessions, tuned effort
+### 2. Fix only what changed, after the render
+
+A rendered film is not locked. Each piece of it can be swapped on its own: a narration line, a
+caption, a scene, a language, the opening or the ending. Nothing else moves, so the parts you
+already approved stay exactly as they were.
+
+| You want to change | What runs | What stays |
+|---|---|---|
+| One narration line: a word, the tone, a misread | `voice.mjs --lines <id>` re-records it. Silence at both ends is trimmed and the take is fitted into the old slot, up to 1.2× speed | the picture and every other line |
+| Caption wording or where a line breaks | edit `plan.json` (a `\|` sets the break), then run `dub.mjs` again on a picture-first film | the picture |
+| One scene | `render.mjs --only <shot>` renders that shot and splices it into the film | every other shot |
+| A second language | `dub.mjs --lang <code>` lays that language's voice and captions over the same picture | the picture, rendered once |
+| An opening and an ending for upload | `join.mjs` attaches them and reports loudness, click risk and frame match at each join | the body film |
+
+Measured on the 3D film in the gallery: one full render took 11–20 minutes. After review, eight
+voice and caption fixes went in (a changed word, a question whose ending had to rise, a one-word
+caption left alone on its line) without rendering the 3D picture again. A 2D film re-renders only
+the changed shots, in minutes.
+([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs), [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs), [`scripts/render.mjs`](skills/super-video-agent/scripts/render.mjs), [`scripts/join.mjs`](skills/super-video-agent/scripts/join.mjs))
+
+### 3. Any frame, any format, your own template
+
+- **Any frame size.** Four sizes come ready with one flag: 9:16 (Shorts, Reels, TikTok), 16:9
+  (YouTube, slides), 1:1 and 4:5 (feed posts). Any other size works too, because the renderer uses
+  the width and height the page declares.
+- **Any look.** Pick the Shorts formula (hook first, fast lines, a banded frame with a fixed
+  title), free style (the model designs the look for this film), or bring your own template:
+  a layout, brand colors and fonts, a series title card. The skill builds every scene inside it.
+- **Any kind of film.** A narrated explainer from a PDF or an article, a promo from a deck, a 3D
+  film in WebGL (`new-reel.mjs --3d`), a series episode with its own opening and ending, and
+  language versions that share one picture.
+- **It keeps getting better.** We pick a harder film on purpose each time and fold what it took
+  back into the skill. The 3D path, one render for two languages, and the edits after the render
+  above all came from the 3D challenge in the gallery.
+
+### 4. Four stages, four sessions, tuned effort
 
 Each stage reads only the files the previous one left, so each runs in a fresh session with its
 own effort level. Measured on the 88-second film:
@@ -95,7 +198,7 @@ every number in it against the source PDFs:
 
 Details: the "Four stages, four sessions" section of `SKILL.md`.
 
-## 3. Sound effects cued from the script
+### 5. Sound effects cued from the script
 
 A "ding" as the list starts, a drum hit on the punchline: these small sounds keep a Short alive,
 and placing them by hand in an editor is slow. Here the model places them while it writes the
@@ -114,10 +217,17 @@ unless you allow it. No sound files ship with this repo, since most sound packs 
 terms.
 
 You don't need a library to have sound. The skill makes its own effects in code
-(`scripts/engine/reel-audio.js`): click, type, thud, whoosh, pop, tick, ding and pluck, built
+([`scripts/engine/reel-audio.js`](skills/super-video-agent/scripts/engine/reel-audio.js)): click, type, thud, whoosh, pop, tick, ding and pluck, built
 from noise and oscillators while the film renders. No files, no licenses to check, and the same
 cue always makes the same sound, so a re-render matches.
-(`scripts/assets.mjs`, `references/pipeline.md`, "Asset library")
+([`scripts/assets.mjs`](skills/super-video-agent/scripts/assets.mjs), [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md), "Asset library")
+
+Every effect is then scored for fit: does it match the size, material and speed of what happens
+on screen, and does it belong to this film's world? Each sound is measured first (length, peak,
+attack, brightness, pitch trend), then judged by TypeSafe AI's Jev when `TYPESAFE_API_KEY` is set
+(pass at 0.8 of 1), or by the current model from a scoring sheet. A sound that fails is redesigned
+for this film, up to three rounds.
+([`scripts/sfx-cards.mjs`](skills/super-video-agent/scripts/sfx-cards.mjs), [`references/sound.md`](skills/super-video-agent/references/sound.md) §7)
 
 ## Also in the box
 
@@ -126,19 +236,20 @@ cue always makes the same sound, so a re-render matches.
 - **The voice comes first, and the picture follows it.** The narration is made and measured
   before any scene exists. `voice/timings.json` records when every line and word starts, and
   every scene is timed from it, so a caption never runs ahead of the voice
-  (`scripts/voice.mjs`).
+  ([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs)).
 - **Your own voice, or any engine.** Clone your voice from a 5–15 s recording with Qwen3-TTS on
   your own computer, at no API cost. Or use Fish Audio, ElevenLabs, MeloTTS, recordings you made
-  yourself.
+  yourself. Fish Audio (S2) and ElevenLabs (v3/v4) also take delivery marks such as `{confident}`
+  or `{pause}` in a line's spoken text, translated into each model's own tags; the caption never shows them.
 - **Every line is heard back.** After the voice is made, speech-to-text listens to each line
   and compares it with the script. A line that came out wrong, cut short, or clipped at the end is
   flagged and made again.
 - **Clean line endings.** Local voice models often clip the last syllable. The skill has the
   voice say a short word after each line, like a clapper between takes, and cuts in the pause
   before it, so each line ends naturally.
-- **Fix one line, keep the rest.** Re-record only the line that sounds wrong
-  (`voice.mjs --lines <id>`). The new take is fitted into the old slot, so the picture does not
-  change and the lines you already liked stay as they are.
+- **Pick the tone by ear.** Before the whole narration is made, the skill can record the opening
+  line in two to four tones (`voice.mjs --takes`) and show them side by side. The one you pick
+  (`--pick`) becomes the tone for every line.
 
 ### Script
 
@@ -150,20 +261,18 @@ cue always makes the same sound, so a re-render matches.
 
 ### Picture
 
-- **Fix one scene, not the whole film.** Only the scenes that changed are rendered again and
-  spliced into the existing film (`scripts/render.mjs --only`).
 - **The same frame every time.** Each page draws a frame from the time alone (`seek(t)`), so the
   same moment always gives the same pixels. Previews, re-renders and checks all agree.
 - **Text clear of the app buttons.** Captions stay out of the areas where Shorts and TikTok put
   their buttons and titles (x 80–888, y 200–1470 at 1080×1920). Pictures still fill the whole
   frame.
-- **Shorts formula or free style.** Start with a hook and a banded frame with a fixed title, or
-  use no preset at all and let the model design the look.
-- **Any frame size.** 9:16, 16:9, 1:1 and 4:5.
+- **Captions that break where you read.** Captions split at punctuation first, then into rows of
+  even length, and a one-word leftover joins its neighbor. A `|` in the script sets a break by
+  hand; the voice never reads it.
 
 ### Checks and output
 
-- **The film checks itself.** After rendering, `scripts/review.mjs` makes a contact sheet and
+- **The film checks itself.** After rendering, [`scripts/review.mjs`](skills/super-video-agent/scripts/review.mjs) makes a contact sheet and
   checks for frozen frames, text that spills out of its box, loudness, sound effects that miss
   their moment, and silent gaps. You get numbers, plus the timestamps worth listening to.
 - **Every render is kept.** Each render gets its own timestamped file, and `out/final.mp4`
@@ -268,6 +377,78 @@ Set up at least one voice provider above; with none, the voice step stops and li
 | Linux, bash | `export ELEVENLABS_API_KEY="..."` in `~/.bashrc` |
 | Windows (PowerShell) | run `setx ELEVENLABS_API_KEY "..."`, then open a new terminal |
 
+### Which voice model
+
+We made our films with three voice models. The default is Qwen3-TTS on your own computer,
+because it costs nothing to run. Fish Audio and ElevenLabs are well-known paid services that run
+on their servers; they return a line in seconds. With no `--provider`, `voice.mjs` tries Qwen3-TTS
+first, then Fish Audio, then ElevenLabs, depending on what you set up, and prints which one ran.
+
+| Model | Where it runs | Cost | Speed | Set up with |
+|---|---|---|---|---|
+| Qwen3-TTS 1.7B (default) | your computer | free | slowest | `SVA_QWEN3_PYTHON` + a 5–15 s recording of your voice |
+| Fish Audio | Fish Audio servers | paid; the pro model is free until 2026-11-30 | seconds per line | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` |
+| ElevenLabs | ElevenLabs servers | paid per character | seconds per line | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` |
+
+#### Qwen3-TTS (default, local)
+
+- **What it is.** An open voice model from the Qwen team. It copies a voice from one short
+  recording, so the film speaks in your voice. Its weights are Apache-2.0, so commercial films
+  are fine.
+- **What you install.** The repository holds only the code that calls it. You install the
+  `qwen-tts` package yourself (see Install above), and the model downloads from Hugging Face on
+  the first film: about 4.2 GB for 1.7B, about 2.3 GB for 0.6B.
+- **Speed.** 10 short lines (20 s of speech) took 2 min 54 s on an Apple Silicon Mac, including
+  loading the model and the speech-to-text check. Plan for minutes, not seconds.
+- **The recording decides the result.** Use 5–15 s of clean speech that ends on a finished
+  sentence, plus its exact transcript. A recording cut mid-word put that syllable onto the start
+  of 11 of 21 generated lines; cutting it on a sentence end fixed it.
+- **1.7B over 0.6B.** 1.7B spoke clearer words with fewer slurred endings. Use 0.6B on a smaller
+  machine or for quick drafts.
+- **Weak spots.** Its delivery is even; it does not act out emotions. In our test it never raised
+  the end of a question (0 of 10).
+
+#### Fish Audio
+
+- **What it is.** A hosted voice service known for natural, lively delivery. Use one of its
+  library voices, or clone your own voice with an API key.
+- **Price.** The pro model is free until 2026-11-30 as `s2.1-pro-free`, and the skill uses it by
+  default.
+- **Delivery tags.** It follows tone marks such as `{confident}` or `{excited}`. Fish reads a
+  Short flat unless told otherwise, so 9:16 films on Fish get `{confident}` by default.
+- **Weak spot.** It rarely raised the end of a question: 3 of 23 measurable takes, and no tag we tried
+  changed that.
+
+#### ElevenLabs
+
+- **What it is.** A hosted voice service with many stock voices and instant cloning. The default
+  model is `eleven_multilingual_v2`; `eleven_v3` is more expressive.
+- **Price.** Billed per character. Commercial use and instant cloning start on the Starter plan.
+- **Key permissions.** A restricted API key needs the text-to-speech permission. Listing voices
+  also needs `voices_read`; without it, put a stock voice id in `ELEVENLABS_VOICE_ID`.
+- **Strengths.** It raised question endings most often (below), and it returns its own word
+  timings. Its English stock voice "Sarah" can read Korean; we did not judge the accent by ear.
+
+#### Question endings: what we measured
+
+In English and Korean, a yes/no question usually sounds like a question only when its last
+syllable goes up ("Is it ready?↗"). A voice model often reads it flat or falling, so it sounds
+like a statement. We recorded two Korean questions, "다음 토큰은 뭘까?" and
+"여기가 엔비디아 세상인가?", several times with each model and measured whether the last
+syllable was more than 2 semitones higher than the one before it.
+
+| Model | Takes whose last syllable went up |
+|---|---|
+| ElevenLabs `eleven_v3` | 5 of 10 |
+| ElevenLabs `eleven_multilingual_v2` | 4 of 10 |
+| Fish Audio `s2.1-pro-free` | 3 of 23 measurable |
+| Qwen3-TTS 1.7B | 0 of 10 |
+
+A falling end is not always wrong: questions with what/where/why often fall. So the skill does not
+judge it. Listen, and re-record only that line (`voice.mjs --lines <id>`) until one sounds right.
+
+Full method, per-take numbers and limits: [Question intonation and read-out accuracy in four TTS models](docs/research/tts-models.md).
+
 ### Fonts
 
 Every word in the film is drawn by the page itself, so the font travels with the film as a file.
@@ -287,41 +468,8 @@ use those same files.
 ### Sound library (optional)
 
 Put your own effect files and a `catalog.json` in `library/` next to `scripts/`, or point
-`SVA_ASSET_LIB` to a folder elsewhere (format: `references/pipeline.md`, "Asset library").
+`SVA_ASSET_LIB` to a folder elsewhere (format: [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md), "Asset library").
 Without a library, the effects the skill makes in code still play.
-
-## Use
-
-In Claude Code, with Opus 5.5, run the skill and say what you want:
-
-```
-/super-video-agent Make a YouTube Short from this PDF. Use my voice from me.wav (transcript: "…").
-```
-
-Installed as a plugin, the command shows up as `/super-video-agent:super-video-agent`; type
-`/super-video-agent` and pick it from the list. You can also skip the command: asking for a video
-in plain words starts the skill too.
-
-The skill first asks whether to follow the Shorts formula (hook first, fast lines, a banded frame with a fixed hook title) or free style, plus the frame size and length if it can't infer them. If you hand it a finished
-script or storyboard, it asks whether to use it as written or rework it.
-
-### Adding image and video models
-
-The default needs no image or video model: every frame is drawn in code. When you want more on
-screen — a photo-real background, a product shot, a few seconds of generated motion — name the tool
-and the shot in the same message.
-
-The request below is **an example only**. Swap in the tools and routes you use; the skill does not
-ship with or default to any of them.
-
-```
-/super-video-agent Make a 60-second promo from this deck. Generate the opening background with
-Codex image generation, and a 5-second product clip with Seedance through browser-use.
-```
-
-Say how to reach each tool (a CLI, an API key, or a browser you are logged in to), or generate the
-files yourself and hand them over. Either way, generated media is material: the
-skill composes each scene around it and records every file's source and license in `FILM.md`.
 
 ## Credits
 

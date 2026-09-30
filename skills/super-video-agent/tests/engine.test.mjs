@@ -4,10 +4,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-await import(path.join(here, "..", "scripts", "engine", "reel-engine.js"));
+const enginePath = path.join(here, "..", "scripts", "engine", "reel-engine.js");
+await import(enginePath);
 const Reel = globalThis.Reel;
 
 test("hash: deterministic for the same string", () => {
@@ -345,4 +346,317 @@ test("textBlock: a \\n in the text forces a line break even when the words would
   const result = Reel.textBlock(ctx, "3점을 158개나\n넣었는데", 100, 300, 700, 1000, { lineHeight: 40 });
   assert.equal(result.lines, 2);
   assert.deepEqual(ctx.calls.fillText.map((c) => c.text), ["3점을 158개나", "넣었는데"]);
+});
+
+// --- balanced wrap: a greedy fill packs each row to the limit and can
+// leave one short word alone on the last row (the owner's report — a
+// caption wrapped "... 답을 만들어" / "가!"). wrapLines/textBlock now
+// balance the row widths instead, keeping the same row count. fakeCtx
+// measures 10px/char, so widths below are exact.
+
+test("balanceRows: an uneven greedy wrap becomes two even rows at the same row count", () => {
+  const ctx = fakeCtx();
+  const words = ["aaaa", "bbbb", "cccc", "dd"]; // 40,40,40,20px; space=10px
+  const widths = words.map((w) => ctx.measureText(w).width);
+  const spaceW = ctx.measureText(" ").width;
+  // greedy at 140: "aaaa bbbb cccc" (140) / "dd" (20) -- an orphan.
+  const greedy = ["aaaa bbbb cccc", "dd"];
+  assert.equal(greedy.length, 2);
+  const balanced = Reel.balanceRows(widths, spaceW, 140);
+  assert.equal(balanced.rows.length, 2); // same row count as the greedy fill
+  const rowsAsWords = balanced.rows.map((row) => row.map((i) => words[i]));
+  assert.deepEqual(rowsAsWords, [
+    ["aaaa", "bbbb"],
+    ["cccc", "dd"],
+  ]);
+});
+
+test("balanceRows: a single-row fit is returned unchanged", () => {
+  const ctx = fakeCtx();
+  const widths = ["hi", "there"].map((w) => ctx.measureText(w).width);
+  const spaceW = ctx.measureText(" ").width;
+  const balanced = Reel.balanceRows(widths, spaceW, 1000);
+  assert.equal(balanced.rows.length, 1);
+  assert.deepEqual(balanced.rows[0], [0, 1]);
+});
+
+test("wrapLines (via textBlock): the same greedy-orphan text wraps evenly, not packed-then-orphaned", () => {
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  // box width 140 at 10px/char: greedy would pack "aaaa bbbb cccc" (140)
+  // then strand "dd" alone.
+  const result = Reel.textBlock(ctx, "aaaa bbbb cccc dd", 0, 0, 140, 1000, { lineHeight: 40 });
+  assert.equal(result.lines, 2);
+  assert.deepEqual(ctx.calls.fillText.map((c) => c.text), ["aaaa bbbb", "cccc dd"]);
+});
+
+test("caption-orphan: not recorded for the balanced (even) wrap above", () => {
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  Reel.textBlock(ctx, "aaaa bbbb cccc dd", 0, 0, 140, 1000, { lineHeight: 40 });
+  assert.equal(Reel.issues().some((i) => i.type === "caption-orphan"), false);
+});
+
+test("caption-orphan: recorded when one word is too wide to ever share a row, even after balancing", () => {
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  // "verylongwordddddddd" (19 chars = 190px) can never fit alongside any
+  // other word even at the narrowest balanced width (its own), so "a b c"
+  // (3 words) / "verylongwordddddddd" (1 word) survives balancing.
+  const result = Reel.textBlock(ctx, "a b c verylongwordddddddd", 0, 0, 200, 1000, { lineHeight: 40 });
+  assert.equal(result.lines, 2);
+  const issue = Reel.issues().find((i) => i.type === "caption-orphan");
+  assert.ok(issue, "expected a caption-orphan issue");
+  assert.equal(issue.lastRow, "verylongwordddddddd");
+});
+
+// --- captionChunks: word-by-word caption chunking (pipeline.md "Picture
+// first" — a film that reveals a line chunk by chunk rather than a
+// wrapped box). Chunks at phrase punctuation first, then splits a long
+// phrase evenly by word count (never packs-then-strands like a running
+// char count would), then merges a lone <=3-char chunk into its neighbour.
+
+function fakeWords(text) {
+  return text.split(/\s+/).filter(Boolean).map((w, i) => ({ w, start: i, end: i + 1 }));
+}
+
+test("captionChunks: ko — the owner's report line does not leave '가!' alone", () => {
+  const words = fakeWords("다음 토큰은 뭘까? 하나씩 척척 맞혀서 답을 만들어 가!");
+  const chunks = Reel.captionChunks(words, 11);
+  const asText = chunks.map((c) => c.map((i) => words[i].w).join(" "));
+  assert.ok(!asText.includes("가!"), `got: ${JSON.stringify(asText)}`);
+});
+
+test("captionChunks: en — a long trailing word does not end up alone after an even split", () => {
+  const words = fakeWords("Your words get chopped up into little numbered tokens.");
+  const chunks = Reel.captionChunks(words, 16);
+  const asText = chunks.map((c) => c.map((i) => words[i].w).join(" "));
+  assert.ok(!asText.includes("tokens."), `got: ${JSON.stringify(asText)}`);
+});
+
+test("captionChunks: a lone <=3-char phrase (a connector like '자,') merges into its neighbour", () => {
+  const words = fakeWords("자, 보이지? 답이 쓰이는 중인데 벌써 화면에 떠!");
+  const chunks = Reel.captionChunks(words, 11);
+  const asText = chunks.map((c) => c.map((i) => words[i].w).join(" "));
+  assert.ok(!asText.includes("자,"), `got: ${JSON.stringify(asText)}`);
+  assert.ok(asText.some((c) => c.startsWith("자, ")), `expected "자," merged forward, got: ${JSON.stringify(asText)}`);
+});
+
+test("captionChunks: records a caption-orphan issue when a one-word chunk survives merging (line has 3+ words)", () => {
+  Reel.clearIssues();
+  // "ab"+"cd" (<=3 chars each) merge into one chunk; the 22-char word is
+  // too long to merge and has no other neighbour, so it stays alone.
+  const words = fakeWords("ab cd superlongwordxxxxxxxxxx");
+  const chunks = Reel.captionChunks(words, 9);
+  const asText = chunks.map((c) => c.map((i) => words[i].w).join(" "));
+  assert.ok(asText.includes("superlongwordxxxxxxxxxx"), `got: ${JSON.stringify(asText)}`);
+  assert.ok(Reel.issues().some((i) => i.type === "caption-orphan"));
+});
+
+test("captionChunks: no split needed when the whole line fits under maxChars", () => {
+  const words = fakeWords("short line here");
+  const chunks = Reel.captionChunks(words, 100);
+  assert.equal(chunks.length, 1);
+  assert.deepEqual(chunks[0], [0, 1, 2]);
+});
+
+// --- "|" forced caption breaks (references/pipeline.md "Forced caption
+// breaks"): a plan line's own "|" marker splits into exactly the pieces the
+// author asked for, instead of automatic chunking cutting mid noun-phrase
+// ("a radio / wave", found in production, only fixed by a hand table).
+
+test("captionBreaksFromText: found-in-production line breaks into exactly three pieces", () => {
+  const text = "It rides a radio wave | to that cell tower | up there,";
+  const breaks = Reel.captionBreaksFromText(text);
+  const words = fakeWords(text.replace(/\s*\|\s*/g, " "));
+  const chunks = Reel.captionChunks(words, 1000, { breaks });
+  assert.equal(chunks.length, 3);
+  const asText = chunks.map((c) => c.map((i) => words[i].w).join(" "));
+  assert.deepEqual(asText, ["It rides a radio wave", "to that cell tower", "up there,"]);
+});
+
+test("captionBreaksFromText: the marker itself never appears in a rendered chunk", () => {
+  const text = "It rides a radio wave | to that cell tower | up there,";
+  const breaks = Reel.captionBreaksFromText(text);
+  const words = fakeWords(text.replace(/\s*\|\s*/g, " "));
+  const chunks = Reel.captionChunks(words, 1000, { breaks });
+  for (const c of chunks) {
+    for (const i of c) assert.notEqual(words[i].w, "|");
+  }
+});
+
+test("captionBreaksFromText: no marker -> no forced breaks", () => {
+  assert.deepEqual(Reel.captionBreaksFromText("just a plain line"), []);
+});
+
+test("caption(): the '|' marker is never drawn", () => {
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  Reel.caption(ctx, { text: "It rides a radio wave | to that cell tower | up there," }, 0, { width: 1080, height: 1920 });
+  const drawn = ctx.calls.fillText.map((c) => c.text).join(" ");
+  assert.ok(!drawn.includes("|"), `expected no "|" in drawn text, got: ${JSON.stringify(ctx.calls.fillText)}`);
+});
+
+test("captionBreaksFromText: a forced piece longer than maxChars still splits evenly instead of overflowing", () => {
+  const text = "alpha bravo charlie delta echo foxtrot golf | hotel india";
+  const breaks = Reel.captionBreaksFromText(text);
+  const words = fakeWords(text.replace(/\s*\|\s*/g, " "));
+  const chunks = Reel.captionChunks(words, 16, { breaks });
+  for (const c of chunks) {
+    const len = c.map((i) => words[i].w).join(" ").length;
+    assert.ok(len <= 20, `chunk "${c.map((i) => words[i].w).join(" ")}" (${len} chars) did not balance under maxChars 16`);
+  }
+});
+
+// --- captionsOn / caption() gating (render.mjs --no-captions,
+// references/pipeline.md "Picture first"): ?captions=0 is read once from
+// location.search at load, never inside seek(t). Node has no `location`
+// global, so the top-level import above behaves exactly like a normal page
+// load (captionsOn() true) — these two tests fake `location` and re-import
+// the engine (cache-busted query so it is a fresh module load, exactly
+// like a fresh page load) to exercise the off path without a browser.
+test("captionsOn: true and caption() draws normally with no location.search (default, e.g. this test file's own import)", () => {
+  assert.equal(Reel.captionsOn(), true);
+  Reel.clearIssues();
+  const ctx = fakeCtx();
+  Reel.caption(ctx, { text: "hello" }, 0.1, { width: 1080, height: 1920 });
+  assert.equal(ctx.calls.fillText.length, 1);
+});
+
+test("captionsOn: false when location.search is ?captions=0, and caption() then draws nothing", async () => {
+  const previousLocation = globalThis.location;
+  globalThis.location = { search: "?captions=0" };
+  try {
+    await import(`${pathToFileURL(enginePath).href}?variant=nocap`);
+    const ReelNoCap = globalThis.Reel;
+    assert.equal(ReelNoCap.captionsOn(), false);
+    const ctx = fakeCtx();
+    const result = ReelNoCap.caption(ctx, { text: "hello" }, 0.1, { width: 1080, height: 1920 });
+    assert.equal(result, undefined);
+    assert.equal(ctx.calls.fillText.length, 0);
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    globalThis.Reel = Reel; // restore the captions-on engine for any test that runs after this one
+  }
+});
+
+// --- layer() / dubCode() (dub.mjs "let the reel draw its own captions",
+// references/pipeline.md "Picture first"): ?layer=captions&dub=<code>,
+// read once from location.search at load, same re-import approach as above.
+test("layer/dubCode: both null with no location.search (default, this test file's own import)", () => {
+  assert.equal(Reel.layer(), null);
+  assert.equal(Reel.dubCode(), null);
+});
+
+test("layer/dubCode: parsed from ?layer=captions&dub=<code>", async () => {
+  const previousLocation = globalThis.location;
+  globalThis.location = { search: "?layer=captions&dub=en" };
+  try {
+    await import(`${pathToFileURL(enginePath).href}?variant=captionlayer`);
+    const ReelLayer = globalThis.Reel;
+    assert.equal(ReelLayer.layer(), "captions");
+    assert.equal(ReelLayer.dubCode(), "en");
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    globalThis.Reel = Reel;
+  }
+});
+
+test("layer/dubCode: only one of the two params set leaves the other null", async () => {
+  const previousLocation = globalThis.location;
+  globalThis.location = { search: "?layer=captions" };
+  try {
+    await import(`${pathToFileURL(enginePath).href}?variant=layeronly`);
+    const ReelLayerOnly = globalThis.Reel;
+    assert.equal(ReelLayerOnly.layer(), "captions");
+    assert.equal(ReelLayerOnly.dubCode(), null);
+  } finally {
+    if (previousLocation === undefined) delete globalThis.location;
+    else globalThis.location = previousLocation;
+    globalThis.Reel = Reel;
+  }
+});
+
+// --- boil: opts.moving scales jitter amplitude toward zero -----------------
+
+test("boil: moving=0 (default) matches passing no moving opt at all", () => {
+  const withZero = Reel.boil("scene:thing", 0.37, { moving: 0 });
+  const withoutOpt = Reel.boil("scene:thing", 0.37, {});
+  assert.deepEqual(withZero, withoutOpt);
+});
+
+test("boil: moving=1 gives exactly {dx:0, dy:0, rot:0}", () => {
+  const p = Reel.boil("scene:thing", 0.37, { moving: 1 });
+  assert.deepEqual(p, { dx: 0, dy: 0, rot: 0 });
+  assert.ok(Object.is(p.dx, 0) && Object.is(p.dy, 0) && Object.is(p.rot, 0));
+});
+
+test("boil: moving=0.5 halves the amplitude of the moving=0 sample", () => {
+  const still = Reel.boil("scene:thing", 0.37, {});
+  const half = Reel.boil("scene:thing", 0.37, { moving: 0.5 });
+  assert.ok(Math.abs(half.dx - still.dx / 2) < 1e-9);
+  assert.ok(Math.abs(half.dy - still.dy / 2) < 1e-9);
+  assert.ok(Math.abs(half.rot - still.rot / 2) < 1e-9);
+});
+
+// --- moving(t, intervals, opts) --------------------------------------------
+
+test("moving: 0 with no intervals", () => {
+  assert.equal(Reel.moving(1.0, []), 0);
+  assert.equal(Reel.moving(1.0, null), 0);
+});
+
+test("moving: 1 strictly inside an interval, 0 well outside", () => {
+  const intervals = [{ start: 1.0, end: 2.0 }];
+  assert.equal(Reel.moving(1.5, intervals), 1);
+  assert.equal(Reel.moving(1.0, intervals), 1); // inclusive start
+  assert.equal(Reel.moving(2.0, intervals), 1); // inclusive end
+  assert.equal(Reel.moving(0.0, intervals, { settleSec: 0.15 }), 0);
+  assert.equal(Reel.moving(3.0, intervals, { settleSec: 0.15 }), 0);
+});
+
+test("moving: ramps 0->1 before start and 1->0 after end over settleSec", () => {
+  const intervals = [{ start: 1.0, end: 2.0 }];
+  const settleSec = 0.15;
+  const before = Reel.moving(1.0 - settleSec / 2, intervals, { settleSec });
+  assert.ok(Math.abs(before - 0.5) < 1e-9);
+  const farBefore = Reel.moving(1.0 - settleSec, intervals, { settleSec });
+  assert.ok(Math.abs(farBefore - 0) < 1e-9);
+  const after = Reel.moving(2.0 + settleSec / 2, intervals, { settleSec });
+  assert.ok(Math.abs(after - 0.5) < 1e-9);
+  const farAfter = Reel.moving(2.0 + settleSec, intervals, { settleSec });
+  assert.ok(Math.abs(farAfter - 0) < 1e-9);
+});
+
+test("moving: default settleSec is 0.15s", () => {
+  const intervals = [{ start: 1.0, end: 2.0 }];
+  const explicit = Reel.moving(0.925, intervals, { settleSec: 0.15 });
+  const implicit = Reel.moving(0.925, intervals, {});
+  assert.equal(explicit, implicit);
+});
+
+test("moving: deterministic — same (t, intervals) always returns the same value", () => {
+  const intervals = [{ start: 1.0, end: 2.0 }];
+  const a = Reel.moving(1.05, intervals);
+  const b = Reel.moving(1.05, intervals);
+  assert.equal(a, b);
+});
+
+test("moving: feeding into boil gives zero jitter throughout the move and half amplitude at the ramp midpoint", () => {
+  const intervals = [{ start: 1.0, end: 2.0 }];
+  const settleSec = 0.15;
+  const duringMoveAmp = Reel.boil("k", 1.5, { moving: Reel.moving(1.5, intervals, { settleSec }) });
+  assert.deepEqual(duringMoveAmp, { dx: 0, dy: 0, rot: 0 });
+  // at the ramp midpoint moving() is 0.5, so boil at that same t should
+  // equal half the amplitude of boil at that same t with no moving opt.
+  const t = 1.0 - settleSec / 2;
+  const m = Reel.moving(t, intervals, { settleSec });
+  assert.ok(Math.abs(m - 0.5) < 1e-9);
+  const still = Reel.boil("k", t, {});
+  const ramped = Reel.boil("k", t, { moving: m });
+  assert.ok(Math.abs(ramped.dx - still.dx / 2) < 1e-9);
+  assert.ok(Math.abs(ramped.dy - still.dy / 2) < 1e-9);
+  assert.ok(Math.abs(ramped.rot - still.rot / 2) < 1e-9);
 });

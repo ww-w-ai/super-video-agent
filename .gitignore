@@ -6,6 +6,7 @@ evals/
 intent/
 *.wav
 *.mp4
+!docs/gallery/*.mp4
 .DS_Store
 __pycache__/
 *.pyc

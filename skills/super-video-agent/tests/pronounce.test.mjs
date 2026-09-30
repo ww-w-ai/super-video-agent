@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spokenText } from "../scripts/lib/pronounce.mjs";
+import { spokenText, stripCaptionBreaks, DEFAULT_PRONOUNCE } from "../scripts/lib/pronounce.mjs";
 
 const dict = {
   Nguyen: { say: "Win", ipa: "ˈŋwiən" },
@@ -56,4 +56,51 @@ test("scripts without spaces match inside a run", () => {
 test("spokenText: a caption line break is read as a space", () => {
   assert.equal(spokenText({ text: "3점을 158개나\n넣었는데" }), "3점을 158개나 넣었는데");
   assert.equal(spokenText({ text: "a\nb", say: "에이\n비" }), "에이 비");
+});
+
+// --- built-in default respellings (DEFAULT_PRONOUNCE): Fish read "Claude"
+// with a "cloud" vowel and STT heard "cloud" — "Clawd" fixed it.
+
+test("spokenText: built-in default respells Claude -> Clawd with no film dictionary at all", () => {
+  assert.equal(spokenText({ text: "Ask Claude about it." }), "Ask Clawd about it.");
+});
+
+test("spokenText: built-in default applies for an explicit English lang", () => {
+  assert.equal(spokenText({ text: "Claude wrote this." }, undefined, undefined, "en-US"), "Clawd wrote this.");
+});
+
+test("spokenText: built-in default applies for an explicit Korean lang (문장 안 라틴 표기 대비)", () => {
+  assert.equal(spokenText({ text: "Claude가 답했다" }, undefined, undefined, "ko-KR"), "클로드가 답했다");
+});
+
+test("spokenText: a film's own meta.pronounce for the same word overrides the built-in default", () => {
+  assert.equal(spokenText({ text: "Claude" }, { Claude: { say: "클로드" } }), "클로드");
+});
+
+test("spokenText: a line's own pronounce overrides both the film's and the built-in default", () => {
+  assert.equal(spokenText({ text: "Claude", pronounce: { Claude: { say: "클로드" } } }, { Claude: { say: "Clawd" } }), "클로드");
+});
+
+test("DEFAULT_PRONOUNCE: has both an en and a ko entry for Claude", () => {
+  assert.equal(DEFAULT_PRONOUNCE.en.Claude.say, "Clawd");
+  assert.equal(DEFAULT_PRONOUNCE.ko.Claude.say, "클로드");
+});
+
+// --- "|" forced-caption-break marker (references/pipeline.md "Forced
+// caption breaks"): never spoken.
+
+test("stripCaptionBreaks: removes a standalone '|' token, keeps the words", () => {
+  assert.equal(stripCaptionBreaks("It rides a radio wave | to that cell tower | up there,"), "It rides a radio wave to that cell tower up there,");
+});
+
+test("stripCaptionBreaks: no marker -> unchanged (aside from whitespace normalization)", () => {
+  assert.equal(stripCaptionBreaks("plain line"), "plain line");
+});
+
+test("spokenText: the '|' marker is stripped before the voice ever sees it", () => {
+  assert.equal(spokenText({ text: "wave | to that tower" }), "wave to that tower");
+});
+
+test("spokenText: the marker is stripped even when say (not text) is what's spoken", () => {
+  assert.equal(spokenText({ text: "wave | to that tower", say: "wave | to the tower" }), "wave to the tower");
 });
