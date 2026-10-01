@@ -257,6 +257,10 @@ edit the line's `say` in plan.json (spacing and commas steer the reading: 사 �
 node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 ```
 
+- In a dub folder (`dub/<code>/`) there is no old-slot fit: a re-made take keeps its natural
+  length and is re-measured, as with `--retime` (no flag needed). The line's real limit is the
+  base-language slot on the picture, which `dub.mjs` fits (atempo up to 1.2×, `--min-gap`).
+  `voice.mjs` prints one line saying so. The rest of this list is the base reel.
 - The new take is fitted to the old slot: padded if shorter, sped up by at most 1.1× if longer.
   The picture needs no change. `voice.mjs` prints one line per fitted take, so a padded take is
   not mistaken for the wrong one: `<id>: take 2.97s fitted to its slot 4.56s (+1.59s silence)`

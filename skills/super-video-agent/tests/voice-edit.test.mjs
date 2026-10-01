@@ -139,6 +139,34 @@ test("main --lines in dub/<code>/ prints the dub note, never 'shots will re-rend
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("main --lines: a dub folder keeps the new take's own length and says so; the base reel keeps the old slot", async () => {
+  const root = tmpDir();
+  const lineLen = (d) => {
+    const l = readJson(reelPaths(d).timingsJson).lines[0];
+    return l.end - l.start;
+  };
+  const meta = { lang: "en-US", gapMs: 250, voice: { levelLines: false } };
+  const longText = "one two three four five six seven eight";
+  const shortText = "one";
+  const run = async (d, flagsExtra = []) => {
+    writePlan(d, { meta, lines: [{ id: "l1", text: longText }, { id: "l2", text: "three" }] });
+    await captureStdout(() => main([d, "--provider", "none", "--no-stt"]));
+    const oldLen = lineLen(d);
+    writePlan(d, { meta, lines: [{ id: "l1", text: shortText }, { id: "l2", text: "three" }] });
+    const out = await captureStdout(() => main([d, "--provider", "none", "--no-stt", "--lines", "l1", ...flagsExtra]));
+    return { oldLen, newLen: lineLen(d), out };
+  };
+
+  const base = await run(path.join(root, "reel"));
+  assert.ok(Math.abs(base.newLen - base.oldLen) < 0.01, `base reel keeps its slot: ${base.oldLen} -> ${base.newLen}`);
+  assert.doesNotMatch(base.out, /keep their own length/);
+
+  const dub = await run(path.join(root, "dub", "en"));
+  assert.ok(dub.newLen < dub.oldLen - 0.3, `dub folder keeps the natural length: ${dub.oldLen} -> ${dub.newLen}`);
+  assert.equal(dub.out.match(/regenerated lines keep their own length/g).length, 1, "one line of output says so");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 // --- T14 measured word times kept ---------------------------------------------
 
 test("carriedWords: shifts the previous words by the start delta; a changed caption carries nothing", () => {

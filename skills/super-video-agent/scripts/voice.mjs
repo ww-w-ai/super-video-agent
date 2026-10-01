@@ -17,6 +17,7 @@ import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags
 import { levelLineWav } from "./lib/line-level.mjs";
 import {
   partialRebuildNote,
+  dubCode,
   parsePickBy,
   chooseTake,
   carriedWords,
@@ -69,10 +70,12 @@ speaker summary.
                it move, and their shots re-render. Every line not
                regenerated keeps its measured word times (moved by how far
                its start moved). In a dub folder (<reel>/dub/<code>/) the
-               picture never moves; run dub.mjs --lang <code> afterwards to
-               re-place the lines.
+               picture never moves and a regenerated line always keeps its
+               own length (as --retime): dub.mjs fits it to the picture
+               slot; run dub.mjs --lang <code> afterwards to re-place the lines.
 --retime      with --lines: let regenerated lines keep their own length
-               (use after a wording change, not a pronunciation fix).
+               (use after a wording change, not a pronunciation fix). Implied
+               in a dub folder.
 
 After synthesis, every synthesized line is checked by transcribing its own
 audio back (faster-whisper) and comparing it against the intended text —
@@ -148,6 +151,23 @@ async function loadProviderModule(name) {
   } catch (e) {
     throw new Error(`failed to load voice provider "${name}": ${e.message}`);
   }
+}
+
+/**
+ * Whether a regenerated line keeps its old slot (--lines/--pick/--use). The
+ * base reel keeps it unless --retime. In a dub folder (dub/<code>/) the line's
+ * limit is the base-language slot on the picture, which dub.mjs fits itself,
+ * so the new take keeps its natural length and the old slot is not used.
+ * @returns {boolean}
+ */
+function keepOldSlots(dir, flags) {
+  if (flags.retime) return false;
+  const code = dubCode(dir);
+  if (!code) return true;
+  if (flags.lines || flags.pick || flags.use || flags["pick-by"]) {
+    process.stdout.write(`dub folder (dub/${code}/): regenerated lines keep their own length (--retime) — dub.mjs fits them to the picture slots\n`);
+  }
+  return false;
 }
 
 export async function main(argv) {
@@ -322,7 +342,7 @@ export async function main(argv) {
         gapMs,
         tailSec,
         sttEnabled,
-        keepTiming: !flags.retime,
+        keepTiming: keepOldSlots(dir, flags),
         pickBy,
       });
     } catch (e) {
@@ -347,7 +367,7 @@ export async function main(argv) {
       onlyLineIds,
       sttEnabled,
       retryFlagged,
-      keepTiming: !flags.retime,
+      keepTiming: keepOldSlots(dir, flags),
     });
     writeJson(paths.timingsJson, result.timings);
     process.stdout.write(
@@ -1369,7 +1389,7 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
     onlyLineIds: uses.map((u) => u.id),
     sttEnabled,
     retryFlagged: 0,
-    keepTiming: !flags.retime,
+    keepTiming: keepOldSlots(dir, flags),
     takeWavs: new Map(uses.map((u) => [u.id, u.file])),
     finishedIds: new Set(uses.map((u) => u.id)),
   });
@@ -1481,7 +1501,7 @@ async function installPicks({ dir, paths, plan, flags, picks, providerMod, provi
     onlyLineIds: picks.map((p) => p.id),
     sttEnabled,
     retryFlagged: 0,
-    keepTiming: !flags.retime,
+    keepTiming: keepOldSlots(dir, flags),
     takeWavs,
   });
   writeJson(paths.timingsJson, result.timings);

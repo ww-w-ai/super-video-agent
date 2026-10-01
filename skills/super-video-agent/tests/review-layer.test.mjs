@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { reelPaths, writeJson } from "../scripts/lib/reeldir.mjs";
-import { captionLayerAliases, serveDirWithAliases } from "../scripts/lib/layout-scan-serve.mjs";
+import { captionLayerAliases, placedDuration, serveDirWithAliases } from "../scripts/lib/layout-scan-serve.mjs";
 import { scanCaptionLayer } from "../scripts/review.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -90,6 +90,28 @@ test("scanCaptionLayer: base language, every frame, caption layer only, planted 
   assert.deepEqual(report.runs[0].texts, ["STICKER"]);
   assert.ok(Math.abs(report.runs[0].startSec - 10) < 0.04 && report.runs[0].endSec < 10.5);
   assert.equal(fs.existsSync(path.join(dir, "dub")), false, "nothing is written into the reel");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("placedDuration: reads dub/<code>/timings.placed.json, else the alias source, else null", () => {
+  const dir = makeReel();
+  const code = "en";
+  assert.equal(placedDuration(dir, captionLayerAliases(dir, { code, baseCode: "en" }), code), 42.6, "base language from voice/timings.json");
+  writeJson(path.join(dir, "dub", "ko", "timings.placed.json"), { duration: 43.4, lines: [] });
+  assert.equal(placedDuration(dir, {}, "ko"), 43.4);
+  assert.equal(placedDuration(dir, {}, "ja"), null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("scanCaptionLayer: a --min-gap dub scans to its own, longer length", { skip: !hasBrowser && "playwright-core not installed" }, async () => {
+  const dir = makeReel();
+  // The page reports the base picture's length (10 s), as a real reel does.
+  fs.writeFileSync(path.join(dir, "reel.html"), PAGE.replace("window.__reel.duration = r[0].duration;", "window.__reel.duration = 10;"));
+  writeJson(path.join(dir, "dub", "ko", "plan.json"), { meta: { lang: "ko" }, lines: [] });
+  writeJson(path.join(dir, "dub", "ko", "timings.placed.json"), { duration: 10.78, lines: [] });
+  const report = await scanCaptionLayer({ dir, paths: reelPaths(dir), stepSec: 0.1, dub: "ko" });
+  assert.ok(Math.abs(report.duration - 10.78) < 1e-9, `scanned ${report.duration}`);
+  assert.ok(report.sampleCount >= 108, `samples ${report.sampleCount}`);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

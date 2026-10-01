@@ -14,7 +14,7 @@ import { probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { excludeEndHold } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
-import { captionLayerAliases, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
+import { captionLayerAliases, placedDuration, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
 import { markOnsetOffset } from "./lib/sync-marks.mjs";
 import { extractGrayFrames, analyzeMotion } from "./lib/frame-diff.mjs";
 import { loudnessSpread } from "./lib/join-report.mjs";
@@ -161,7 +161,9 @@ export async function scanCaptionLayer({ dir, paths, stepSec, dub }) {
   let session;
   try {
     session = await openReel(`${server.url}reel.html?layer=captions&dub=${encodeURIComponent(code)}`, {});
-    const { duration, fps, layers } = session.meta;
+    const { fps, layers } = session.meta;
+    // The page reports the base picture's length; a --min-gap dub is longer.
+    const duration = Math.max(session.meta.duration, placedDuration(dir, aliases, code) || 0);
     const step = stepSec !== undefined ? stepSec : 1 / fps;
     const { times, issuesByTime } = await scanIssuesBySeek(session.page, { duration, stepSec: step });
     const runs = groupIssueRuns(times, issuesByTime);

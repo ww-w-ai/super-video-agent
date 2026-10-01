@@ -30,6 +30,23 @@ export function captionLayerAliases(dir, { code, baseCode }) {
 }
 
 /**
+ * The language's own film length: `duration` of dub/<code>/timings.placed.json
+ * (written by dub.mjs from the widened timeline when --min-gap was used), read
+ * from its alias source when the base language is served in place.
+ * @returns {number|null} null when the file is missing or has no duration
+ */
+export function placedDuration(dir, aliases, code) {
+  const urlPath = `/dub/${code}/timings.placed.json`;
+  const file = aliases[urlPath] || path.join(dir, urlPath);
+  try {
+    const d = JSON.parse(fs.readFileSync(file, "utf8")).duration;
+    return Number.isFinite(d) && d > 0 ? d : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * serveDir(dir) plus `aliases` (URL path -> absolute file). Aliased paths
  * are answered here; everything else is forwarded to serveDir unchanged.
  * @returns {Promise<{url:string, close:() => Promise<void>}>}

@@ -169,7 +169,9 @@ shorter take is padded with silence, a longer one sped up by up to 10%. Nothing 
 `render.mjs` reuses every shot and only remixes the audio — the usual case for a pronunciation
 fix. A take more than 10% longer keeps its own length; `voice.mjs` prints which later lines'
 start times shifted, and those shots re-render. After a wording change, pass `--retime` to let
-regenerated lines keep their own length.
+regenerated lines keep their own length. In a dub folder (`dub/<code>/`) this slot fit is off:
+the picture's base-language slot is the limit, `dub.mjs` fits each line to it, so regenerated
+lines keep their own length without `--retime`.
 
 ### Putting an approved clip in as a shot
 
@@ -312,7 +314,8 @@ review.mjs <dir> --scan [stepSec] --layer captions [--dub <code>]
 ```
 
 For the base language, which has no `dub/<base>/timings.placed.json` outside a dub run, the scan
-falls back to `voice/timings.json`.
+falls back to `voice/timings.json`. The scan runs to the language's own length, the `duration` in
+`dub/<code>/timings.placed.json`, so the tail that `--min-gap` added is scanned too.
 
 ## Asset library
 
