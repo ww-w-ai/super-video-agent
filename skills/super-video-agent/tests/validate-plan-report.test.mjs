@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validate } from "../scripts/lib/schema-check.mjs";
 import { readJson } from "../scripts/lib/reeldir.mjs";
-import { spokenUnits, estimateLength, listenerReport, lineEnding } from "../scripts/validate-plan.mjs";
+import { spokenUnits, estimateLength, loadRateSource, listenerReport, lineEnding } from "../scripts/validate-plan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, "..", "scripts", "validate-plan.mjs");
@@ -84,9 +84,58 @@ test("estimate --rate-from: timings made at a known rate give back that length w
     return { id: l.id, text: l.text, start, end };
   });
   const timings = { duration: t + 0.4, lines };
-  const e = estimateLength(plan, { rateFrom: timings });
+  const e = estimateLength(plan, { rateFrom: { timings, plan } });
   assert.ok(Math.abs(e.totalSec - timings.duration) / timings.duration < 0.01, `${e.totalSec} vs ${timings.duration}`);
   assert.ok(Math.abs(e.heardRate - 3.5) < 1e-9);
+});
+
+test("estimate --rate-from another film: measured on that film's own lines, not this plan's ids", () => {
+  // Two films share ids l1..l3 but not their text. The other film's voice
+  // spoke at 6 units/s; pairing by id with this plan would give another rate.
+  const other = {
+    meta: { title: "other", lang: "ko-KR", ratio: "16:9" },
+    lines: [
+      { id: "l1", text: "가나다라마바사아자차카타" }, // 12 units
+      { id: "l2", text: "가나다라마바" }, // 6
+      { id: "l3", text: "가나다라마바사아자" }, // 9
+    ],
+  };
+  const current = {
+    meta: { title: "this", lang: "ko-KR", ratio: "16:9" },
+    lines: [
+      { id: "l1", text: "가나다" },
+      { id: "l2", text: "가나다라마바사아자차카타파하" },
+      { id: "l3", text: "가나" },
+    ],
+  };
+  let t = 0.4;
+  const lines = other.lines.map((l) => {
+    const start = t;
+    const end = start + spokenUnits(l.text) / 6;
+    t = end + 0.7;
+    return { id: l.id, text: l.text, start, end };
+  });
+  const otherDir = reelWith(other);
+  fs.mkdirSync(path.join(otherDir, "voice"));
+  const timingsPath = path.join(otherDir, "voice", "timings.json");
+  fs.writeFileSync(timingsPath, JSON.stringify({ duration: t, lines }));
+
+  const withPlan = estimateLength(current, { rateFrom: loadRateSource(timingsPath) });
+  assert.ok(Math.abs(withPlan.heardRate - 6) < 1e-9, `${withPlan.heardRate}`);
+  assert.match(withPlan.rateSource, /plan\.json/);
+
+  // No plan beside the timings: the text stored in the timings gives the same rate.
+  fs.rmSync(path.join(otherDir, "plan.json"));
+  const fromText = estimateLength(current, { rateFrom: loadRateSource(timingsPath) });
+  assert.ok(Math.abs(fromText.heardRate - 6) < 1e-9, `${fromText.heardRate}`);
+  assert.match(fromText.rateSource, /text in that timings file/);
+
+  // Neither: it says it cannot measure and falls back to the language default.
+  fs.writeFileSync(timingsPath, JSON.stringify({ duration: t, lines: lines.map(({ id, start, end }) => ({ id, start, end })) }));
+  const none = estimateLength(current, { rateFrom: loadRateSource(timingsPath) });
+  assert.match(none.rateSource, /cannot measure/);
+  assert.match(none.rateSource, /default for "ko"/);
+  assert.equal(none.baseRate, 6.0);
 });
 
 test("estimate: no rate given uses the language's starting value and says so", () => {

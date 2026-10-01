@@ -8,17 +8,7 @@
 // ~1080x1920 (~3MB), and passing 30+ of them as base64 data URLs in a
 // single page.evaluate hangs Chromium. Streaming keeps page memory
 // bounded regardless of how many frames there are.
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const pwEntry = path.join(here, "..", "..", "node_modules", "playwright-core", "index.mjs");
-
-let chromiumMod = null;
-async function getChromium() {
-  if (!chromiumMod) chromiumMod = (await import(pwEntry)).chromium;
-  return chromiumMod;
-}
+import { getChromium } from "./playwright.mjs";
 
 /**
  * @param {{png: Buffer, label: string}[]} frames

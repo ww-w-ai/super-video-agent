@@ -23,9 +23,24 @@ fetch    Copies every asset cued in <reel-dir>/plan.json's lines[].cues
          is "personal" or --allow-personal-scope is passed; either way
          every fetched asset's license is printed.
 
-Without a library (no SVA_ASSET_LIB and no <skill>/library/), both
-commands print "no library found at <path>" and exit 0.
+The library is not bundled with the skill (its files carry third-party
+rights). Without one (no SVA_ASSET_LIB and no <skill>/library/), both
+commands print "no library found at <path>", how to point SVA_ASSET_LIB
+at a folder with catalog.json, and exit 0.
 `;
+
+/**
+ * The line printed when no asset library is found at `dir`.
+ * @param {string} dir where the library was looked for
+ * @param {Record<string, string|undefined>} [env]
+ */
+export function noLibraryMessage(dir, env = process.env) {
+  const where = env.SVA_ASSET_LIB ? "SVA_ASSET_LIB names no folder with catalog.json" : "the asset library is not bundled with the skill";
+  return (
+    `no library found at ${dir} — ${where}. To use one, set SVA_ASSET_LIB=<folder with catalog.json> ` +
+    `(references/pipeline.md "Asset library"); without it, synthesized sounds still work.`
+  );
+}
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
@@ -51,7 +66,7 @@ async function runSearch(rest, flags) {
   const query = rest.join(" ");
   const library = openLibrary();
   if (!library) {
-    process.stdout.write(`no library found at ${locateLibraryDir()}\n`);
+    process.stdout.write(noLibraryMessage(locateLibraryDir()) + "\n");
     return;
   }
   const limit = flags.limit ? parseInt(flags.limit, 10) : undefined;
@@ -101,7 +116,7 @@ export async function fetchAssets({ dir, allowPersonalScope = false, log = () =>
 
   const library = openLibrary();
   if (!library) {
-    log(`no library found at ${locateLibraryDir()}`);
+    log(noLibraryMessage(locateLibraryDir()));
     return { fetched: 0 };
   }
 

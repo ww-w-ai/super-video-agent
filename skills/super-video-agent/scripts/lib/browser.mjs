@@ -2,28 +2,8 @@
 // window.__reel.ready, seeks to a time, and captures the single <canvas>
 // as a PNG buffer via toDataURL (no screenshot compositing, so we get
 // exactly the pixels the engine drew).
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { deadAirRunsFromHashes } from "./dead-air.mjs";
-
-const here = path.dirname(fileURLToPath(import.meta.url));
-const pwEntry = path.join(
-  here,
-  "..",
-  "..",
-  "node_modules",
-  "playwright-core",
-  "index.mjs"
-);
-
-let chromiumMod = null;
-async function getChromium() {
-  if (!chromiumMod) {
-    const mod = await import(pwEntry);
-    chromiumMod = mod.chromium;
-  }
-  return chromiumMod;
-}
+import { getChromium } from "./playwright.mjs";
 
 const DEFAULT_READY_TIMEOUT_MS = 120000;
 

@@ -111,7 +111,10 @@ validate-plan.mjs <dir> --estimate [--rate <units/s>] [--rate-from <timings.json
 It prints the spoken units (syllables or words, by language), the total of the pauses, the head
 and tail, and the estimated length. The rate is a default for the language unless you give one:
 `--rate-from` measures it from an earlier `timings.json` made with the same voice and speed,
-which is the closer figure. It reports only and exits 0.
+which is the closer figure. Another film's timings work too: the rate is measured against that
+film's own lines (the `plan.json` beside its `voice/` folder, else the text stored in the
+timings), never against this plan's lines that share an id. With neither, it says it cannot
+measure and uses the default. It reports only and exits 0.
 
 This is a length check, nothing more. The measured voice still sets the clock: never time scenes
 from the estimate.

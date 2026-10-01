@@ -43,6 +43,10 @@ words). Derive every scene's timing from it; the scaffold's `Reel.timeline(timin
 `line(i) → {start, end, u(t)}`, `word(i, j) → {start, end}`, and
 `phrase(i, str) → {start, end} | null` (matches the caption `text`, not `say`).
 
+Each `timings.json` line also records who spoke it: `voice: {provider, voiceId}`. A `plan.json`
+line's own `voice` (any `meta.voice` keys, merged over `meta.voice` for that line) gives a film
+several speakers (`references/voice.md` "Several speakers in one film").
+
 A picture-only probe made before any voice
 (a hard shot, a look test) has no `voice/timings.json`: `still.mjs`, `verify.mjs` and
 `render.mjs` accept `--stub <sec>` and use one silent line of that length instead. Nothing is
@@ -187,8 +191,8 @@ dub.mjs <dir> --lang <code>         # out/final-<code>.mp4 — that language's c
                                      # laid over out/picture.mp4
 ```
 
-The picture's own clock comes from one language's voice, built first as always
-(`voice.mjs <dir>`); `--no-captions` loads the page with `?captions=0` so `Reel.caption()` (and
+The picture's own clock comes from the base language's voice — the user's language — built first
+as always (`voice.mjs <dir>`); other languages follow as variations over that picture; `--no-captions` loads the page with `?captions=0` so `Reel.caption()` (and
 any scene code that checks `Reel.captionsOn()`) draws nothing, and the segments go to
 `out/segments/<final|preview>-nocap/` — separate from a captioned render's, so the two never mix.
 
@@ -196,7 +200,8 @@ Each language, including the first one, lives in its own folder:
 
 ```
 <reel-dir>/dub/<code>/
-  plan.json     # same line ids as the base plan, text/say in <code>, meta.voice, meta.lang
+  plan.json     # same line ids as the base plan, text/say in <code>, meta.voice, meta.lang,
+                #   and each line's own voice where that language needs one
   voice/        # voice.mjs <reel-dir>/dub/<code>  ->  line-<id>.wav + timings.json
 ```
 
@@ -297,8 +302,10 @@ falls back to `voice/timings.json`.
 
 Recorded sound effects and reaction clips ("짤") live outside the repo, in `library/` next to
 `scripts/` (auto-found; `SVA_ASSET_LIB` overrides the location). `library/` is git-ignored:
-nothing in it ships, because most such files carry third-party rights. Without a library,
-everything works as before — synthesized effects only (`sound.md`).
+nothing in it ships, because most such files carry third-party rights, so an installed copy of
+the skill has none. Without a library, everything works as before — synthesized effects only
+(`sound.md`) — and `assets.mjs search`/`fetch` say the library is not bundled and that
+`SVA_ASSET_LIB=<folder with catalog.json>` points them at one.
 
 A library is a folder with `catalog.json` and the files it describes:
 

@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { fetchAssets } from "../scripts/assets.mjs";
+import { fetchAssets, noLibraryMessage } from "../scripts/assets.mjs";
 import { reelPaths, writeJson, readJson } from "../scripts/lib/reeldir.mjs";
 
 function makeFakeLibrary() {
@@ -211,4 +211,12 @@ test("fetchAssets: no library found -> fetched:0, no throw", async () => {
     if (prevEnv === undefined) delete process.env.SVA_ASSET_LIB;
     else process.env.SVA_ASSET_LIB = prevEnv;
   }
+});
+
+test("noLibraryMessage: says the library is not bundled and how to point SVA_ASSET_LIB at one", () => {
+  const bundled = noLibraryMessage("/x/library", {});
+  assert.match(bundled, /^no library found at \/x\/library — the asset library is not bundled with the skill\./);
+  assert.match(bundled, /SVA_ASSET_LIB=<folder with catalog\.json>/);
+  const pointed = noLibraryMessage("/y", { SVA_ASSET_LIB: "/y" });
+  assert.match(pointed, /SVA_ASSET_LIB names no folder with catalog\.json/);
 });

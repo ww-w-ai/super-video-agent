@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Validate a reel's plan.json against scripts/plan.schema.json.
 // Exit non-zero with the failing path(s) if invalid.
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
@@ -9,7 +10,7 @@ import { validate } from "./lib/schema-check.mjs";
 import { stripCaptionBreaks, spokenText } from "./lib/pronounce.mjs";
 import { stripTags } from "./lib/tags.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
-import { withShortsRate } from "./voice.mjs";
+import { withShortsRate, lineSpeed } from "./voice.mjs";
 
 const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>]] [--listener]
 
@@ -23,9 +24,10 @@ JSON path if not. <reel-dir> may be a dub folder (dub/<code>/).
              units per second as heard at the film's speed (meta.voice.rate,
              1.1 on an unset 9:16 film); a line's own rate scales its line.
              --rate <units/s> sets it. --rate-from <timings.json> measures it
-             from a voice already made (this plan's own lines matched by id,
-             else the timings' text). Otherwise a per-language starting
-             value is used.
+             from a voice already made, using the lines of the plan.json
+             beside that timings file (or one folder up), else the text
+             stored in the timings; with neither it says it cannot measure.
+             Otherwise a per-language starting value is used.
 --listener   What a listener hears line after line: each line's ending (the
              last syllable, or the last word in a spaced script), the ending
              counts, adjacent lines with the same ending, and "!" and comma
@@ -70,7 +72,7 @@ export async function main(argv) {
   }
   if (!Array.isArray(plan.lines)) return;
   if (flags.estimate) {
-    const rateFrom = typeof flags["rate-from"] === "string" ? readJson(abs(flags["rate-from"])) : null;
+    const rateFrom = typeof flags["rate-from"] === "string" ? loadRateSource(abs(flags["rate-from"])) : null;
     const rate = flags.rate != null ? Number(flags.rate) : null;
     if (rate != null && !(rate > 0)) {
       fail(`--rate must be a number > 0, got "${flags.rate}"`);
@@ -140,28 +142,35 @@ function letterRunSyllables(run) {
 /**
  * Estimated film length before synthesis.
  * @param {{meta:object, lines:object[]}} plan
- * @param {{rate?: number|null, rateFrom?: {lines:{id:string, text:string, start:number, end:number}[]}|null}} [opts]
- *   rate: units/s as heard at the film's speed. rateFrom: a timings.json to measure it from.
+ * @param {{rate?: number|null, rateFrom?: {timings: object, plan: object|null}|null}} [opts]
+ *   rate: units/s as heard at the film's speed. rateFrom: a timings.json and the plan that
+ *   made it (loadRateSource) to measure it from; when it cannot be measured the default is used.
  */
 export function estimateLength(plan, opts = {}) {
   const meta = plan.meta || {};
   const lang = meta.lang || "ko-KR";
   const filmSpeed = withShortsRate(meta).rate || 1;
   const gapMs = meta.gapMs == null ? DEFAULT_GAP_MS : meta.gapMs;
-  const lines = plan.lines.map((l) => ({ id: l.id, units: spokenUnits(heardText(l, meta)), speed: l.rate || filmSpeed }));
+  const lines = plan.lines.map((l) => ({ id: l.id, units: spokenUnits(heardText(l, meta)), speed: lineSpeed(meta, l) }));
 
-  let baseRate;
+  let baseRate = null;
   let rateSource;
   if (opts.rateFrom) {
-    baseRate = measuredBaseRate(plan, opts.rateFrom, filmSpeed);
-    rateSource = "measured";
+    const measured = measuredBaseRate(opts.rateFrom, filmSpeed);
+    if (measured.rate) {
+      baseRate = measured.rate;
+      rateSource = measured.source;
+    } else {
+      rateSource = `--rate-from: ${measured.reason}`;
+    }
   } else if (opts.rate) {
     baseRate = opts.rate / filmSpeed;
     rateSource = "given";
-  } else {
+  }
+  if (baseRate == null) {
     const primary = lang.split("-")[0].toLowerCase();
     baseRate = DEFAULT_UNITS_PER_SEC[primary] || FALLBACK_UNITS_PER_SEC;
-    rateSource = `default for "${primary}"`;
+    rateSource = rateSource ? `${rateSource}; default for "${primary}"` : `default for "${primary}"`;
   }
 
   const perLine = lines.map((l) => ({ ...l, sec: l.units / (baseRate * l.speed) }));
@@ -186,22 +195,46 @@ export function estimateLength(plan, opts = {}) {
   };
 }
 
-// Units per second at speed 1.0 from measured line windows: each line's
-// duration is scaled back by the speed it was spoken at.
-function measuredBaseRate(plan, timings, filmSpeed) {
-  const meta = plan.meta || {};
-  const planById = new Map(plan.lines.map((l) => [l.id, l]));
+/**
+ * What --rate-from measures from: the timings file and the plan that made it
+ * (plan.json beside the timings file, or one folder up from voice/), or null
+ * when there is none. The plan being estimated is never used — its lines may
+ * share ids with another film's but not their text.
+ * @param {string} timingsPath
+ * @returns {{timings: object, plan: object|null}}
+ */
+export function loadRateSource(timingsPath) {
+  const timings = readJson(timingsPath);
+  const here = path.dirname(timingsPath);
+  for (const candidate of [path.join(here, "plan.json"), path.join(here, "..", "plan.json")]) {
+    if (fs.existsSync(candidate)) return { timings, plan: readJson(candidate) };
+  }
+  return { timings, plan: null };
+}
+
+// Units per second at speed 1.0 from measured line windows: each line's units
+// come from the text that produced it, and its duration is scaled back by the
+// speed it was spoken at.
+function measuredBaseRate({ timings, plan: sourcePlan }, filmSpeed) {
+  const meta = (sourcePlan && sourcePlan.meta) || {};
+  const sourceById = new Map(((sourcePlan && sourcePlan.lines) || []).map((l) => [l.id, l]));
+  const sourceSpeed = sourcePlan ? withShortsRate(meta).rate || 1 : filmSpeed;
   let units = 0;
   let sec = 0;
-  for (const t of timings.lines || []) {
+  for (const t of (timings && timings.lines) || []) {
     const dur = t.end - t.start;
     if (!(dur > 0)) continue;
-    const planLine = planById.get(t.id);
-    units += spokenUnits(planLine ? heardText(planLine, meta) : stripTags(stripCaptionBreaks(t.text || "")));
-    sec += dur * ((planLine && planLine.rate) || filmSpeed);
+    const sourceLine = sourceById.get(t.id);
+    const text = sourceLine ? heardText(sourceLine, meta) : stripTags(stripCaptionBreaks(t.say ?? t.text ?? ""));
+    const lineUnits = spokenUnits(text);
+    if (!lineUnits) continue;
+    units += lineUnits;
+    sec += dur * (sourceLine ? lineSpeed(meta, sourceLine) : sourceSpeed);
   }
-  if (!(units > 0 && sec > 0)) throw new Error("--rate-from: no measured lines with text in that timings file");
-  return units / sec;
+  if (!(units > 0 && sec > 0)) {
+    return { rate: null, reason: "cannot measure — no plan.json beside that timings file and no line text in it" };
+  }
+  return { rate: units / sec, source: sourcePlan ? "measured from that film's plan.json" : "measured from the text in that timings file" };
 }
 
 export function formatEstimate(e) {

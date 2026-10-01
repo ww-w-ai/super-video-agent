@@ -21,7 +21,8 @@ reads as cheap.
 
 ## 2. Kit (`ReelAudio`, `scripts/engine/reel-audio.js`)
 
-Look in the asset library first (`assets.mjs search`). Use a library or kit sound only if it
+Look in the asset library first (`assets.mjs search`; the library is not bundled with the
+skill — without one the command says so, and `SVA_ASSET_LIB` points it at a folder you have). Use a library or kit sound only if it
 scores fit 8 or more for this event and this film's world (below, "Sound cards") — otherwise
 design a new one for this film: pitch, envelope, length and layers, or a new synth voice written
 in the page, shaped from what is on screen (the object's size and material, how fast it moves,

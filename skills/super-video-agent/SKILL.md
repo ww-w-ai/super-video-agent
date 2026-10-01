@@ -54,13 +54,16 @@ use, adapt or ignore; none of it is a template.
 ```
 1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
    length, whether they want to review the script before the voice, the order — voice first
-   (default) or picture first — recommend picture first when the picture renders slowly
+   (default) or picture first; both make the base language's voice (the user's language) before
+   the picture, and picture first then renders the picture once without captions so other
+   languages are laid over it — recommend picture first when the picture renders slowly
    (3D/WebGL drawn on CPU, heavy effects) or several languages share one picture, for a 9:16
    film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
    opening line first (default when nobody can answer: no), if not given; start
    FILM.md (the listener: who watches and what they should think or do, and who speaks if a
    character does — the voice, how the character refers to themselves and how they look on
-   screen agree, and the delivery fits that speaker (`references/voice.md`); facts with where
+   screen agree, and the delivery fits that speaker; with several speakers, a line takes its own
+   `voice` over `meta.voice` (`references/voice.md`); facts with where
    they came from, cautions, scope, the style choice, the tone choice, decisions, what the owner
    must supply)
 2. Write the lines → plan.json, and while writing, decide what each visible event sounds like in
@@ -110,7 +113,7 @@ own characters adds a cast stage between voice and film.
 |---|---|---|---|---|
 | Script | 1, 2 up to the first draft | the source, the user's direction | `plan.json` (draft), `script-v0.md` (the same draft, never edited again), `FILM.md` | xhigh |
 | Review | 2: the review passes | `plan.json`, `FILM.md`, the source | the locked `plan.json`; the review record in `FILM.md` | low |
-| Voice | 2 from "make the voice" | `plan.json` | `voice/` with `timings.json`; STT flags handled | low |
+| Voice | 2 from "make the voice" | `plan.json` | `voice/` with `timings.json` in the base language, in either order; STT flags handled | low |
 | Cast (3D films with their own characters) | between 2 and 3 | `plan.json`, `FILM.md` (who appears, in which lines, doing what) | the character and prop GLBs, a lineup still the owner approved, the contract table in `FILM.md` (`references/3d.md`) | xhigh |
 | Film | 3–5 | `plan.json`, `voice/`, `FILM.md`, the source (and the cast files) | `reel.html`, `out/final.mp4`, the report | xhigh |
 
@@ -129,10 +132,11 @@ the renderer splice them into the existing film (`references/pipeline.md`).
 
 ### Picture first
 
-The picture's clock still comes from one language's voice — build that language's `voice/` first,
-same as always. Then the picture itself renders once, with no caption baked in
-(`render.mjs --no-captions`), and every language — including that first one — is laid over it with
-`dub.mjs`, each in its own `dub/<code>/`. A language whose lines run longer than the first
+"Picture first" does not mean the picture comes before the voice. The base is the user's
+language: build its `voice/` first, same as always, and build the picture on its timings. Other
+languages come after, as variations over that picture. The picture itself renders once, with no caption baked in
+(`render.mjs --no-captions`), and every language — including the base one — is laid over it with
+`dub.mjs`, each in its own `dub/<code>/`. A language whose lines run longer than the base
 language's is sped up to fit (up to 1.2×) or the film reports which lines to shorten; the picture
 never moves unless you ask for it (`--min-gap`, below) and no other language's lines run long
 because of it (`references/pipeline.md`).
@@ -173,7 +177,8 @@ and note these in `FILM.md`. Write the choice in `FILM.md` so the later stages f
 
 In free style, everything inside the frame (margins, caption size, layout) is your call, or the
 user's if they specify it. Length: from the user; if unstated, ask, or infer it from where the
-film goes. Language: the source's.
+film goes. Language: the user's — the base language whose voice sets the clock; other languages
+are dubbed over the picture (picture first).
 
 When the user asks for an upload version with an opening or ending attached to a film (a channel
 end card, a title card, a series episode), read `references/bookends.md`; otherwise skip it.
@@ -214,7 +219,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 
 | Step | Script | Gives you |
 |---|---|---|
-| setup | `scripts/setup.mjs` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked |
+| setup | `scripts/setup.mjs` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked. A browser script run before setup stops with one line naming this command |
 | scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--3d\|--testbed]` | page with contract + optional helpers; `--3d` scaffolds a WebGL/three.js reel, `--testbed` a page that shows the GLBs in `assets/models/` one view per second for the cast stage (`references/3d.md`) |
 | model facts | `scripts/glb-info.mjs <file.glb>` | roots, clips with lengths, node names as three.js's GLTFLoader sees them, morph targets, triangle counts — for the cast contract (`references/3d.md`) |
 | script check | `scripts/validate-plan.mjs <dir> [--estimate] [--listener]` — run before the voice | `plan.json` matches the schema; every `word:` cue names a word in its line; `--estimate` the film length before synthesis, `--listener` the ending and punctuation counts for pass 4 (`references/script-review.md`) |

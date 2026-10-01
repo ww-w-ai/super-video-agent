@@ -90,6 +90,31 @@ proud of what they made fits `warm` better. When a character speaks, the voice (
 how the lines have them refer to themselves, and how they look on screen all agree — the
 listener pass (`references/script-review.md` pass 4) fails a line that breaks the speaker.
 
+## Several speakers in one film
+
+A line may carry its own `voice` with any `meta.voice` keys (`provider`, `voiceId`, `model`,
+`rate`, `delivery`, `refAudio`, …). For that line it is merged over `meta.voice`, and the line's
+keys win; lines without one speak in `meta.voice`. A dub's `dub/<code>/plan.json` lines take
+their own `voice` the same way.
+
+```json
+"meta": { "voice": { "provider": "fish", "voiceId": "<anchor-voice-id>" } },
+"lines": [
+  { "id": "l1", "text": "Here is tonight's top story." },
+  { "id": "l2", "text": "I'm at the scene now.", "voice": { "voiceId": "<reporter-voice-id>", "delivery": "serious" } }
+]
+```
+
+Every `voice.mjs` mode makes each line in its own voice: synthesis, `--takes`, `--pick`,
+`--use`, `--lines`, the speech-to-text check, leveling, the 9:16 default rate and delivery marks.
+`timings.json` records who spoke each line (`voice: {provider, voiceId}`), and the run ends with
+one line naming each voice and its line ids. A tone picked with `--pick` goes to that speaker's
+lines only. A speaker is its provider plus `voiceId`: two clones that differ only in their
+reference audio need different `voiceId`s to be told apart.
+
+Each speaker's voice must fit how that speaker looks on screen and how they refer to themselves
+in the script. Record each speaker and their voice in `FILM.md`.
+
 ## Local clone (qwen3) — what can go wrong
 
 Library notices in the qwen3 log are not errors and need no action: "flash-attn is not installed"
@@ -233,9 +258,12 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 ```
 
 - The new take is fitted to the old slot: padded if shorter, sped up by at most 1.1× if longer.
-  The picture needs no change.
-- A take more than 1.1× longer moves every later line; `voice.mjs` lists them ("lines with
-  shifted start"). Re-render those shots, or pass `--retime` on purpose. In a dub folder
+  The picture needs no change. `voice.mjs` prints one line per fitted take, so a padded take is
+  not mistaken for the wrong one: `<id>: take 2.97s fitted to its slot 4.56s (+1.59s silence)`
+  or `(sped up 1.04x)`. The same applies to a take installed with `--pick` or `--use`.
+- A take more than 1.1× longer keeps its own length and moves every later line; `voice.mjs`
+  says so on that take's line (`keeps its own length … later lines shift +0.64s`) and lists the
+  moved lines ("lines with shifted start"). Re-render those shots, or pass `--retime` on purpose. In a dub folder
   (`dub/<code>/`) nothing re-renders: the picture does not move, and `dub.mjs` re-places the
   lines; `voice.mjs` says so there.
 - The lines you did not touch keep their measured word times (shifted with their start), with

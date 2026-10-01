@@ -52,6 +52,12 @@ qwen3 (if its python venv is found and meta.voice.refAudio is set) -> fish
 stops and lists what to set up. say (macOS) runs only when asked for. It prints
 which provider it picked and why.
 
+A line's own "voice" (any meta.voice keys) is merged over meta.voice for that
+line, so one film can have several speakers; its voice.provider wins over
+--provider. Every mode below makes each line in its own voice, timings.json
+records each line's provider and voiceId, and the run ends with a one-line
+speaker summary.
+
 --lines id,id  regenerate only these lines' audio; reuse the existing
                voice/line-<id>.wav for every other line (they must already
                exist). narration.wav and timings.json are always rebuilt in
@@ -97,14 +103,16 @@ not actually cut off.
                      EMOTIONS for the film, e.g. "confident") — each line's
                      own mark is replaced by it for that take. Installing a
                      tone take with --pick also writes it to plan.json
-                     meta.voice.delivery (see --pick).
+                     for that speaker (see --pick).
 --pick id=k,id=k     on a later run, without --takes: installs take k for
                      each listed line id from its already-synthesized
                      voice/takes/<id>-<k>.wav (no re-synthesis) and rebuilds
                      narration.wav/timings.json as --lines does. If that
                      take came from a --takes m1,m2,... tone comparison, also
-                     writes the picked mark to plan.json meta.voice.delivery
-                     so the remaining lines are made in it.
+                     writes the picked mark to plan.json so that speaker's
+                     remaining lines are made in it: meta.voice.delivery for
+                     the film-wide voice, else the voice.delivery of each of
+                     that speaker's lines.
 --use id=<wav>,id=<wav>
                      install finished line audio from anywhere (another
                      reel's voice/line-<id>.wav, a comparison folder, a
@@ -132,6 +140,14 @@ not actually cut off.
 `;
 
 const PROVIDERS = ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"];
+
+async function loadProviderModule(name) {
+  try {
+    return await import(`./voice/${name}.mjs`);
+  } catch (e) {
+    throw new Error(`failed to load voice provider "${name}": ${e.message}`);
+  }
+}
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
@@ -195,17 +211,19 @@ export async function main(argv) {
     process.stderr.write(`note: delivery marks no engine knows, dropped: {${unknown.join("}, {")}} (references/voice.md "Delivery marks")\n`);
   }
 
+  let lineVoices;
   let providerMod;
   try {
-    providerMod = await import(`./voice/${providerName}.mjs`);
+    providerMod = await loadProviderModule(providerName);
+    lineVoices = await buildLineVoices(plan, providerName, loadProviderModule);
   } catch (e) {
-    fail(`failed to load voice provider "${providerName}": ${e.message}`);
+    fail(e.message);
     return;
   }
 
   const gapMs = plan.meta.gapMs == null ? 700 : plan.meta.gapMs;
   const tailSec = plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec;
-  const voiceCfg = withFishConfidentDelivery(withShortsRate(plan.meta), plan.meta, providerName);
+  const voiceCfg = resolveLineVoice(plan.meta, null, providerName).voiceCfg;
   if (voiceCfg.rate != null && (plan.meta.voice || {}).rate == null) {
     process.stderr.write(`note: vertical film without meta.voice.rate; speaking at the Shorts default ${voiceCfg.rate}\n`);
   }
@@ -227,8 +245,11 @@ export async function main(argv) {
   const sttEnabled = !flags["no-stt"];
   const retryFlagged = flags["retry-flagged"] != null ? Number(flags["retry-flagged"]) : 1;
 
-  if (CLONE_PROVIDERS.has(providerName) && voiceCfg.refAudio) {
-    const refError = await checkRefAudioLength(voiceCfg.refAudio, dir);
+  const refAudios = new Set(
+    [...lineVoices.values()].filter((v) => CLONE_PROVIDERS.has(v.providerName) && v.voiceCfg.refAudio).map((v) => v.voiceCfg.refAudio)
+  );
+  for (const refAudio of refAudios) {
+    const refError = await checkRefAudioLength(refAudio, dir);
     if (refError) {
       fail(refError);
       return;
@@ -237,7 +258,7 @@ export async function main(argv) {
 
   if (flags.use) {
     try {
-      await runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+      await runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -246,7 +267,7 @@ export async function main(argv) {
 
   if (flags.pick) {
     try {
-      await runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+      await runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -265,7 +286,7 @@ export async function main(argv) {
 
   if (pickBy && !flags.takes) {
     try {
-      await runPickBy({ dir, paths, plan, flags, pickBy, lineIds: onlyLineIds, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+      await runPickBy({ dir, paths, plan, flags, pickBy, lineIds: onlyLineIds, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -294,6 +315,7 @@ export async function main(argv) {
         provider: providerMod,
         providerName,
         voiceCfg,
+        lineVoices,
         pronounce: plan.meta.pronounce,
         lang: plan.meta.lang || "ko-KR",
         gapMs,
@@ -316,6 +338,7 @@ export async function main(argv) {
       provider: providerMod,
       providerName,
       voiceCfg,
+      lineVoices,
       pronounce: plan.meta.pronounce,
       lang: plan.meta.lang || "ko-KR",
       gapMs,
@@ -361,8 +384,13 @@ export async function synthesizeAll({
   // Line ids whose takeWavs file is finished audio (--use): already at the
   // film's speed, so no tempo is applied again.
   finishedIds = null,
+  // Line id -> its resolved voice (buildLineVoices); a line missing here uses
+  // provider/providerName/voiceCfg.
+  lineVoices = null,
 }) {
   ensureDir(paths.voiceDir);
+  const filmVoice = { provider, providerName, voiceCfg, key: "" };
+  const lineVoice = (line) => voiceOf(lineVoices, line, filmVoice);
   // --lines: each regenerated line's old slot length, when it keeps its slot.
   const slots = new Map();
   // Silence after each line: its own pauseAfterMs, else meta.gapMs.
@@ -394,26 +422,16 @@ export async function synthesizeAll({
 
   // Batch-capable providers (qwen3, melotts) load their model once for all
   // lines instead of once per line; voice.mjs prefers synthBatch when a
-  // provider implements it (design.md §2.3 voice providers). With --lines,
-  // only the lines being regenerated are sent to the batch.
-  let batchResults = null;
-  if (typeof provider.synthBatch === "function") {
-    const batchLines = lines
-      .filter((line) => (!onlySet || onlySet.has(line.id)) && !(takeWavs && takeWavs.has(line.id)))
-      .map((line) => ({
-        id: line.id,
-        text: forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg),
-        outPath: path.join(paths.voiceDir, `line-${line.id}.wav`),
-      }));
-    const results = batchLines.length
-      ? await provider.synthBatch(batchLines, { lang, voiceCfg, reelDir: dir })
-      : [];
-    batchResults = new Map(results.map((r) => [r.id, r]));
-  }
+  // provider implements it (design.md §2.3 voice providers). One batch per
+  // resolved voice, since a batch carries one voiceCfg. With --lines, only
+  // the lines being regenerated are sent.
+  const toSynth = lines.filter((line) => (!onlySet || onlySet.has(line.id)) && !(takeWavs && takeWavs.has(line.id)));
+  const batchResults = await synthBatches({ lines: toSynth, lineVoice, pronounce, lang, dir, voiceDir: paths.voiceDir });
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const spoken = forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg);
+    const lv = lineVoice(line);
+    const spoken = engineText(line, pronounce, lv);
     // "|" is a caption-break marker (references/pipeline.md "Forced caption
     // breaks") — never spoken, never counted as a word or STT target.
     const timedText = stripCaptionBreaks(line.text);
@@ -435,29 +453,18 @@ export async function synthesizeAll({
       // regenerated line, no new TTS call.
       fs.copyFileSync(takeWavs.get(line.id), outPath);
       synthResult = { wavPath: outPath };
-    } else if (batchResults) {
+    } else if (typeof lv.provider.synthBatch === "function") {
       synthResult = batchResults.get(line.id);
       if (!synthResult) {
-        throw new Error(`voice provider "${providerName}" synthBatch returned no result for line "${line.id}"`);
+        throw new Error(`voice provider "${lv.providerName}" synthBatch returned no result for line "${line.id}"`);
       }
     } else {
-      const synthArgs = {
-        id: line.id,
-        text: spoken,
-        voice: voiceCfg.voiceId,
-        lang,
-        voiceCfg,
-        params: { rate: voiceCfg.rate },
-        outPath,
-        reelDir: dir,
-        lineStart: offset,
-      };
-      synthResult = await provider.synth(synthArgs);
+      synthResult = await synthOne(lv, { id: line.id, text: spoken, lang, outPath, reelDir: dir, lineStart: offset });
     }
 
     const wavPath = synthResult.wavPath;
-    if (!reused && !(finishedIds && finishedIds.has(line.id))) await applyLineTempo(wavPath, line, voiceCfg, provider);
-    if (!reused && voiceCfg.levelLines !== false) {
+    if (!reused && !(finishedIds && finishedIds.has(line.id))) await applyLineTempo(wavPath, line, lv.voiceCfg, lv.provider);
+    if (!reused && lv.voiceCfg.levelLines !== false) {
       const leveled = await levelLineWav(wavPath);
       process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
     }
@@ -465,7 +472,7 @@ export async function synthesizeAll({
     const prevLine = previousById.get(line.id);
     if (keepTiming && onlySet && !reused && prevLine) {
       slots.set(line.id, prevLine.end - prevLine.start);
-      await fitToSlot(wavPath, slots.get(line.id));
+      await fitToSlot(line.id, wavPath, slots.get(line.id));
     }
 
     const durationSec = await probeDuration(wavPath);
@@ -478,7 +485,9 @@ export async function synthesizeAll({
     const carried = reused ? carriedWords(prevLine, timedText, start, stripCaptionBreaks) : null;
     const words = measured.length ? measured : carried || wordsProportional(timedText, start, end);
 
-    const lineOut = { id: line.id, text: line.text, start, end, words };
+    // A reused line keeps the speaker recorded when its audio was made.
+    const speaker = reused && prevLine && prevLine.voice ? prevLine.voice : speakerOf(lv);
+    const lineOut = { id: line.id, text: line.text, start, end, words, voice: speaker };
     if (line.say != null) lineOut.say = line.say;
     if (reused && prevLine && prevLine.estimated) lineOut.estimated = true;
     if (reused && prevLine && prevLine.voiceFlag) lineOut.voiceFlag = prevLine.voiceFlag;
@@ -523,19 +532,21 @@ export async function synthesizeAll({
         applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id));
       }
 
-      if (retryFlagged > 0 && !DETERMINISTIC_PROVIDERS.has(providerName)) {
+      if (retryFlagged > 0) {
         for (let round = 0; round < retryFlagged; round++) {
           const flagged = lineResults.filter(
-            (l) => checkedIds.includes(l.id) && needsRetry(l.voiceFlag)
+            (l) =>
+              checkedIds.includes(l.id) &&
+              needsRetry(l.voiceFlag) &&
+              !DETERMINISTIC_PROVIDERS.has(lineVoice(linesById.get(l.id)).providerName)
           );
           if (!flagged.length) break;
           await retryFlaggedLines({
             flagged,
             lineResults,
             linesById,
-            provider,
+            lineVoice,
             pronounce,
-            voiceCfg,
             lang,
             langCode,
             dir,
@@ -583,7 +594,52 @@ export async function synthesizeAll({
         .map((l) => l.id)
     : [];
 
+  process.stdout.write(speakerSummary(lineResults) + "\n");
   return { timings, moved };
+}
+
+/** The text a provider is sent for `line`: spoken form, delivery mark, engine tags. */
+function engineText(line, pronounce, lv) {
+  return forEngine(applyDeliveryMark(spokenText(line, pronounce, lv.voiceCfg), lv.voiceCfg.delivery), lv.provider, lv.voiceCfg);
+}
+
+/** One provider.synth call in the line's voice. */
+function synthOne(lv, { id, text, lang, outPath, reelDir, lineStart }) {
+  return lv.provider.synth({
+    id,
+    text,
+    voice: lv.voiceCfg.voiceId,
+    lang,
+    voiceCfg: lv.voiceCfg,
+    params: { rate: lv.voiceCfg.rate },
+    outPath,
+    reelDir,
+    lineStart,
+  });
+}
+
+/**
+ * synthBatch for every line whose provider has one, one call per resolved
+ * voice (a batch carries one voiceCfg), in first-line order.
+ * @returns {Promise<Map<string, object>>} line id -> synth result
+ */
+export async function synthBatches({ lines, lineVoice, pronounce, lang, dir, voiceDir }) {
+  const groups = new Map();
+  for (const line of lines) {
+    const lv = lineVoice(line);
+    if (typeof lv.provider.synthBatch !== "function") continue;
+    if (!groups.has(lv.key)) groups.set(lv.key, { lv, items: [] });
+    groups.get(lv.key).items.push({
+      id: line.id,
+      text: engineText(line, pronounce, lv),
+      outPath: path.join(voiceDir, `line-${line.id}.wav`),
+    });
+  }
+  const results = new Map();
+  for (const { lv, items } of groups.values()) {
+    for (const r of await lv.provider.synthBatch(items, { lang, voiceCfg: lv.voiceCfg, reelDir: dir })) results.set(r.id, r);
+  }
+  return results;
 }
 
 // Cloning providers copy the reference clip; a clip outside this range is
@@ -599,7 +655,7 @@ async function checkRefAudioLength(refAudio, reelDir) {
   const sec = await probeDuration(refPath);
   if (sec >= REF_AUDIO_MIN_SEC && sec <= REF_AUDIO_MAX_SEC) return null;
   return (
-    `meta.voice.refAudio is ${sec.toFixed(1)}s (${refPath}); a clone reference must be ` +
+    `voice refAudio is ${sec.toFixed(1)}s (${refPath}); a clone reference must be ` +
     `${REF_AUDIO_MIN_SEC}-${REF_AUDIO_MAX_SEC}s of clean speech. Supply a clip in that range.`
   );
 }
@@ -689,10 +745,12 @@ function shiftLine(lineOut, deltaSec) {
  * rate. A duration change on an accepted candidate shifts every later
  * line's start/end (mirrors the `--lines` "moved" mechanism).
  */
-async function retryFlaggedLines({ flagged, lineResults, linesById, provider, voiceCfg, pronounce, lang, langCode, dir, paths, slots, providerTimed }) {
+async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, pronounce, lang, langCode, dir, paths, slots, providerTimed }) {
   for (const lineOut of flagged) {
     const line = linesById.get(lineOut.id);
-    const spoken = forEngine(applyDeliveryMark(spokenText(line, pronounce, voiceCfg), voiceCfg.delivery), provider, voiceCfg);
+    const lv = lineVoice(line);
+    const { provider, voiceCfg } = lv;
+    const spoken = engineText(line, pronounce, lv);
     const timedText = stripCaptionBreaks(line.text);
     const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
     const outPath = path.join(paths.voiceDir, `line-${lineOut.id}.wav`);
@@ -708,17 +766,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, provider, vo
       });
       synthResult = res.find((r) => r.id === line.id);
     } else {
-      synthResult = await provider.synth({
-        id: line.id,
-        text: spoken,
-        voice: voiceCfg.voiceId,
-        lang,
-        voiceCfg,
-        params: { rate: voiceCfg.rate },
-        outPath,
-        reelDir: dir,
-        lineStart: lineOut.start,
-      });
+      synthResult = await synthOne(lv, { id: line.id, text: spoken, lang, outPath, reelDir: dir, lineStart: lineOut.start });
     }
 
     const wavPath = synthResult.wavPath;
@@ -727,7 +775,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, provider, vo
       const leveled = await levelLineWav(wavPath);
       process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
     }
-    if (slots.has(line.id)) await fitToSlot(wavPath, slots.get(line.id));
+    if (slots.has(line.id)) await fitToSlot(line.id, wavPath, slots.get(line.id));
 
     const newDur = await probeDuration(wavPath);
     const sttRes = await sttTranscribe(paths.voiceDir, [{ id: line.id, wav: `line-${line.id}.wav` }], langCode);
@@ -801,8 +849,8 @@ async function runSttOnly(dir, paths) {
   }
 
   // ElevenLabs lines keep the word times the engine measured; the rest take the speech-to-text ones.
-  const engineTimed = timings.provider === "elevenlabs";
   for (const lineOut of lines) {
+    const engineTimed = ((lineOut.voice && lineOut.voice.provider) || timings.provider) === "elevenlabs";
     applySttResult(lineOut, lineOut, stt.results.get(lineOut.id) || "", engineTimed ? null : stt.words.get(lineOut.id));
   }
   printSttTable(lines);
@@ -837,6 +885,109 @@ const FISH_SHORTS_DELIVERY = "confident";
 export function withFishConfidentDelivery(voice, meta, providerName) {
   if (voice.delivery != null || providerName !== "fish" || meta.ratio !== "9:16") return voice;
   return { ...voice, delivery: FISH_SHORTS_DELIVERY };
+}
+
+/** meta.voice with a line's own `voice` merged over it (line keys win). */
+export function mergedVoice(meta, line) {
+  const base = meta.voice || {};
+  return line && line.voice ? { ...base, ...line.voice } : base;
+}
+
+/**
+ * The voice one line is spoken in. `baseProvider` is --provider, else
+ * meta.voice.provider, else the auto-chosen one; a line's own
+ * voice.provider wins over it. The 9:16 default rate and the fish default
+ * delivery are filled in from the merged voice, as for the whole film.
+ * @returns {{providerName: string, voiceCfg: object, key: string}}
+ *   key: one string per distinct resolved voice (provider + settings), for
+ *   grouping batch synthesis.
+ */
+export function resolveLineVoice(meta, line, baseProvider) {
+  const voice = mergedVoice(meta, line);
+  const providerName = (line && line.voice && line.voice.provider) || baseProvider;
+  const voiceCfg = withFishConfidentDelivery(withShortsRate({ ...meta, voice }), meta, providerName);
+  return { providerName, voiceCfg, key: JSON.stringify([providerName, voiceCfg]) };
+}
+
+/** Who spoke a line, as timings.json records it: {provider, voiceId?}. */
+export function speakerOf(lineVoice) {
+  const voiceId = lineVoice.voiceCfg && lineVoice.voiceCfg.voiceId;
+  return voiceId != null ? { provider: lineVoice.providerName, voiceId } : { provider: lineVoice.providerName };
+}
+
+function speakerLabel(speaker) {
+  return speaker.voiceId != null ? `${speaker.provider}/${speaker.voiceId}` : speaker.provider;
+}
+
+/**
+ * One line naming each distinct voice in `timingsLines` (their `voice`
+ * records) and the ids it spoke, in first-heard order.
+ */
+export function speakerSummary(timingsLines) {
+  const groups = new Map();
+  for (const l of timingsLines) {
+    const label = l.voice ? speakerLabel(l.voice) : "?";
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(l.id);
+  }
+  return `speakers: ${[...groups].map(([label, ids]) => `${label} (${ids.join(", ")})`).join(" | ")}`;
+}
+
+/** A line's speech speed as heard: its own rate, else its voice's rate (9:16 default included), else 1. */
+export function lineSpeed(meta, line) {
+  return line.rate || withShortsRate({ ...meta, voice: mergedVoice(meta, line) }).rate || 1;
+}
+
+/**
+ * Every plan line's resolved voice with its provider module loaded, keyed by
+ * line id. Each provider module is imported once.
+ * @param {(name: string) => Promise<object>} loadProvider
+ * @returns {Promise<Map<string, {providerName, provider, voiceCfg, key}>>}
+ */
+export async function buildLineVoices(plan, baseProvider, loadProvider) {
+  const modules = new Map();
+  const out = new Map();
+  for (const line of plan.lines) {
+    const v = resolveLineVoice(plan.meta, line, baseProvider);
+    if (!PROVIDERS.includes(v.providerName)) {
+      throw new Error(`line "${line.id}": unknown provider "${v.providerName}", expected one of: ${PROVIDERS.join(", ")}`);
+    }
+    if (!modules.has(v.providerName)) modules.set(v.providerName, await loadProvider(v.providerName));
+    out.set(line.id, { ...v, provider: modules.get(v.providerName) });
+  }
+  return out;
+}
+
+/** The voice of `line`: its entry in `lineVoices`, else the film-wide `fallback`. */
+function voiceOf(lineVoices, line, fallback) {
+  return (lineVoices && lineVoices.get(line.id)) || fallback;
+}
+
+/**
+ * Where a tone picked for `lineId` is written so the rest of that speaker's
+ * lines are made in it: meta.voice.delivery when the line speaks in the
+ * film-wide voice, else the `voice.delivery` of every line of its speaker.
+ * Lines of other speakers that would inherit a new meta.voice.delivery keep
+ * the delivery they had. Mutates `plan`.
+ * @returns {string} where it was written, for the run's message
+ */
+export function writePickedTone(plan, lineId, mark, lineVoices, baseProvider) {
+  const speaker = (id) => speakerLabel(speakerOf(lineVoices.get(id)));
+  const baseSpeaker = speakerLabel(speakerOf(resolveLineVoice(plan.meta, null, baseProvider)));
+  const picked = speaker(lineId);
+  if (picked === baseSpeaker) {
+    for (const line of plan.lines) {
+      if (speaker(line.id) === baseSpeaker || (line.voice && line.voice.delivery != null)) continue;
+      line.voice = { ...(line.voice || {}), delivery: lineVoices.get(line.id).voiceCfg.delivery ?? "none" };
+    }
+    plan.meta.voice = { ...(plan.meta.voice || {}), delivery: mark };
+    return "meta.voice.delivery";
+  }
+  const ids = plan.lines.filter((l) => speaker(l.id) === picked).map((l) => l.id);
+  for (const line of plan.lines) {
+    if (ids.includes(line.id)) line.voice = { ...(line.voice || {}), delivery: mark };
+  }
+  return `voice.delivery of line(s) ${ids.join(", ")}`;
 }
 
 // A line's own `rate` (0.5–2) replaces meta.voice.rate for that line, for a
@@ -874,14 +1025,33 @@ async function applyLineTempo(wavPath, line, voiceCfg, provider) {
 // longer one is sped up by at most this factor. A take longer than that keeps
 // its own length and the lines after it shift.
 const MAX_FIT_SPEEDUP = 1.1;
+const SLOT_MATCH_SEC = 0.005;
 
 /**
- * Fit the take at `wavPath` into `slotSec` in place when it can.
+ * The line printed when a re-made or picked take is fitted to its old slot,
+ * so a padded or sped-up take is not mistaken for the wrong take.
+ * @returns {string|null} null when the take already matches the slot
+ */
+export function slotFitMessage(id, takeSec, slotSec) {
+  if (Math.abs(takeSec - slotSec) < SLOT_MATCH_SEC) return null;
+  const head = `${id}: take ${takeSec.toFixed(2)}s`;
+  if (takeSec / slotSec > MAX_FIT_SPEEDUP) {
+    return `${head} keeps its own length, longer than its slot ${slotSec.toFixed(2)}s — later lines shift +${(takeSec - slotSec).toFixed(2)}s`;
+  }
+  const how = takeSec > slotSec ? `sped up ${(takeSec / slotSec).toFixed(2)}x` : `+${(slotSec - takeSec).toFixed(2)}s silence`;
+  return `${head} fitted to its slot ${slotSec.toFixed(2)}s (${how})`;
+}
+
+/**
+ * Fit line `id`'s take at `wavPath` into `slotSec` in place when it can, and
+ * print what was done (slotFitMessage).
  * @returns {Promise<boolean>} whether the take now fills the slot
  */
-async function fitToSlot(wavPath, slotSec) {
+async function fitToSlot(id, wavPath, slotSec) {
   const dur = await probeDuration(wavPath);
-  if (Math.abs(dur - slotSec) < 0.005) return true;
+  const message = slotFitMessage(id, dur, slotSec);
+  if (message) process.stdout.write(message + "\n");
+  if (Math.abs(dur - slotSec) < SLOT_MATCH_SEC) return true;
   if (dur / slotSec > MAX_FIT_SPEEDUP) return false;
   const prefitPath = wavPath + ".prefit.wav";
   fs.renameSync(wavPath, prefitPath);
@@ -1008,7 +1178,8 @@ function saveTakesManifest(paths, manifest) {
  * table and installs take 1 (references/voice.md
  * "Comparing takes"). Pick a different one later with --pick.
  */
-export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming, pickBy = null }) {
+export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, lineVoices = null, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming, pickBy = null }) {
+  const filmVoice = { provider, providerName, voiceCfg, key: "" };
   const takesDir = path.join(paths.voiceDir, "takes");
   ensureDir(takesDir);
   const langCode = sttLangCode(lang);
@@ -1020,30 +1191,21 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
   for (const id of lineIds) {
     const line = linesById.get(id);
     if (!line) throw new Error(`--takes: unknown line id "${id}"`);
-    const base = spokenText(line, pronounce, voiceCfg);
+    const lv = voiceOf(lineVoices, line, filmVoice);
+    const base = spokenText(line, pronounce, lv.voiceCfg);
     const strippedText = stripCaptionBreaks(line.text);
     const strippedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
 
     for (let k = 1; k <= count; k++) {
       const mark = spec.mode === "tone" ? spec.marks[k - 1] : null;
-      const withMark = mark ? withForcedTone(base, mark) : applyDeliveryMark(base, voiceCfg.delivery);
-      const spoken = forEngine(withMark, provider, voiceCfg);
+      const withMark = mark ? withForcedTone(base, mark) : applyDeliveryMark(base, lv.voiceCfg.delivery);
+      const spoken = forEngine(withMark, lv.provider, lv.voiceCfg);
       const outPath = path.join(takesDir, `${id}-${k}.wav`);
 
-      const synthResult = typeof provider.synthBatch === "function"
-        ? (await provider.synthBatch([{ id, text: spoken, outPath }], { lang, voiceCfg, reelDir: dir })).find((r) => r.id === id)
-        : await provider.synth({
-            id,
-            text: spoken,
-            voice: voiceCfg.voiceId,
-            lang,
-            voiceCfg,
-            params: { rate: voiceCfg.rate },
-            outPath,
-            reelDir: dir,
-            lineStart: 0,
-          });
-      if (!synthResult) throw new Error(`voice provider "${providerName}" returned no result for take ${id}-${k}`);
+      const synthResult = typeof lv.provider.synthBatch === "function"
+        ? (await lv.provider.synthBatch([{ id, text: spoken, outPath }], { lang, voiceCfg: lv.voiceCfg, reelDir: dir })).find((r) => r.id === id)
+        : await synthOne(lv, { id, text: spoken, lang, outPath, reelDir: dir, lineStart: 0 });
+      if (!synthResult) throw new Error(`voice provider "${lv.providerName}" returned no result for take ${id}-${k}`);
       const durationSec = await probeDuration(synthResult.wavPath);
 
       let cerVal = null;
@@ -1055,7 +1217,7 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
           cerVal = compareLine({ text: strippedText, say: strippedSay, heard }).cer;
         }
       }
-      rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, voiceCfg, provider), cer: cerVal });
+      rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, lv.voiceCfg, lv.provider), cer: cerVal });
     }
 
     manifest[id] = spec.mode === "tone" ? { mode: "tone", marks: spec.marks } : { mode: "count", n: spec.n };
@@ -1073,6 +1235,7 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
     provider,
     providerName,
     voiceCfg,
+    lineVoices,
     pronounce,
     lang,
     gapMs,
@@ -1164,7 +1327,7 @@ export function parseUse(useStr) {
  * finished line already has it). It is still leveled and STT-checked, and
  * narration.wav/timings.json are rebuilt as --lines does.
  */
-async function runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+async function runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
   const uses = parseUse(flags.use).map((u) => ({ ...u, file: path.resolve(u.file) }));
   const known = new Set(plan.lines.map((l) => l.id));
   const unknown = uses.filter((u) => !known.has(u.id));
@@ -1178,6 +1341,7 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
     provider: providerMod,
     providerName,
     voiceCfg,
+    lineVoices,
     pronounce: plan.meta.pronounce,
     lang: plan.meta.lang || "ko-KR",
     gapMs,
@@ -1203,8 +1367,8 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
  * mark to plan.json meta.voice.delivery, so the remaining lines are made
  * in that tone.
  */
-async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
-  await installPicks({ dir, paths, plan, flags, picks: parsePick(flags.pick), providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
+  await installPicks({ dir, paths, plan, flags, picks: parsePick(flags.pick), providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
 }
 
 /**
@@ -1213,7 +1377,7 @@ async function runPick({ dir, paths, plan, flags, providerMod, providerName, voi
  * them for `stt`), prints the table with the chosen take marked, and
  * installs the chosen takes as --pick does.
  */
-async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
   const manifest = loadTakesManifest(paths);
   const ids = lineIds && lineIds.length ? lineIds : Object.keys(manifest);
   if (!ids.length) throw new Error("--pick-by: no takes to choose from — run --takes first, or name the lines with --lines");
@@ -1228,15 +1392,16 @@ async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod
     if (!found.length) throw new Error(`--pick-by: no takes for "${id}" in ${path.join(paths.voiceDir, "takes")} — run --takes first`);
     const cers = pickBy.by === "stt" ? await takesCer(paths, line, found, langCode) : new Map();
     const marks = manifest[id] && manifest[id].mode === "tone" ? manifest[id].marks : [];
+    const lv = voiceOf(lineVoices, line, { provider: providerMod, voiceCfg });
     for (const k of found) {
       const durationSec = await probeDuration(path.join(paths.voiceDir, "takes", `${id}-${k}.wav`));
-      rows.push({ id, k, mark: marks[k - 1] || null, durationSec, lengthSec: installedLength(durationSec, line, voiceCfg, providerMod), cer: cers.get(k) ?? null });
+      rows.push({ id, k, mark: marks[k - 1] || null, durationSec, lengthSec: installedLength(durationSec, line, lv.voiceCfg, lv.provider), cer: cers.get(k) ?? null });
     }
   }
   const picked = pickTakes(rows, ids, pickBy);
   printTakesTable(rows, picked);
   const picks = ids.map((id) => ({ id, k: picked.get(id) }));
-  await installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+  await installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
 }
 
 /** Take numbers k with a voice/takes/<id>-<k>.wav on disk, ascending. */
@@ -1262,24 +1427,23 @@ async function takesCer(paths, line, ks, langCode) {
  * Installs each picked voice/takes/<id>-<k>.wav without re-synthesis
  * (shared by --pick and --pick-by).
  */
-async function installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+async function installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
   const missing = picks.filter((p) => !fs.existsSync(path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)));
   if (missing.length) {
     throw new Error(`--pick: no candidate take(s) for ${missing.map((p) => `${p.id}=${p.k}`).join(", ")} — run --takes first`);
   }
 
   const manifest = loadTakesManifest(paths);
-  let deliveryWritten = null;
+  const voices = lineVoices || new Map(plan.lines.map((l) => [l.id, resolveLineVoice(plan.meta, l, providerName)]));
+  const tonesWritten = [];
   for (const p of picks) {
     const entry = manifest[p.id];
     if (entry && entry.mode === "tone" && entry.marks && entry.marks[p.k - 1]) {
-      deliveryWritten = entry.marks[p.k - 1];
+      const mark = entry.marks[p.k - 1];
+      tonesWritten.push({ mark, where: writePickedTone(plan, p.id, mark, voices, providerName) });
     }
   }
-  if (deliveryWritten) {
-    plan.meta.voice = { ...(plan.meta.voice || {}), delivery: deliveryWritten };
-    writeJson(paths.planJson, plan);
-  }
+  if (tonesWritten.length) writeJson(paths.planJson, plan);
 
   const takeWavs = new Map(picks.map((p) => [p.id, path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)]));
   const result = await synthesizeAll({
@@ -1289,6 +1453,7 @@ async function installPicks({ dir, paths, plan, flags, picks, providerMod, provi
     provider: providerMod,
     providerName,
     voiceCfg,
+    lineVoices,
     pronounce: plan.meta.pronounce,
     lang: plan.meta.lang || "ko-KR",
     gapMs,
@@ -1301,8 +1466,8 @@ async function installPicks({ dir, paths, plan, flags, picks, providerMod, provi
   });
   writeJson(paths.timingsJson, result.timings);
   process.stdout.write(`installed take(s): ${picks.map((p) => `${p.id}=${p.k}`).join(", ")}\n`);
-  if (deliveryWritten) {
-    process.stdout.write(`wrote meta.voice.delivery = "${deliveryWritten}" to plan.json — the remaining lines will be made in this tone\n`);
+  for (const t of tonesWritten) {
+    process.stdout.write(`wrote ${t.where} = "${t.mark}" to plan.json — that speaker's remaining lines will be made in this tone\n`);
   }
   process.stdout.write(partialRebuildNote(dir, result.moved));
 }

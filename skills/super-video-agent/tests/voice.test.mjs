@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { synthesizeAll, lineTempo, withShortsRate, withFishConfidentDelivery } from "../scripts/voice.mjs";
+import { synthesizeAll, lineTempo, withShortsRate, withFishConfidentDelivery, slotFitMessage } from "../scripts/voice.mjs";
 import { reelPaths } from "../scripts/lib/reeldir.mjs";
 import * as none from "../scripts/voice/none.mjs";
 
@@ -398,4 +398,14 @@ test("withFishConfidentDelivery: fish + 9:16 with no delivery defaults to confid
   assert.equal(withFishConfidentDelivery({ delivery: "none" }, { ratio: "9:16" }, "fish").delivery, "none");
   assert.equal(withFishConfidentDelivery({}, { ratio: "16:9" }, "fish").delivery, undefined);
   assert.equal(withFishConfidentDelivery({}, { ratio: "9:16" }, "elevenlabs").delivery, undefined);
+});
+
+test("slotFitMessage: says how a re-made take was fitted to its old slot", () => {
+  assert.equal(slotFitMessage("l26", 2.97, 4.56), "l26: take 2.97s fitted to its slot 4.56s (+1.59s silence)");
+  assert.equal(slotFitMessage("l3", 4.16, 4), "l3: take 4.16s fitted to its slot 4.00s (sped up 1.04x)");
+  assert.equal(
+    slotFitMessage("l7", 5.2, 4.56),
+    "l7: take 5.20s keeps its own length, longer than its slot 4.56s — later lines shift +0.64s"
+  );
+  assert.equal(slotFitMessage("l1", 4.561, 4.56), null);
 });
