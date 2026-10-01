@@ -9,6 +9,7 @@
 // without ffmpeg: render.mjs supplies each cue's measured peak dB and trim
 // length, then two-pass masters `[premaster]` itself (see masterGainFilter
 // below).
+import fs from "node:fs";
 import { buildDuckVolumeExpr } from "./duck.mjs";
 import { measureLoudness } from "./audio-analysis.mjs";
 import { computeLineGainDb, lineNeedsLimiter, lineLevelFilter } from "./line-level.mjs";
@@ -30,6 +31,13 @@ export const MASTER_TARGET_LUFS = -16;
 export const MASTER_MAX_TRUE_PEAK_DB = -1.5;
 // asetpts: a filter chain ending in a gain (or limiter) leaves one gap in the packet timestamps when video is muxed in the same command (ffmpeg 8.1, ~42 ms); renumbering from the sample count removes it.
 const MASTER_TAIL = "aresample=48000,aformat=channel_layouts=stereo,asetpts=N/SR/TB";
+
+// Every input of a mix is made stereo before amix. amix takes its channel
+// layout from its first input, so a mono voice first collapses the whole mix
+// to mono and every stereo pan in the bed is lost. A mono input lands
+// centred at full level in both channels (ffmpeg's own mono->stereo upmix is
+// -3 dB); a stereo input passes unchanged.
+export const TO_STEREO = "pan=stereo|FL=FL+FC|FR=FR+FC";
 
 /**
  * The static gain (+ optional limiter) filter string for pass 2, from a
@@ -84,11 +92,13 @@ export function buildCueMixFilter({
   const sumLabels = [];
   let nextInput = narrationIndex;
   if (includeNarration) {
-    sumLabels.push(`[${narrationIndex}:a]`);
+    parts.push(`[${narrationIndex}:a]${TO_STEREO}[voice]`);
+    sumLabels.push("[voice]");
     nextInput = narrationIndex + 1;
   }
   if (hasSfx) {
-    sumLabels.push(`[${nextInput}:a]`);
+    parts.push(`[${nextInput}:a]${TO_STEREO}[sfx]`);
+    sumLabels.push("[sfx]");
     nextInput++;
   }
 
@@ -108,7 +118,7 @@ export function buildCueMixFilter({
     // film's own absolute seconds — the same seconds narrationWindows uses.
     const duckStage = duckFilter ? `,${duckFilter}` : "";
     parts.push(
-      `[${inIdx}:a]${trim},afade=t=out:st=${fadeStart}:d=${FADE_OUT_SEC},` +
+      `[${inIdx}:a]${trim},${TO_STEREO},afade=t=out:st=${fadeStart}:d=${FADE_OUT_SEC},` +
         `volume=${gainDb}dB,adelay=${delayMs}:all=1${duckStage}[${label}]`
     );
     sumLabels.push(`[${label}]`);
@@ -127,7 +137,10 @@ export function buildCueMixFilter({
     // stage — measured directly: this file's own narrStage-equivalent
     // pattern in dub.mjs ranged over 20dB before dropping normalize=0, and
     // ~3dB after, even though every line was already leveled to -16 LUFS).
-    parts.push(`${sumLabels.join("")}amix=inputs=${sumLabels.length}:duration=first:dropout_transition=0:normalize=0[amixed]`);
+    // duration=longest: the mix runs until its last sound ends; the caller
+    // pads and cuts it to the picture (apad + -t). duration=first would end
+    // a bed at its first cue's end when the page has no renderSfx.
+    parts.push(`${sumLabels.join("")}amix=inputs=${sumLabels.length}:duration=longest:dropout_transition=0:normalize=0[amixed]`);
   }
   // No loudness stage here: the caller two-pass masters [premaster] itself
   // (measureMasterGain + masterGainFilter above) and adds apad in pass 2.
@@ -135,4 +148,53 @@ export function buildCueMixFilter({
 
   const inputCount = (includeNarration ? 1 : 0) + (hasSfx ? 1 : 0) + cues.length;
   return { filterComplex: parts.join(";"), inputCount };
+}
+
+/**
+ * A 16-bit PCM WAV written chunk by chunk, so a long bed never sits in
+ * memory as one buffer. The header is written up front from `frames`; each
+ * `write(channels)` appends one chunk (one array per channel, same length;
+ * a missing or short channel is silence). `close()` checks that exactly
+ * `frames` frames were written.
+ * @param {string} outPath
+ * @param {{channels:number, sampleRate:number, frames:number}} format
+ */
+export function createWavPcm16Writer(outPath, { channels, sampleRate, frames }) {
+  const blockAlign = channels * 2;
+  const dataSize = frames * blockAlign;
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii");
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write("WAVE", 8, "ascii");
+  header.write("fmt ", 12, "ascii");
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(sampleRate * blockAlign, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36, "ascii");
+  header.writeUInt32LE(dataSize, 40);
+  const fd = fs.openSync(outPath, "w");
+  fs.writeSync(fd, header);
+  let written = 0;
+  return {
+    write(chunk) {
+      const n = chunk.reduce((m, c) => Math.max(m, c ? c.length : 0), 0);
+      const buf = Buffer.alloc(n * blockAlign);
+      for (let i = 0, off = 0; i < n; i++) {
+        for (let c = 0; c < channels; c++, off += 2) {
+          const s = chunk[c] && i < chunk[c].length ? chunk[c][i] : 0;
+          buf.writeInt16LE(Math.round(Math.max(-1, Math.min(1, s || 0)) * 32767), off);
+        }
+      }
+      fs.writeSync(fd, buf);
+      written += n;
+    },
+    close() {
+      fs.closeSync(fd);
+      if (written !== frames) throw new Error(`${outPath}: wrote ${written} frames, header says ${frames}`);
+    },
+  };
 }

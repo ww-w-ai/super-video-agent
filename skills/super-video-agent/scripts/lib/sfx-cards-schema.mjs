@@ -22,6 +22,9 @@ export function validateRecipe(recipe, path) {
   if (recipe.kind === "asset" && !recipe.assetId) {
     errors.push(`${path}.assetId: required when recipe.kind is "asset"`);
   }
+  if (recipe.maxSec != null && (recipe.kind !== "asset" || typeof recipe.maxSec !== "number" || !(recipe.maxSec > 0))) {
+    errors.push(`${path}.maxSec: a positive number of seconds, on an "asset" recipe only (got ${JSON.stringify(recipe.maxSec)})`);
+  }
   if (recipe.kind === "custom" && !recipe.custom) {
     errors.push(`${path}.custom: required when recipe.kind is "custom"`);
   }
@@ -47,6 +50,9 @@ export function validateMeasured(measured, path) {
   }
   if (measured.lufs != null && typeof measured.lufs !== "number") {
     errors.push(`${path}.lufs: must be a number or null/absent, got ${JSON.stringify(measured.lufs)}`);
+  }
+  if (measured.fileSec != null && typeof measured.fileSec !== "number") {
+    errors.push(`${path}.fileSec: must be a number or absent, got ${JSON.stringify(measured.fileSec)}`);
   }
   return errors;
 }

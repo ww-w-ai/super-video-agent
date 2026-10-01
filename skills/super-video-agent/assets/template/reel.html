@@ -163,11 +163,17 @@
     return "frame-" + s + ".jpg";
   }
 
+  // Resolves once the image is decoded, not just loaded: `onload` alone
+  // lets the first seek draw an image that is still decoding, so a cold
+  // first frame differs from a warm one.
   function loadImage(src) {
     return new Promise(function (resolve) {
       var img = new Image();
       img.onload = function () {
-        resolve(img);
+        img.decode().then(
+          function () { resolve(img); },
+          function () { resolve(img); }
+        );
       };
       img.onerror = function () {
         Reel.recordIssue({ type: "clip-frame-load-failed", src: src });
@@ -262,12 +268,12 @@
     SFX_CUES = [];
   }
 
-  // renderSfx(sampleRate) -> [Float32Array-like, Float32Array-like], one per
-  // channel, exactly duration*sampleRate samples (mix()'s length contract).
-  // Builds a ducked music-box bed plus the SFX_CUES onsets, then masters to
-  // -3 dBFS peak. Channels are returned as plain Arrays: page.evaluate's
-  // return value must survive serialization back to Node, and a plain
-  // Array round-trips reliably where a raw Float32Array is not guaranteed to.
+  // renderSfx(sampleRate) -> [Float32Array, Float32Array], one per channel,
+  // exactly duration*sampleRate samples (mix()'s length contract). Builds a
+  // ducked music-box bed plus the SFX_CUES onsets, then masters it.
+  // Typed arrays, never plain Arrays: a 5-minute film as plain numbers ran
+  // Node out of heap in render.mjs; Playwright passes typed arrays back as
+  // they are.
   function renderSfx(sampleRate) {
     var duration = timings ? timings.duration : 0;
     var m = ReelAudio.mix(duration, sampleRate);
@@ -293,7 +299,7 @@
     // A real signature effect (a `sync:true` cue) is a much shorter,
     // punchier signal than the bed alone and will not be pinned this quiet.
     ReelAudio.master(m, { peakDb: -15 });
-    return [Array.from(m.L), Array.from(m.R)];
+    return [m.L, m.R];
   }
 
   // sfxStems(sampleRate) -> Promise<[{id, at, L, R}]> — each SFX_CUES kit
@@ -309,7 +315,7 @@
       var gen = ReelAudio.sfx[cue.kind];
       if (!gen) return null;
       var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
-      var arr = Array.from(buf);
+      var arr = Float32Array.from(buf);
       return { id: cue.id || (cue.kind + "@" + cue.at), at: cue.at, L: arr, R: arr };
     }).filter(Boolean);
     return Promise.resolve(out);

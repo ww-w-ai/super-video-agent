@@ -35,7 +35,10 @@ each part, dead air and black frames (`references/bookends.md`).
 
 Settle texture or small-text questions on a full-size `still.mjs` PNG, not the reduced sheet. To
 compare stills you already made (before and after a fix, one frame in each language), tile them
-into one image with `still.mjs --sheet <out.png> <a.png> <b.png> ...`.
+into one image with `still.mjs --sheet <out.png> <a.png> <b.png> ...` (tiles 540 px wide by
+default, enough to read captions on a 16:9 frame; `--cell <px>` and `--cols N` change it). To
+compare a still with `out/picture.mp4`, render it with `still.mjs --no-captions`: the page loads
+with `?captions=0` as in `render.mjs --no-captions`, and the file is `still-<at>-nocap.png`.
 
 ## What the tools cannot see
 

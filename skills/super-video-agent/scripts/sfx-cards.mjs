@@ -22,7 +22,7 @@ import { openReel } from "./lib/browser.mjs";
 import { buildJudgeSheet, buildScoresTemplate } from "./lib/sfx-judge-sheet.mjs";
 import { buildDecideRequest, parseDecideResponse } from "./lib/jev-client.mjs";
 import { buildChatRequest, parseChatResponse } from "./lib/openrouter-jev-client.mjs";
-import { FIT_THRESHOLD } from "./lib/sfx-judge-rubric.mjs";
+import { FIT_THRESHOLD, describeSpan } from "./lib/sfx-judge-rubric.mjs";
 
 const SAMPLE_RATE = 48000;
 // A judge's score for one sound moves a few tenths between runs; within this
@@ -39,8 +39,10 @@ measure  Fills sound-cards.json's "measured" field for every card: a "kit"
          or "custom" recipe is measured from window.__reel.sfxStems() (the
          page's own cue, rendered alone) when reel.html and voice/timings.json
          exist and the page defines it; an "asset" recipe is measured from
-         its library file directly. Reports which cards it could not
-         measure.
+         its library file, over the part the film plays: 0 s to the card's
+         recipe.maxSec, else to the maxSec its plan.json cues share, else
+         the whole file. Prints the span per asset card and reports which
+         cards it could not measure.
 judge    Scores each card's fit (1-10: does the sound match the event's
          size/material/speed and this film's world/topic). Uses Jev
          (TYPESAFE_API_KEY) or OpenRouter's typesafe/jev-1.13
@@ -62,6 +64,7 @@ function paths(dir) {
     cardsPath: path.join(root, "sound-cards.json"),
     scoresPath: path.join(root, "sound-scores.json"),
     sheetPath: path.join(root, "sound-judge.md"),
+    planJson: path.join(root, "plan.json"),
     reelHtml: path.join(root, "reel.html"),
     timingsJson: path.join(root, "voice", "timings.json"),
     assetsLibDir: path.join(root, "assets", "lib"),
@@ -110,6 +113,7 @@ export async function runMeasure(dir) {
   const p = paths(dir);
   const cards = loadCards(p);
   const assetLibManifest = readAssetLibManifest(p);
+  const plan = fs.existsSync(p.planJson) ? readJson(p.planJson) : null;
 
   const stemCards = cards.filter((c) => c.recipe.kind !== "asset");
   const stems = stemCards.length ? await fetchSfxStems(dir, p) : { byId: new Map(), list: [] };
@@ -117,9 +121,14 @@ export async function runMeasure(dir) {
   const unmeasured = [];
   for (const card of cards) {
     if (card.recipe.kind === "asset") {
-      const measured = await measureAssetCard(p, card, assetLibManifest);
-      if (measured) card.measured = measured;
-      else unmeasured.push(card.id);
+      const trim = assetTrim(card, plan);
+      const measured = await measureAssetCard(p, card, assetLibManifest, trim.maxSec);
+      if (!measured) {
+        unmeasured.push(card.id);
+        continue;
+      }
+      card.measured = measured;
+      process.stdout.write(`${card.id}: measured ${describeSpan(measured)}${trimNote(trim)}\n`);
       continue;
     }
     const stem = stems.byId.get(card.id) || nearestStemByTime(stems.list, card.at);
@@ -190,16 +199,55 @@ async function measureStem(stem) {
   return { ...features, lufs };
 }
 
-async function measureAssetCard(p, card, assetLibManifest) {
-  const assetId = card.recipe.assetId;
-  const filePath = resolveAssetFile(p, assetId, assetLibManifest);
+/**
+ * Measures the part of the library file the film plays: from 0 s to
+ * `maxSec` (render.mjs trims a cue the same way), or the whole file when no
+ * trim is given. `fileSec` keeps the file's own length beside it.
+ */
+async function measureAssetCard(p, card, assetLibManifest, maxSec) {
+  const filePath = resolveAssetFile(p, card.recipe.assetId, assetLibManifest);
   if (!filePath || !fs.existsSync(filePath)) return null;
   const samples = await decodeMonoPcm(filePath, SAMPLE_RATE);
-  const features = measureFeatures(samples, SAMPLE_RATE);
-  const { integratedLufs } = features.durationSec >= LUFS_MIN_DURATION_SEC
-    ? await measureLoudness(filePath)
-    : { integratedLufs: null };
-  return { ...features, lufs: integratedLufs };
+  return measureAssetSpan(samples, SAMPLE_RATE, maxSec);
+}
+
+/**
+ * Features of `samples` cut to its first `maxSec` seconds (all of it when
+ * maxSec is null or longer than the file), plus `fileSec`.
+ * @param {Float32Array} samples
+ * @param {number} sampleRate
+ * @param {number|null|undefined} maxSec
+ */
+export async function measureAssetSpan(samples, sampleRate, maxSec) {
+  const end = maxSec ? Math.min(samples.length, Math.round(maxSec * sampleRate)) : samples.length;
+  const span = samples.subarray(0, end);
+  const features = measureFeatures(span, sampleRate);
+  const lufs = await measureLufsIfLongEnough(span, features.durationSec);
+  return { ...features, lufs, fileSec: samples.length / sampleRate };
+}
+
+/**
+ * The trim the film applies to a library asset: the card's own
+ * `recipe.maxSec`, else the `maxSec` every plan.json cue of that asset
+ * shares. Null when the film plays the whole file; `conflict` when plan.json
+ * cues of that asset disagree (the card then needs its own maxSec).
+ * @param {object} card
+ * @param {object|null} plan
+ * @returns {{maxSec: number|null, from: "card"|"plan.json"|null, conflict: boolean}}
+ */
+export function assetTrim(card, plan) {
+  if (card.recipe.maxSec) return { maxSec: card.recipe.maxSec, from: "card", conflict: false };
+  const cues = ((plan && plan.lines) || []).flatMap((l) => l.cues || []).filter((c) => c.asset === card.recipe.assetId);
+  const values = new Set(cues.map((c) => c.maxSec ?? null));
+  if (values.size > 1) return { maxSec: null, from: null, conflict: true };
+  const only = values.size === 1 ? [...values][0] : null;
+  return only ? { maxSec: only, from: "plan.json", conflict: false } : { maxSec: null, from: null, conflict: false };
+}
+
+function trimNote(trim) {
+  if (trim.conflict) return " (plan.json cues of this asset use different maxSec values; set recipe.maxSec on the card)";
+  if (trim.from) return ` (maxSec ${trim.maxSec} from ${trim.from})`;
+  return " (no maxSec on the card or in plan.json: the whole file)";
 }
 
 /** Prefer the reel's own fetched copy (assets/lib/<id>.<ext>, from `assets.mjs fetch`); fall back to the shared library. */
@@ -339,6 +387,7 @@ export async function runReport(dir) {
     return {
       id: card.id,
       event: card.event,
+      span: describeSpan(card.measured),
       fit: score ? score.fit : null,
       backend: score ? score.backend : null,
       runs: score && score.runs ? score.runs : null,
@@ -367,10 +416,11 @@ export async function runReport(dir) {
 }
 
 function formatTable(rows) {
-  const header = ["id", "event", "fit", "runs", "spread", "backend", "note"];
+  const header = ["id", "event", "measured over", "fit", "runs", "spread", "backend", "note"];
   const cellRows = rows.map((r) => [
     r.id,
     r.event,
+    r.span,
     r.fit == null ? "-" : String(r.fit),
     r.runs ? r.runs.join("/") : "-",
     r.spread == null ? "-" : String(r.spread),

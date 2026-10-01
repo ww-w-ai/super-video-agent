@@ -14,6 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, "..");
 
 const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..."] [--fps 30] [--3d | --testbed]
+       new-reel.mjs <dir> --vendor
 
 Scaffolds <dir>/ with:
   reel.html          template scene + engine inlined
@@ -23,11 +24,20 @@ Scaffolds <dir>/ with:
   source/ voice/ out/  empty working directories
 
 --3d scaffolds from the WebGL/three.js template instead (references/3d.md):
-  reel.html           <script type="module"> scene, a detached WebGL canvas
+  reel.html           <script type="module"> scene with a live import map
+                       ("three", "three/addons/"), a detached WebGL canvas
                        copied into the 2D stage, one lit sample object
-  assets/vendor/       empty — three.js is not bundled; install it yourself
-                       (this command prints the steps)
+  assets/vendor/       three.module.js, three.core.js and addons/ (the whole
+                       examples/jsm tree), copied from an installed three
+                       package when one is found; otherwise empty and the
+                       install steps are printed
   plan.json meta.look  "3d"
+
+three.js is never bundled. A package is looked for in this order:
+  $SVA_THREE_DIR, <dir>/node_modules/three, <skill>/node_modules/three
+
+--vendor copies three.js and its addons into an existing reel's
+  assets/vendor/ and touches nothing else (run it after npm install three).
 
 --testbed scaffolds a GLB testbed instead (references/3d.md): a standalone
   window.__reel page (no engine, no plan.json) that loads every GLB listed in
@@ -66,6 +76,16 @@ export async function main(argv) {
   const title = flags.title || path.basename(dir);
   const threeD = !!flags["3d"];
 
+  if (flags.vendor) {
+    const vendor = installThreeVendor(dir);
+    if (!vendor) {
+      fail(`no three package found.${threeInstallSteps(dir)}`);
+      return;
+    }
+    process.stdout.write(vendorReport(vendor));
+    return;
+  }
+
   if (flags.testbed) {
     try {
       const result = scaffoldTestbed({ dir, width, height, fps, title });
@@ -73,36 +93,84 @@ export async function main(argv) {
         `${result.keptHtml ? "kept existing" : "wrote"} ${path.join(dir, "reel.html")}\n` +
           `models.json lists ${result.models.length} GLB file(s)${result.models.length ? ": " + result.models.join(", ") : ""}\n`
       );
-      process.stdout.write(testbedInstallSteps(dir));
+      const vendor = installThreeVendor(dir);
+      process.stdout.write(vendor ? vendorReport(vendor) : testbedInstallSteps(dir));
     } catch (e) {
       fail(e.message);
     }
     return;
   }
 
+  let result;
   try {
-    await scaffold({ dir, width, height, fps, title, ratio, threeD });
+    result = await scaffold({ dir, width, height, fps, title, ratio, threeD });
   } catch (e) {
     fail(e.message);
     return;
   }
   process.stdout.write(`scaffolded ${dir}\n`);
   if (threeD) {
-    process.stdout.write(threeInstallSteps(dir));
+    process.stdout.write(result.vendor ? vendorReport(result.vendor) : threeInstallSteps(dir));
   }
+}
+
+// Quotes a path for a copy-paste shell line only when it needs it.
+function q(p) {
+  return /^[\w@%+=:,./-]+$/.test(p) ? p : `"${p.replaceAll('"', '\\"')}"`;
+}
+
+/** The first installed three package: $SVA_THREE_DIR, <dir>/node_modules/three, <skill>/node_modules/three. */
+export function findThree(dir, env = process.env) {
+  const candidates = [
+    env.SVA_THREE_DIR,
+    path.join(dir, "node_modules", "three"),
+    path.join(REPO_ROOT, "node_modules", "three"),
+  ].filter(Boolean);
+  return candidates.find((c) => fs.existsSync(path.join(c, "build", "three.module.js"))) || null;
+}
+
+/**
+ * Copies three.module.js, three.core.js (three r170+) and the whole
+ * examples/jsm tree (as addons/, keeping loaders/ and utils/ side by side for
+ * their relative imports) into <dir>/assets/vendor/.
+ * @returns {{from: string, version: string|null}|null} null when no three package is found
+ */
+export function installThreeVendor(dir, env = process.env) {
+  const three = findThree(dir, env);
+  if (!three) return null;
+  const vendor = path.join(dir, "assets", "vendor");
+  ensureDir(vendor);
+  for (const f of ["three.module.js", "three.core.js"]) {
+    const src = path.join(three, "build", f);
+    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(vendor, f));
+  }
+  const jsm = path.join(three, "examples", "jsm");
+  if (fs.existsSync(jsm)) fs.cpSync(jsm, path.join(vendor, "addons"), { recursive: true });
+  let version = null;
+  try {
+    version = JSON.parse(fs.readFileSync(path.join(three, "package.json"), "utf8")).version || null;
+  } catch {
+    version = null;
+  }
+  return { from: three, version };
+}
+
+function vendorReport(vendor) {
+  return `copied three.js ${vendor.version || "(version unknown)"} and its addons from ${vendor.from} into assets/vendor/
+Record this version and its MIT license in FILM.md (references/3d.md).
+`;
 }
 
 export function threeInstallSteps(dir) {
   return `
-three.js is not bundled with this skill. Install it into this reel before
-opening reel.html:
-  npm install three --prefix ${dir}
-  mkdir -p ${path.join(dir, "assets", "vendor")}
-  cp ${path.join(dir, "node_modules", "three", "build", "three.module.js")} ${path.join(dir, "assets", "vendor")}/
-  cp ${path.join(dir, "node_modules", "three", "build", "three.core.js")} ${path.join(dir, "assets", "vendor")}/
-Loaders and other addons (e.g. GLTFLoader for GLB models) need an import map
-and their own copy step: references/3d.md "Install three.js".
-Record the installed version and its MIT license in FILM.md (references/3d.md).
+three.js is not bundled with this skill and no installed three package was
+found. Install it, then copy it and its addons into this reel:
+  npm install three --prefix ${q(dir)}
+  node ${q(path.join(here, "new-reel.mjs"))} ${q(dir)} --vendor
+reel.html's import map already points "three" and "three/addons/" at
+assets/vendor/; until the files are there its ready promise rejects naming
+these steps. Record the installed version and its MIT license in FILM.md
+(references/3d.md).
 `;
 }
 
@@ -139,14 +207,16 @@ export function testbedInstallSteps(dir) {
   return `
 three.js is not bundled with this skill. Install it and its addons into this
 folder before opening reel.html:
-  npm install three --prefix ${dir}
-  cp ${path.join(three, "build", "three.module.js")} ${vendor}/
-  cp ${path.join(three, "build", "three.core.js")} ${vendor}/
-  cp -R ${path.join(three, "examples", "jsm")} ${path.join(vendor, "addons")}
-Put .glb files in ${path.join(dir, "assets", "models")}/ and re-run
-  new-reel.mjs ${dir} --testbed
+  npm install three --prefix ${q(dir)}
+  node ${q(path.join(here, "new-reel.mjs"))} ${q(dir)} --vendor
+or copy by hand:
+  cp ${q(path.join(three, "build", "three.module.js"))} ${q(vendor)}/
+  cp ${q(path.join(three, "build", "three.core.js"))} ${q(vendor)}/
+  cp -R ${q(path.join(three, "examples", "jsm"))} ${q(path.join(vendor, "addons"))}
+Put .glb files in ${q(path.join(dir, "assets", "models"))}/ and re-run
+  new-reel.mjs ${q(dir)} --testbed
 to list them in models.json, then render views with
-  still.mjs ${dir} --at 0,1
+  still.mjs ${q(dir)} --at 0,1
 Record the installed three.js version and its MIT license in FILM.md (references/3d.md).
 `;
 }
@@ -205,9 +275,11 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
     placeholderPath,
   ]);
 
-  // ---- 3D: empty vendor dir for a user-installed three.js ------------
+  // ---- 3D: three.js + addons into assets/vendor/ when installed ------
+  let vendor = null;
   if (threeD) {
     ensureDir(path.join(paths.assetsDir, "vendor"));
+    vendor = installThreeVendor(dir);
   }
 
   // ---- reel.html -------------------------------------------------------
@@ -257,7 +329,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
     });
   }
 
-  return { fontStatus };
+  return { fontStatus, vendor };
 }
 
 function escapeHtml(s) {

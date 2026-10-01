@@ -50,18 +50,26 @@ export function attackMs(samples, sampleRate, thresholdRatio = 0.1) {
 }
 
 // ---------------------------------------------------------------------
-// spectral analysis: a plain iterative radix-2 FFT over a fixed-size
-// window (the first FFT_SIZE samples, zero-padded if the buffer is
-// shorter) — enough resolution for centroid/flatness on a short sfx clip
-// without pulling in an FFT dependency.
+// spectral analysis: a plain iterative radix-2 FFT over FFT_SIZE-sample
+// frames, magnitudes averaged across frames spread over the whole buffer
+// (a buffer shorter than one frame is zero-padded). One frame at the start
+// is not enough: library MP3s open with tens of ms of encoder silence, and
+// a silent first frame read as brightness 0 Hz and noisiness 1.00.
 // ---------------------------------------------------------------------
 
 const FFT_SIZE = 2048;
+const MAX_FRAMES = 64;
+const FLATNESS_MIN_HZ = 60;
+const FLATNESS_MAX_HZ = 12000;
 
-function nextPow2(n) {
-  let p = 1;
-  while (p < n) p *= 2;
-  return p;
+/** Start indexes of the frames to average: non-overlapping, at most MAX_FRAMES, evenly spread. */
+function frameStarts(length) {
+  const count = Math.floor(length / FFT_SIZE);
+  if (count <= 1) return [0];
+  const used = Math.min(count, MAX_FRAMES);
+  const starts = [];
+  for (let k = 0; k < used; k++) starts.push(Math.floor((k * (count - 1)) / Math.max(1, used - 1)) * FFT_SIZE);
+  return starts;
 }
 
 /** In-place iterative Cooley-Tukey FFT. `re`/`im` are Float64Array of length a power of 2. */
@@ -102,31 +110,37 @@ function fftInPlace(re, im) {
 }
 
 /**
- * Magnitude spectrum of `samples` (a Hann-windowed slice, FFT_SIZE bins,
- * only the first half returned — the real-signal Nyquist half) and the
- * sampleRate, for centroid/flatness. Silence-padded windows are fine: a
- * shorter buffer just gets fewer non-zero bins.
+ * Average magnitude spectrum of `samples` over Hann-windowed FFT_SIZE
+ * frames spread across the buffer (frameStarts), first half only — the
+ * real-signal Nyquist half — and the bin width in Hz, for centroid,
+ * flatness and peak pitch. Silent frames add nothing, so loud frames
+ * dominate; a buffer shorter than one frame is zero-padded.
  * @returns {{mags: Float64Array, binHz: number}}
  */
 function magnitudeSpectrum(samples, sampleRate) {
   const n = FFT_SIZE;
-  const re = new Float64Array(n);
-  const im = new Float64Array(n);
-  const take = Math.min(n, samples.length);
-  for (let i = 0; i < take; i++) {
-    const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (take - 1 || 1)); // Hann
-    re[i] = samples[i] * w;
-  }
-  fftInPlace(re, im);
   const half = n / 2;
   const mags = new Float64Array(half);
-  for (let i = 0; i < half; i++) mags[i] = Math.hypot(re[i], im[i]);
+  const starts = frameStarts(samples.length);
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
+  for (const start of starts) {
+    re.fill(0);
+    im.fill(0);
+    const take = Math.min(n, samples.length - start);
+    for (let i = 0; i < take; i++) {
+      const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / (take - 1 || 1)); // Hann
+      re[i] = samples[start + i] * w;
+    }
+    fftInPlace(re, im);
+    for (let i = 0; i < half; i++) mags[i] += Math.hypot(re[i], im[i]) / starts.length;
+  }
   return { mags, binHz: sampleRate / n };
 }
 
 /**
  * Spectral centroid ("brightness") in Hz: the magnitude-weighted mean
- * frequency of a Hann-windowed slice of `samples`. 0 for silence.
+ * frequency of `samples`' average spectrum. 0 for silence.
  */
 export function brightnessHz(samples, sampleRate) {
   const { mags, binHz } = magnitudeSpectrum(samples, sampleRate);
@@ -143,15 +157,19 @@ export function brightnessHz(samples, sampleRate) {
 /**
  * Spectral flatness (geometric mean / arithmetic mean of the power
  * spectrum), 0..1 — near 0 for a pure tone or resonant body, near 1 for
- * white/flat noise. This is `noisiness`.
+ * white/flat noise. This is `noisiness`. Measured over 60 Hz–12 kHz only:
+ * lossy library files are low-passed near 16 kHz, and their empty top bins
+ * would otherwise read any recording as a pure tone.
  */
 export function noisiness(samples, sampleRate) {
-  const { mags } = magnitudeSpectrum(samples, sampleRate);
+  const { mags, binHz } = magnitudeSpectrum(samples, sampleRate);
   const EPS = 1e-12;
+  const lo = Math.max(1, Math.floor(FLATNESS_MIN_HZ / binHz));
+  const hi = Math.min(mags.length - 1, Math.ceil(FLATNESS_MAX_HZ / binHz));
   let logSum = 0;
   let sum = 0;
   let n = 0;
-  for (let i = 0; i < mags.length; i++) {
+  for (let i = lo; i <= hi; i++) {
     const power = mags[i] * mags[i] + EPS;
     logSum += Math.log(power);
     sum += power;

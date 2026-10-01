@@ -112,6 +112,62 @@ test("pitchTrend: white noise (no clear periodicity) reads none", () => {
   assert.equal(pitchTrend(whiteNoise(0.3, SR, 3), SR), "none");
 });
 
+// whiteNoise's LCG loses precision in floating point and turns periodic
+// past ~0.2 s; mulberry32 stays noise-like for the 1 s buffers below.
+function longNoise(secs, sampleRate, seed = 1, amp = 0.8) {
+  const n = Math.round(secs * sampleRate);
+  const buf = new Float32Array(n);
+  let a = seed >>> 0;
+  for (let i = 0; i < n; i++) {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    buf[i] = amp * ((((t ^ (t >>> 14)) >>> 0) / 4294967296) * 2 - 1);
+  }
+  return buf;
+}
+
+function withLeadingSilence(buf, secs, sampleRate) {
+  const pad = Math.round(secs * sampleRate);
+  const out = new Float32Array(pad + buf.length);
+  out.set(buf, pad);
+  return out;
+}
+
+// Library MP3s open with encoder silence; the spectrum used to read only
+// the first 2048 samples, so such a file measured brightness 0 Hz and
+// noisiness 1.00 whatever it held.
+test("brightness/noisiness/pitch: 100 ms of leading silence does not blank the spectrum", () => {
+  const tone = withLeadingSilence(sine(1000, 1, SR), 0.1, SR);
+  const noise = withLeadingSilence(longNoise(1, SR, 5), 0.1, SR);
+  const b = brightnessHz(tone, SR);
+  assert.ok(b > 800 && b < 1300, `expected a ~1 kHz centroid, got ${b}`);
+  assert.ok(noisiness(tone, SR) < 0.2, `expected a tone to read tonal, got ${noisiness(tone, SR)}`);
+  assert.ok(noisiness(noise, SR) > 0.5, `expected noise to read noisy, got ${noisiness(noise, SR)}`);
+  assert.equal(pitchTrend(withLeadingSilence(risingSine(300, 1500, 1, SR), 0.1, SR), SR), "rising");
+});
+
+test("noisiness: noise with nothing above 16 kHz (an MP3 low-pass) still reads noisy", () => {
+  // Blackman windowed-sinc low-pass at 15 kHz, 127 taps: flat below, about -70 dB above 16 kHz
+  const raw = longNoise(1, SR, 9);
+  const taps = 127;
+  const fc = 15000 / SR;
+  const h = [];
+  for (let k = 0; k < taps; k++) {
+    const m = k - (taps - 1) / 2;
+    const sinc = m === 0 ? 2 * fc : Math.sin(2 * Math.PI * fc * m) / (Math.PI * m);
+    const w = 0.42 - 0.5 * Math.cos((2 * Math.PI * k) / (taps - 1)) + 0.08 * Math.cos((4 * Math.PI * k) / (taps - 1));
+    h.push(sinc * w);
+  }
+  const lp = new Float32Array(raw.length);
+  for (let i = taps; i < raw.length; i++) {
+    let acc = 0;
+    for (let k = 0; k < taps; k++) acc += h[k] * raw[i - k];
+    lp[i] = acc;
+  }
+  assert.ok(noisiness(lp, SR) > 0.3, `expected low-passed noise to read noisy, got ${noisiness(lp, SR)}`);
+});
+
 test("measureFeatures: returns every field with the right shape", () => {
   const f = measureFeatures(sine(440, 0.3, SR), SR);
   assert.equal(typeof f.durationSec, "number");

@@ -41,11 +41,26 @@ export const JEV_FIT_CRITERIA = [
 /** report warns below fit = JEV_PASS * 10 (0.8 * 10 = 8, same line as FIT_THRESHOLD). */
 export const JEV_PASS = 0.8;
 
+/**
+ * Which span of the sound the measurements cover: "0.00-3.00s of a 10.25s file"
+ * for a trimmed library asset, "the whole 0.94s file" for an untrimmed one,
+ * "the whole 0.35s sound" when there is no fileSec (a kit/custom stem, or
+ * an asset measured before fileSec existed — then the whole file).
+ */
+export function describeSpan(measured) {
+  if (!measured) return "(not measured)";
+  const d = measured.durationSec.toFixed(2);
+  if (measured.fileSec == null) return `the whole ${d}s sound`;
+  if (measured.fileSec - measured.durationSec < 0.005) return `the whole ${d}s file`;
+  return `0.00-${d}s of a ${measured.fileSec.toFixed(2)}s file`;
+}
+
 /** One line per measured feature, or "(not measured)" — shared by the Jev prompt and the sheet. */
 export function describeMeasured(measured) {
   if (!measured) return "(not measured)";
   const lufs = measured.lufs == null ? "n/a" : `${measured.lufs.toFixed(1)} LUFS`;
   return (
+    `over ${describeSpan(measured)}: ` +
     `duration ${measured.durationSec.toFixed(2)}s, peak ${measured.peakDb.toFixed(1)}dB, ` +
     `${lufs}, attack ${measured.attackMs.toFixed(1)}ms, brightness ${Math.round(measured.brightnessHz)}Hz, ` +
     `pitch ${measured.pitchTrend}, noisiness ${measured.noisiness.toFixed(2)}`

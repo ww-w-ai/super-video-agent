@@ -119,6 +119,105 @@ export async function probeVideoInfo(filePath) {
   return { width, height, fps };
 }
 
+/**
+ * `fps` as an exact rational {num, den}: an integer rate (30 -> 30/1) or an
+ * NTSC rate (29.97 -> 30000/1001). Throws for anything else, since the
+ * frame grid must be exact in integer ticks.
+ */
+export function fpsRational(fps) {
+  for (const den of [1, 1001]) {
+    const num = Math.round(fps * den);
+    if (num > 0 && Math.abs(num / den - fps) < 1e-6) return { num, den };
+  }
+  throw new Error(`frame rate ${fps} is neither an integer nor an NTSC (n*1000/1001) rate`);
+}
+
+/**
+ * The nominal rate behind a probed `fps`: a file whose timestamps drifted
+ * can report a rate slightly off (e.g. 29.98 for 30). An exact integer or
+ * NTSC rate is kept; otherwise the nearest integer within 0.5 %; otherwise
+ * `fps` unchanged.
+ */
+export function nominalFps(fps) {
+  try {
+    const { num, den } = fpsRational(fps);
+    return num / den;
+  } catch {
+    const near = Math.round(fps);
+    return near > 0 && Math.abs(near - fps) <= fps * 0.005 ? near : fps;
+  }
+}
+
+/** pts/dts (in stream ticks) of every packet of `filePath`'s first video stream, in decode order, plus the stream time base. */
+export async function probeVideoPackets(filePath) {
+  const { stdout } = await ffprobe([
+    "-v", "error", "-select_streams", "v:0",
+    "-show_entries", "stream=time_base:packet=pts,dts",
+    "-of", "json", filePath,
+  ]);
+  const j = JSON.parse(stdout.toString());
+  const [tn, td] = String(j.streams[0].time_base).split("/").map(Number);
+  const packets = (j.packets || []).map((p) => ({ pts: Number(p.pts), dts: Number(p.dts) }));
+  return { timeBase: tn / td, packets };
+}
+
+/**
+ * Plans the re-stamp that puts every packet exactly on the 1/fps grid.
+ * Each packet's frame index is its PTS rounded to the grid (from the first
+ * frame); the indexes must be 0..n-1 with no gap or repeat, or the stream
+ * drifted by half a frame or more and is refused. DTS becomes the decode
+ * index minus the stream's reorder delay (B-frames), so DTS <= PTS holds
+ * and DTS rises by one frame per packet.
+ * @returns {{frames:number, delay:number, minPts:number}}
+ */
+export function planFrameGrid({ timeBase, packets }, fps) {
+  if (!packets.length) throw new Error("the video stream has no packets");
+  const minPts = Math.min(...packets.map((p) => p.pts));
+  const index = packets.map((p) => Math.round((p.pts - minPts) * timeBase * fps));
+  const seen = new Uint8Array(packets.length);
+  for (const i of index) {
+    if (i < 0 || i >= packets.length || seen[i]) {
+      throw new Error(`video timestamps drift by half a frame or more (frame index ${i} of ${packets.length}); cannot snap to the 1/${fps} s grid losslessly`);
+    }
+    seen[i] = 1;
+  }
+  let delay = 0;
+  index.forEach((frame, n) => (delay = Math.max(delay, n - frame)));
+  return { frames: packets.length, delay, minPts };
+}
+
+/** The setts bitstream filter for planFrameGrid's re-stamp: PTS rounded to the grid, DTS from the decode index, every duration one frame. */
+export function frameGridFilter({ fps, delay, minPts }) {
+  const { num, den } = fpsRational(fps);
+  const perTick = `(TB*${num}/${den})`; // frames per stream tick
+  return (
+    `setts=pts=round((PTS-${minPts})*${perTick})/${perTick}` +
+    `:dts=(N-${delay})/${perTick}` +
+    `:duration=1/${perTick}`
+  );
+}
+
+/**
+ * Re-stamps `src`'s video onto the exact 1/fps grid without re-encoding
+ * (-c copy; decoded frames are unchanged) and writes `outPath` with a track
+ * timescale of the frame rate's numerator, so one frame is a whole number
+ * of ticks. A -c copy concat of separately encoded segments can leave
+ * packets a few ticks off the grid and the last frame held long; a later
+ * filter (overlay, setpts) then makes one frame more than the picture has.
+ * @returns {Promise<{frames:number}>}
+ */
+export async function snapToFrameGrid(src, outPath, fps) {
+  const plan = planFrameGrid(await probeVideoPackets(src), fps);
+  const { num } = fpsRational(fps);
+  await ffmpeg([
+    "-y", "-i", src, "-map", "0:v:0", "-c", "copy",
+    "-bsf:v", frameGridFilter({ fps, ...plan }),
+    "-video_track_timescale", String(num),
+    outPath,
+  ]);
+  return { frames: plan.frames };
+}
+
 const ATEMPO_MIN = 0.8;
 const ATEMPO_MAX = 1.3;
 

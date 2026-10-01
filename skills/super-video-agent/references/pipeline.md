@@ -18,6 +18,8 @@ window.__reel = {
   shots,                          // [{id, start, end, readAt}] for stills and the contact sheet
   issues(),                       // [] or layout problems your code recorded (e.g. text overflow)
   audio: { narration, renderSfx },// narration wav path; optional renderSfx(sampleRate) → [L, R]
+                                   // as Float32Arrays (plain arrays still accepted; render.mjs
+                                   // pulls them in ~22 s chunks, so a 10-minute bed fits)
   sfxStems,                       // optional sfxStems(sampleRate) → Promise<[{id, at, L, R}]>,
                                    // each kit/custom cue rendered alone — scripts/sfx-cards.mjs
                                    // "measure" (references/sound.md "Sound cards")
@@ -39,7 +41,11 @@ that never finishes loading fails instead of hanging.
 
 `voice.mjs` writes `voice/timings.json`: each line's measured start/end, and word times (from
 the engine when it reports them, otherwise from the speech-to-text check; always the caption's
-words). Derive every scene's timing from it; the scaffold's `Reel.timeline(timings)` gives
+words). Each caption word is matched to the heard words by its letters (numbers read out,
+spacing ignored), so a word keyed to a beat lands when it was said; words the voice did not say
+are interpolated between measured neighbours, and `wordsMeasured` on each line counts the
+measured ones (0 = even spread, no speech-to-text; `references/voice.md` "Timing model").
+Derive every scene's timing from it; the scaffold's `Reel.timeline(timings)` gives
 `line(i) → {start, end, u(t)}`, `word(i, j) → {start, end}`, and
 `phrase(i, str) → {start, end} | null` (matches the caption `text`, not `say`).
 
@@ -146,7 +152,12 @@ render.mjs <dir> [--preview] --only id,id   # force-render exactly these segment
 
 A segment re-renders when: its `.mp4` is missing, its frame range moved (the shot before it
 changed duration), fps or output size changed, or any of its three probe hashes changed (the
-drawn pixels changed). After joining, render.mjs checks the A/V duration delta (≤ 50ms) and
+drawn pixels changed). The joined track (picture, preview or final) is re-stamped onto the exact
+1/fps grid without re-encoding: PTS rounded to the grid, DTS one frame per packet, every frame one
+tick of a track timescale equal to the frame rate. Frame hashes are unchanged. A plain `-c copy`
+join leaves timestamps a few ticks off at segment joins and the last frame held long, and a later
+filter (`dub.mjs`'s caption overlay) then makes one frame more than the picture has. A drift of
+half a frame or more is refused instead of guessed. After joining, render.mjs checks the A/V duration delta (≤ 50ms) and
 that the joined video's frame count equals `round(duration*fps)`, and fails loudly otherwise.
 The audio is padded with silence and cut at the video's end, so the delivered file keeps every
 frame of the still tail.
@@ -169,10 +180,9 @@ render.mjs <dir> --no-captions --insert <clip.mp4>@<start-sec> [--insert-stills 
 ```
 
 After the picture render, the frames from `<start-sec>` for the clip's frame count are replaced
-by the clip. The result is re-stamped onto the 1/fps grid, the frame count and the inserted
-span's frame hashes (framemd5) are checked against the clip, and `picture.timings.json` is kept.
-Joining the clip by stream copy alone is not enough: its timestamps can sit a few ticks off the
-grid, every later frame shifts with them, and `dub.mjs` then counts the wrong number of frames.
+by the clip. The result is re-stamped onto the 1/fps grid like every join, the frame count and
+the inserted span's frame hashes (framemd5) are checked against the clip, and
+`picture.timings.json` is kept.
 
 Stills and previews render the page, not the clip. For them to show the shot, the page draws
 JPEG stills of the clip for that span: `--insert-stills <dir>` writes them at the page's fps.
@@ -214,6 +224,12 @@ last line's slot runs to the film's end), speeding a too-long line up (atempo) b
 even that is not enough, so the script gets shortened for that language rather than the render
 silently drifting. The base language is dubbed the same way: `dub/<base-lang>/` may simply copy the
 base `plan.json` and `voice/`.
+
+The mix is stereo and runs the picture's full length. The bed (`picture.bed.wav`) keeps its own
+channels, so each cue's pan survives; the voice sits centred at full level in both channels. Both
+are padded to the picture, so the bed after the last line (the ending's sounds, the music fade)
+stays in. Before the caption overlay, `dub.mjs` re-stamps `picture.mp4` onto the 1/fps grid
+(lossless, as render.mjs does), so a picture from an older render does not gain a frame.
 
 `dub.mjs` first writes `dub/<code>/timings.placed.json` (the fitted lines above, on the base
 clock, same shape as `voice/timings.json`). It then tries the reel's own caption layer before

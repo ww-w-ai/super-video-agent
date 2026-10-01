@@ -19,8 +19,8 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo, applyAtempo } from "./lib/ffmpeg.mjs";
-import { measureMasterGain } from "./lib/audio-mix.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, applyAtempo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
+import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr } from "./lib/duck.mjs";
 import { decodeMonoPcm, rmsWindow } from "./lib/audio-analysis.mjs";
 import { fitAllLines, buildPlacedTimings, computeSlots, trimEdgeSilence } from "./lib/dub-timing.mjs";
@@ -158,6 +158,12 @@ export async function dub({ dir, lang, minGap = null }) {
     writeJson(path.join(dubDir, "timings.placed.json"), buildPlacedTimings(fit.lines, baseTimings.duration, dubPlan.meta.lang || null));
 
     const meta = await probeVideoInfo(pictureMp4);
+    const fps = nominalFps(meta.fps);
+    // A picture from an older render may sit a few ticks off the frame grid
+    // with its last frame held long; the overlay would then add a frame.
+    // Re-stamping is lossless (-c copy), so it runs on every picture.
+    const gridPictureMp4 = path.join(workDir, "picture-grid.mp4");
+    await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
     const placedClips = await placeLineClips({ fit, trims, workDir });
 
     const captionsDir = path.join(workDir, "captions");
@@ -166,7 +172,7 @@ export async function dub({ dir, lang, minGap = null }) {
       reelDir: dir,
       lang,
       duration: baseTimings.duration,
-      fps: meta.fps,
+      fps,
       framesDir: captionsDir,
     });
     let captionNote;
@@ -180,14 +186,14 @@ export async function dub({ dir, lang, minGap = null }) {
         duration: baseTimings.duration,
         width: meta.width,
         height: meta.height,
-        fps: meta.fps,
+        fps,
         framesDir: captionsDir,
       });
       if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
     }
 
     const videoNoAudioPath = path.join(workDir, "video-captioned.mp4");
-    await overlayCaptions({ pictureMp4, captionsDir, fps: meta.fps, outPath: videoNoAudioPath });
+    await overlayCaptions({ pictureMp4: gridPictureMp4, captionsDir, fps, outPath: videoNoAudioPath });
 
     const audioPath = path.join(workDir, "audio-final.wav");
     const sfxDuckDb = sfxDuckDbFromPlan(dubPlan);
@@ -200,7 +206,7 @@ export async function dub({ dir, lang, minGap = null }) {
       outPath: audioPath,
     });
 
-    const expectedFrames = Math.round(baseTimings.duration * meta.fps);
+    const expectedFrames = Math.round(baseTimings.duration * fps);
     await gateAvSync({ videoOnlyPath: videoNoAudioPath, narrationPath: audioPath, expectedFrames });
 
     const stampedPath = path.join(paths.outDir, `final-${lang}-${timestamp()}.mp4`);
@@ -531,14 +537,18 @@ async function overlayCaptions({ pictureMp4, captionsDir, fps, outPath }) {
  * quiet at the start and jump louder later even though every line wav had
  * already been leveled to -16 LUFS individually).
  */
-async function mixDubAudio({ placedClips, bedPath, narrationWindows, duckDb, durationSec, outPath }) {
+export async function mixDubAudio({ placedClips, bedPath, narrationWindows, duckDb, durationSec, outPath }) {
   const duckFilter = buildDuckVolumeExpr(narrationWindows, { duckDb });
   const inputs = [...placedClips.map((c) => c.path), bedPath];
   const inputArgs = inputs.flatMap((p) => ["-i", p]);
 
   const lineStages = placedClips.map((c, i) => `[${i}:a]adelay=${Math.max(0, Math.round(c.startSec * 1000))}:all=1[ln${i}]`);
   const bedIdx = placedClips.length;
-  const bedStage = duckFilter ? `[${bedIdx}:a]${duckFilter}[bed]` : `[${bedIdx}:a]anull[bed]`;
+  // The bed keeps its own stereo (each cue's pan); the voice sits centred.
+  // Both are padded to the picture's length so the bed after the last line
+  // (the ending's sounds and music fade) is never cut.
+  const pad = `apad=whole_dur=${durationSec}`;
+  const bedStage = `[${bedIdx}:a]${TO_STEREO}${duckFilter ? `,${duckFilter}` : ""},${pad}[bed]`;
   const narrStage =
     placedClips.length > 1
       ? // normalize=0: each placed clip is already leveled to -16 LUFS
@@ -549,10 +559,15 @@ async function mixDubAudio({ placedClips, bedPath, narrationWindows, duckDb, dur
         // made narration sound quiet at the first line and louder at the
         // last (over 20dB, independent of any final mastering stage) even
         // though every line's own wav was already at -16 LUFS.
-        `${placedClips.map((_, i) => `[ln${i}]`).join("")}amix=inputs=${placedClips.length}:duration=longest:dropout_transition=0:normalize=0[narr]`
-      : `[ln0]anull[narr]`;
+        `${placedClips.map((_, i) => `[ln${i}]`).join("")}amix=inputs=${placedClips.length}:duration=longest:dropout_transition=0:normalize=0,${TO_STEREO},${pad}[narr]`
+      : `[ln0]${TO_STEREO},${pad}[narr]`;
 
-  const premixComplex = [...lineStages, bedStage, narrStage, `[narr][bed]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]`].join(";");
+  const premixComplex = [
+    ...lineStages,
+    bedStage,
+    narrStage,
+    `[narr][bed]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0,atrim=end=${durationSec}[amixed];[amixed]anull[premaster]`,
+  ].join(";");
 
   const premasterPath = `${outPath}.premaster.wav`;
   await ffmpeg(["-y", ...inputArgs, "-filter_complex", premixComplex, "-map", "[premaster]", "-c:a", "pcm_s16le", premasterPath]);

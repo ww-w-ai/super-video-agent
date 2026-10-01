@@ -20,14 +20,12 @@
   }
 {{HANDWRITING_FONT_FACE}}
 </style>
-<!-- Import map for three.js addons (GLTFLoader, SkeletonUtils, ...): the
-     addon files import the bare name "three", which a browser resolves only
-     through an import map, and an import map must come before any module
-     script. After copying node_modules/three/examples/jsm/ into
-     assets/vendor/addons/ (references/3d.md), uncomment this block and
-     import addons as "three/addons/loaders/GLTFLoader.js".
+<!-- three.js addons (GLTFLoader, SkeletonUtils, ...) import the bare name
+     "three", which a browser resolves only through an import map, and the
+     map must come before any module script. new-reel.mjs --3d (or --vendor)
+     copies three.js to assets/vendor/ and examples/jsm/ to
+     assets/vendor/addons/ (references/3d.md "Install three.js"). -->
 <script type="importmap">{ "imports": { "three": "./assets/vendor/three.module.js", "three/addons/": "./assets/vendor/addons/" } }</script>
--->
 </head>
 <body>
 <canvas id="stage" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
@@ -74,27 +72,43 @@
   var files = null; // Reel.layerFiles(plan.meta.lang), set once plan.json is read
   var dubPlan = null; // that language's plan, loaded only in caption-layer mode
 
-  // ---- three.js: dynamic import so a missing vendor file rejects `ready`
-  // with a clear message instead of crashing the module script load
-  // (references/3d.md "Install three.js"). three.js is never bundled with
-  // this skill — the calling agent installs it into this reel folder.
+  // ---- three.js + addons: dynamic imports, so a missing vendor file
+  // rejects `ready` with one clear message instead of crashing the module
+  // script load (references/3d.md "Install three.js"). three.js is never
+  // bundled with this skill. ADDONS lists the addon modules this scene
+  // uses, by path under three/addons/; ADDON[path] is the loaded module
+  // (e.g. new ADDON["loaders/GLTFLoader.js"].GLTFLoader()). Trim it to
+  // what the film imports.
+  var ADDONS = ["loaders/GLTFLoader.js", "utils/SkeletonUtils.js"];
+  var ADDON = {};
   var THREE = null;
-  var threeLoadError = null;
+  var vendorError = null;
+  var INSTALL_STEPS =
+    "Install it, then copy it and its addons into this reel and re-open the page:\n" +
+    "  npm install three --prefix <reel-dir>\n" +
+    "  node <skill>/scripts/new-reel.mjs <reel-dir> --vendor\n" +
+    "Record the installed version and its MIT license in FILM.md (references/3d.md).";
   if (!isCaptionLayer) {
     try {
-      THREE = await import("./assets/vendor/three.module.js");
+      THREE = await import("three");
     } catch (e) {
-      threeLoadError = e;
+      vendorError = "three.js not found at assets/vendor/three.module.js. " + INSTALL_STEPS;
+    }
+    if (THREE) {
+      var missing = [];
+      for (var ai = 0; ai < ADDONS.length; ai++) {
+        try {
+          ADDON[ADDONS[ai]] = await import("three/addons/" + ADDONS[ai]);
+        } catch (e) {
+          missing.push(ADDONS[ai]);
+        }
+      }
+      if (missing.length) {
+        vendorError =
+          "three.js addons not found in assets/vendor/addons/: " + missing.join(", ") + ". " + INSTALL_STEPS;
+      }
     }
   }
-  var THREE_MISSING_MESSAGE =
-    "three.js not found at assets/vendor/three.module.js. Install it into this reel, " +
-    "then re-open the page:\n" +
-    "  npm install three --prefix <reel-dir>\n" +
-    "  mkdir -p <reel-dir>/assets/vendor\n" +
-    "  cp <reel-dir>/node_modules/three/build/three.module.js <reel-dir>/assets/vendor/\n" +
-    "  cp <reel-dir>/node_modules/three/build/three.core.js <reel-dir>/assets/vendor/\n" +
-    "Record the installed version and its MIT license in FILM.md (references/3d.md).";
 
   var timings = null;
   var tl = null;
@@ -188,11 +202,17 @@
     return "frame-" + s + ".jpg";
   }
 
+  // Resolves once the image is decoded, not just loaded: `onload` alone
+  // lets the first seek draw an image that is still decoding, so a cold
+  // first frame differs from a warm one (references/3d.md "Determinism rules").
   function loadImage(src) {
     return new Promise(function (resolve) {
       var img = new Image();
       img.onload = function () {
-        resolve(img);
+        img.decode().then(
+          function () { resolve(img); },
+          function () { resolve(img); }
+        );
       };
       img.onerror = function () {
         Reel.recordIssue({ type: "clip-frame-load-failed", src: src });
@@ -303,10 +323,12 @@
     SFX_CUES = [];
   }
 
-  // renderSfx(sampleRate) -> [L, R] plain Arrays, exactly duration*sampleRate
-  // samples: the SFX_CUES onsets, mastered to a -15 dBFS peak — the level a
-  // kit effect gets in the 2D scaffold's mix, well under a -16 LUFS voice
-  // (references/sound.md "Mix").
+  // renderSfx(sampleRate) -> [L, R] Float32Arrays, exactly
+  // duration*sampleRate samples: the SFX_CUES onsets, mastered to a -15 dBFS
+  // peak — the level a kit effect gets in the 2D scaffold's mix, well under a
+  // -16 LUFS voice (references/sound.md "Mix"). Typed arrays, never plain
+  // Arrays: a 5-minute film as plain numbers ran Node out of heap in
+  // render.mjs; Playwright passes typed arrays back as they are.
   function renderSfx(sampleRate) {
     var duration = timings ? timings.duration : 0;
     var m = ReelAudio.mix(duration, sampleRate);
@@ -317,7 +339,7 @@
       m.add(buf, cue.at, cue.gain == null ? 1 : cue.gain, cue.pan == null ? 0 : cue.pan);
     });
     ReelAudio.master(m, { peakDb: -15 });
-    return [Array.from(m.L), Array.from(m.R)];
+    return [m.L, m.R];
   }
 
   // sfxStems(sampleRate) -> Promise<[{id, at, L, R}]> — each SFX_CUES kit
@@ -326,7 +348,7 @@
     var out = SFX_CUES.map(function (cue) {
       var gen = ReelAudio.sfx[cue.kind];
       if (!gen) return null;
-      var arr = Array.from(gen(sampleRate, { seed: cue.kind + ":" + cue.at }));
+      var arr = Float32Array.from(gen(sampleRate, { seed: cue.kind + ":" + cue.at }));
       return { id: cue.id || (cue.kind + "@" + cue.at), at: cue.at, L: arr, R: arr };
     }).filter(Boolean);
     return Promise.resolve(out);
@@ -356,40 +378,75 @@
   var smallCtx = null;
   var smallImg = null;
 
-  // Cubic Hermite through a handful of time-keyed points (Catmull-Rom
-  // tangents): the camera never jumps, and seeking to any t re-derives the
-  // same position with no state carried from the previous frame.
-  function hermiteTrack(keys) {
-    return function (t) {
-      var n = keys.length;
-      if (t <= keys[0].t) return keys[0].v.slice();
-      if (t >= keys[n - 1].t) return keys[n - 1].v.slice();
-      var i = 0;
-      while (i < n - 2 && t > keys[i + 1].t) i++;
-      var k0 = keys[Math.max(0, i - 1)];
-      var k1 = keys[i];
-      var k2 = keys[i + 1];
-      var k3 = keys[Math.min(n - 1, i + 2)];
-      var u = (t - k1.t) / (k2.t - k1.t);
-      var u2 = u * u;
-      var u3 = u2 * u;
-      var out = [];
-      for (var d = 0; d < 3; d++) {
-        var p0 = k0.v[d], p1 = k1.v[d], p2 = k2.v[d], p3 = k3.v[d];
-        var m1 = (p2 - p0) * 0.5;
-        var m2 = (p3 - p1) * 0.5;
-        var h00 = 2 * u3 - 3 * u2 + 1;
-        var h10 = u3 - 2 * u2 + u;
-        var h01 = -2 * u3 + 3 * u2;
-        var h11 = u3 - u2;
-        out.push(h00 * p1 + h10 * m1 + h01 * p2 + h11 * m2);
-      }
-      return out;
-    };
+  var cameraTrack = null; // Reel.monotoneTrack, built once duration is known (buildWorld)
+  var worldBuilt = false;
+
+  // Where the 3D scene is on screen: null = every shot; otherwise
+  // [{start, end}] windows (e.g. from shots or tl.line) and seek(t) skips
+  // render3D + copyToStage outside them, drawing draw2D(t) instead. Each
+  // skipped frame saves a full SwiftShader render (references/3d.md "Speed").
+  var SCENE_WINDOWS = null;
+  function sceneOn(t) {
+    return SCENE_WINDOWS === null || Reel.inWindows(t, SCENE_WINDOWS);
   }
 
-  var cameraTrack = null; // built once duration is known (buildWorld)
-  var worldBuilt = false;
+  // The picture for frames without the 3D scene — replace with the film's
+  // 2D shots.
+  function draw2D(t) {
+    ctx.fillStyle = "#05070f";
+    ctx.fillRect(0, 0, WIDTH, HEIGHT);
+  }
+
+  // Makes the first seek draw exactly what any later seek draws. Call once
+  // after every object (and every GLB) is in the scene, before `ready`.
+  //  - three.js computes bounding spheres lazily on the first frame drawn:
+  //    a skinned mesh's from that frame's pose, an instanced mesh's from
+  //    that frame's instances. Draw order sorts by them, so compute them all
+  //    here, from the bind pose and the full instance set.
+  //  - A skinned mesh culled by bounds from one pose vanishes in another:
+  //    skinned meshes are never frustum-culled.
+  //  - Draw-order ties fall back to object ids, which follow async GLB load
+  //    order. The tiebreak here is each object's name path ("root/arm/hand"),
+  //    then traversal order, so it does not depend on which file loaded first.
+  //    Give loaded roots stable names.
+  function stabilizeScene() {
+    scene.updateMatrixWorld(true);
+    var entries = [];
+    var index = 0;
+    scene.traverse(function (o) {
+      if (o.isSkinnedMesh) {
+        o.frustumCulled = false;
+        o.skeleton.update();
+        o.computeBoundingSphere();
+      } else if (o.isInstancedMesh) {
+        o.computeBoundingSphere();
+      } else if (o.geometry && !o.geometry.boundingSphere) {
+        o.geometry.computeBoundingSphere();
+      }
+      entries.push({ o: o, path: namePath(o), i: index++ });
+    });
+    entries.sort(function (a, b) {
+      return a.path < b.path ? -1 : a.path > b.path ? 1 : a.i - b.i;
+    });
+    entries.forEach(function (e, rank) {
+      e.o.userData.sortKey = rank + 1;
+    });
+    function key(item) {
+      return item.object.userData.sortKey || 0;
+    }
+    renderer.setOpaqueSort(function (a, b) {
+      return a.groupOrder - b.groupOrder || a.renderOrder - b.renderOrder || a.z - b.z || key(a) - key(b);
+    });
+    renderer.setTransparentSort(function (a, b) {
+      return a.groupOrder - b.groupOrder || a.renderOrder - b.renderOrder || b.z - a.z || key(a) - key(b);
+    });
+  }
+
+  function namePath(o) {
+    var parts = [];
+    for (var p = o; p; p = p.parent) parts.unshift(p.name || p.type);
+    return parts.join("/");
+  }
 
   function buildWorld() {
     renderer = new THREE.WebGLRenderer({
@@ -421,6 +478,7 @@
     var geo = new THREE.IcosahedronGeometry(1.2, 1);
     var mat = new THREE.MeshStandardMaterial({ color: 0xe0563e, metalness: 0.35, roughness: 0.4 });
     var mesh = new THREE.Mesh(geo, mat);
+    mesh.name = "hero";
     scene.add(mesh);
 
     // Starfield: positions fixed once from a keyed RNG (build time), not
@@ -437,15 +495,20 @@
     }
     starGeo.setAttribute("position", new THREE.BufferAttribute(starPos, 3));
     var starMat = new THREE.PointsMaterial({ color: 0xf4f7fb, size: 0.04, sizeAttenuation: true });
-    scene.add(new THREE.Points(starGeo, starMat));
+    var stars = new THREE.Points(starGeo, starMat);
+    stars.name = "stars";
+    scene.add(stars);
 
+    // Monotone cubic through the keys: never past a key between keys, so a
+    // camera that dips to a low key does not go under the ground.
     var duration = timings ? timings.duration : 10;
-    cameraTrack = hermiteTrack([
+    cameraTrack = Reel.monotoneTrack([
       { t: 0, v: [0, 0.5, 6] },
       { t: duration * 0.5, v: [4, 1.2, 4] },
       { t: duration, v: [0, 0.5, 6] },
     ]);
 
+    stabilizeScene();
     worldBuilt = true;
   }
 
@@ -519,14 +582,18 @@
       return;
     }
     if (!worldBuilt) return;
-    render3D(t);
-    copyToStage();
+    if (sceneOn(t)) {
+      render3D(t);
+      copyToStage();
+    } else {
+      draw2D(t);
+    }
     drawLibCues(t);
     drawCaptions(t);
   }
 
-  var ready = threeLoadError
-    ? Promise.reject(new Error(THREE_MISSING_MESSAGE))
+  var ready = vendorError
+    ? Promise.reject(new Error(vendorError))
     : Promise.all([
         loadDeclaredFonts(),
         loadBasePlan().then(function () {
@@ -545,6 +612,7 @@
     seek: seek,
     get shots() { return shots; },
     get layers() { return ["captions"]; },
+    sceneOn: sceneOn,
     issues: function () { return Reel.issues(); },
     audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
     sfxStems: sfxStems,

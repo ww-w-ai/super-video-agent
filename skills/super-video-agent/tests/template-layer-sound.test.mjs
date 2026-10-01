@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { scaffold } from "../scripts/new-reel.mjs";
+import { scaffold, installThreeVendor } from "../scripts/new-reel.mjs";
 import { serveDir } from "../scripts/lib/server.mjs";
 import { openReel } from "../scripts/lib/browser.mjs";
 
@@ -116,9 +116,7 @@ test("3D caption layer: the scene is skipped — ready works with no three.js in
 
 test("3D template: one library sound cue and one kit SFX reach soundCues, renderSfx, sfxStems and marks", { skip: skip || (!threeDir && "three.js not installed") }, async () => {
   const dir = await makeReel(true);
-  for (const f of ["three.module.js", "three.core.js"]) {
-    fs.copyFileSync(path.join(threeDir, f), path.join(dir, "assets", "vendor", f));
-  }
+  assert.ok(installThreeVendor(dir, { SVA_THREE_DIR: path.dirname(threeDir) }), "three.js + addons copied");
   fs.mkdirSync(path.join(dir, "assets", "lib"), { recursive: true });
   fs.writeFileSync(
     path.join(dir, "assets", "lib", "manifest.json"),

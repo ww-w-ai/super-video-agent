@@ -61,7 +61,12 @@ function actor(file, clip, time, face, pos = [0, 0, 0], rotY = 0, scale = 1) {
   root.position.set(...pos);
   root.rotation.y = rotY;
   root.scale.setScalar(scale);
-  root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  // Skinned meshes are never frustum-culled: their bounds come from whichever
+  // pose drew first, so a culled view would depend on view order.
+  root.traverse((o) => {
+    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+    if (o.isSkinnedMesh) o.frustumCulled = false;
+  });
   if (clip) {
     const c = THREE.AnimationClip.findByName(g.animations, clip);
     if (!c) throw new Error(file + " has no clip " + clip);

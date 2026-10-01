@@ -109,11 +109,21 @@ array of `{id, at, event, intent, world, recipe, measured}`. The film agent writ
 the cue's own id when there is one), `at` (seconds), `event` (what happens on screen), `intent`
 (the content and mood the sound should carry) and `world` (this film's setting/topic in a few
 words — e.g. "a kitchen promo, warm and bouncy" — the same phrase for every card in the film) and
-`recipe` (`{kind: "kit", kit, params?}`, `{kind: "asset", assetId}`, or `{kind: "custom", custom:
-"<free text>"}`). `scripts/sfx-cards.mjs measure <reel-dir>` fills `measured` — duration, peak dB,
-LUFS (when the clip is long enough), attack time, spectral brightness, pitch trend and noisiness —
-from `window.__reel.sfxStems()` (a kit/custom cue rendered alone, no bed, no other cues) or, for
-an `asset` recipe, from the library file itself.
+`recipe` (`{kind: "kit", kit, params?}`, `{kind: "asset", assetId, maxSec?}`, or `{kind: "custom",
+custom: "<free text>"}`). `scripts/sfx-cards.mjs measure <reel-dir>` fills `measured` — duration,
+peak dB, LUFS (when the clip is long enough), attack time, spectral brightness, pitch trend and
+noisiness — from `window.__reel.sfxStems()` (a kit/custom cue rendered alone, no bed, no other
+cues) or, for an `asset` recipe, from the part of the library file the film plays: 0 s to the
+card's `maxSec`, else to the `maxSec` every `plan.json` cue of that asset shares, else the whole
+file (a cue always plays from the file's start, so there is no start offset). `measured.fileSec`
+keeps the file's own length, and `measure`, `report` and the judge prompt all name the span, e.g.
+"0.00-3.00s of a 10.25s file". Spectral features average frames across the whole span and read
+noisiness over 60 Hz–12 kHz, so a library file's leading encoder silence or its 16 kHz low-pass
+does not read as brightness 0 Hz or as a pure tone.
+
+The judge never hears the sound. It scores a text card — event, intent, world, recipe and the
+measured numbers — so a wrong number (a 10 s length for a 3 s cue) moves the score as much as a
+wrong sound would.
 
 `scripts/sfx-cards.mjs judge <reel-dir>` scores each card's fit: does the sound match the event's
 size, material and speed, and does it belong to this film's world (§2, above — this is the same

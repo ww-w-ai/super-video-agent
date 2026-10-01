@@ -15,9 +15,8 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, stubSeconds, stubTimings } from "./lib/browser.mjs";
-import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo } from "./lib/ffmpeg.mjs";
-import { writeWavPCM16 } from "./lib/wav.mjs";
-import { buildCueMixFilter, measureMasterGain } from "./lib/audio-mix.mjs";
+import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid } from "./lib/ffmpeg.mjs";
+import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
 import {
   computeSegments,
@@ -67,10 +66,7 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               <start-sec> (rounded to the frame grid) for the clip's frame
               count are the clip's own frames. Segments the clip covers
               entirely are not rendered; a segment it covers in part has its
-              remaining frames re-encoded from its own mp4. The joined track
-              is re-stamped onto the 1/fps grid (-bsf:v setts) — a plain
-              -c copy join can shift later timestamps by a few ticks, which
-              changes a later frame count. The clip must have the reel's fps;
+              remaining frames re-encoded from its own mp4. The clip must have the reel's fps;
               a clip whose size or encoding differs from the segments is
               re-encoded to match first (said in the output). After the join
               the frame count and the framemd5 of the inserted span (equal to
@@ -80,6 +76,11 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               <dir>/frame-<film frame, 6 digits>.jpg plus <dir>/stills.json
               ({fps, startFrame, count, pattern}), so the page can draw the
               approved clip in previews and stills.
+
+Every joined video track (picture, preview, final) is re-stamped onto the
+exact 1/fps grid without re-encoding (frame hashes unchanged): a plain
+-c copy join leaves timestamps a few ticks off at segment joins and the
+last frame held long, so a later filter makes one frame too many.
 
 A segment is reused only when its stored frame range, fps, size and three
 probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
@@ -223,7 +224,8 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     } else {
       await concatMp4(
         segments.map((s) => path.join(segDir, `${s.id}.mp4`)),
-        videoOnlyPath
+        videoOnlyPath,
+        fps
       );
     }
 
@@ -565,16 +567,6 @@ export function planInsert({ segments, startSec, fps, clipFrames }) {
   return { startFrame, endFrame, clipFrames, pieces, coveredIds, partialIds, snapped: Math.abs(startSec * fps - startFrame) > 1e-6 };
 }
 
-/**
- * The setts bitstream filter that rounds every packet's PTS and DTS to the
- * 1/fps grid. A -c copy join of files whose timestamps were cut on a
- * different tick can leave later packets a few ticks off the grid.
- */
-export function gridTimestampFilter(fps) {
-  const snap = (v) => `round(${v}*TB*${fps})/(TB*${fps})`;
-  return `setts=pts=${snap("PTS")}:dts=${snap("DTS")}`;
-}
-
 /** Probes the clip, plans the splice, prints the plan, writes stills when asked. */
 async function prepareInsert({ insert, segments, fps }) {
   const info = await probeVideoInfo(insert.clipPath);
@@ -664,9 +656,7 @@ export async function spliceTrack({ pieces, segmentPath, clipPath, fps, crf, pre
       throw new Error(`--insert: ${path.basename(f)} has different encoder headers from ${path.basename(reference)}; a -c copy join would not decode`);
     }
   }
-  const listPath = path.join(workDir, "concat.txt");
-  fs.writeFileSync(listPath, joined.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n", "utf8");
-  await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c", "copy", "-bsf:v", gridTimestampFilter(fps), outPath]);
+  await concatMp4(joined, outPath, fps);
   return { clipUsed, clipReencoded };
 }
 
@@ -774,12 +764,24 @@ export async function verifyInsertedSpan({ outPath, clipPath, startFrame, expect
   }
 }
 
-async function concatMp4(segmentPaths, outPath) {
-  const listPath = outPath + ".concat.txt";
-  const content = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n";
-  fs.writeFileSync(listPath, content, "utf8");
-  await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-c", "copy", outPath]);
-  fs.rmSync(listPath, { force: true });
+/**
+ * Joins segment files with the concat demuxer (-c copy), then re-stamps the
+ * joined track onto the exact 1/fps grid (ffmpeg.mjs snapToFrameGrid). The
+ * concat alone leaves packets a few ticks off the grid at segment joins and
+ * the last frame held long, and a later filter (dub.mjs's caption overlay)
+ * then makes one frame more than the picture has.
+ */
+export async function concatMp4(segmentPaths, outPath, fps) {
+  const listPath = `${outPath}.concat.txt`;
+  const joinedPath = `${outPath}.concat.mp4`;
+  fs.writeFileSync(listPath, segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n", "utf8");
+  try {
+    await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c", "copy", joinedPath]);
+    await snapToFrameGrid(joinedPath, outPath, fps);
+  } finally {
+    fs.rmSync(listPath, { force: true });
+    fs.rmSync(joinedPath, { force: true });
+  }
 }
 
 const AV_DELTA_MS_THRESHOLD = 50;
@@ -805,23 +807,69 @@ async function maybeRenderSfx(server, paths) {
   let session;
   try {
     session = await openReel(server.url, server.opts);
-    const hasSfx = await session.page.evaluate(
-      () => !!(window.__reel.audio && typeof window.__reel.audio.renderSfx === "function")
-    );
-    if (!hasSfx) return null;
-    const sampleRate = 48000;
-    const channelsData = await session.page.evaluate(
-      (sr) => window.__reel.audio.renderSfx(sr),
-      sampleRate
-    );
-    if (!channelsData || !channelsData.length) return null;
-    const channels = channelsData.map((c) => Float32Array.from(c));
     const sfxPath = path.join(paths.outDir, "_sfx.wav");
-    writeWavPCM16(sfxPath, channels, sampleRate);
-    return sfxPath;
+    return (await pullPageSfx(session.page, { sampleRate: 48000, outPath: sfxPath })) ? sfxPath : null;
   } finally {
     if (session) await session.close();
   }
+}
+
+const SFX_CHUNK_FRAMES = 1 << 20; // ~22 s at 48 kHz: 4 MB per channel per call
+
+/**
+ * Runs the page's renderSfx(sampleRate) and writes its channels to
+ * `outPath` as a 16-bit WAV, one chunk of `chunkFrames` frames per
+ * page.evaluate. The samples cross as base64 of Float32 bytes, so Node never
+ * holds the whole bed as JS numbers: a plain-array bed of a 5-minute film
+ * returned in one evaluate ran Node out of its 4 GB heap. renderSfx may
+ * return typed arrays (preferred; sliced without a copy) or plain arrays.
+ * Each chunk is written before the next is fetched.
+ * @param {{evaluate: Function}} page Playwright page (or a stand-in with the same evaluate)
+ * @returns {Promise<{channels:number, frames:number}|null>} null when the page has no renderSfx or it returns nothing
+ */
+export async function pullPageSfx(page, { sampleRate, outPath, chunkFrames = SFX_CHUNK_FRAMES }) {
+  const info = await page.evaluate(async (sr) => {
+    const audio = window.__reel.audio;
+    if (!audio || typeof audio.renderSfx !== "function") return null;
+    const out = await audio.renderSfx(sr);
+    if (!out || !out.length) return null;
+    window.__svaSfx = Array.from(out);
+    return { channels: out.length, frames: out[0] ? out[0].length : 0 };
+  }, sampleRate);
+  if (!info) return null;
+  const writer = createWavPcm16Writer(outPath, { channels: info.channels, sampleRate, frames: info.frames });
+  try {
+    for (let start = 0; start < info.frames; start += chunkFrames) {
+      const encoded = await page.evaluate(sfxChunkBase64, [start, Math.min(info.frames, start + chunkFrames)]);
+      writer.write(encoded.map(decodeFloat32Base64));
+    }
+  } finally {
+    writer.close();
+  }
+  await page.evaluate(() => {
+    delete window.__svaSfx;
+  });
+  return info;
+}
+
+// Runs in the page: frames [start, end) of every channel as base64 of
+// little-endian Float32 bytes.
+function sfxChunkBase64([start, end]) {
+  return window.__svaSfx.map((ch) => {
+    const part = ch ? (ArrayBuffer.isView(ch) ? ch.subarray(start, end) : ch.slice(start, end)) : [];
+    const f32 = part instanceof Float32Array ? part : Float32Array.from(part);
+    const bytes = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return btoa(bin);
+  });
+}
+
+function decodeFloat32Base64(b64) {
+  const bytes = Buffer.from(b64, "base64");
+  const aligned = new Uint8Array(bytes.length); // own buffer: Float32Array needs a 4-byte-aligned offset
+  aligned.set(bytes);
+  return new Float32Array(aligned.buffer, 0, aligned.length >> 2);
 }
 
 /**
@@ -948,7 +996,7 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
   }
   if (sfxPath) {
     const inputArgs = [videoOnlyPath, narrationPath, sfxPath].flatMap((p) => ["-i", p]);
-    const premix = "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]";
+    const premix = `[1:a]${TO_STEREO}[voice];[2:a]${TO_STEREO}[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]`;
     const { filter } = await measurePremaster(inputArgs, premix, outPath);
     await finalMux(inputArgs, `${premix};[premaster]${filter},apad[aout]`);
     return;

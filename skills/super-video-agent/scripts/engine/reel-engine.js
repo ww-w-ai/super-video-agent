@@ -173,6 +173,90 @@
   }
 
   // ---------------------------------------------------------------------
+  // keyframe tracks
+  // ---------------------------------------------------------------------
+
+  // monotoneTrack(keys) -> (t) => number[]
+  // keys: [{t, v: number[] | number, ease?: "io"}], sorted by t. A monotone
+  // cubic (Fritsch-Carlson tangents, Brodlie's weighted harmonic mean)
+  // through every key, per dimension: smooth through the keys and never
+  // outside the range of the two keys around t, so a camera diving to a low
+  // key does not carry on below it. A Catmull-Rom track overshoots there.
+  // The end keys keep the speed of their own segment, so a shot can cut
+  // while moving. `ease: "io"` on a key eases in and out of the segment that
+  // ends at it (zero tangents). Pure function of t; clamps outside the keys.
+  function monotoneTrack(keys) {
+    if (!keys || !keys.length) throw new Error("monotoneTrack: at least one key is required");
+    const pts = keys.map(function (k) {
+      return { t: k.t, v: Array.isArray(k.v) ? k.v : [k.v], ease: k.ease };
+    });
+    const n = pts.length;
+    const dims = pts[0].v.length;
+    const tangents = monotoneTangents(pts, dims);
+    return function (t) {
+      if (n === 1 || t <= pts[0].t) return pts[0].v.slice();
+      if (t >= pts[n - 1].t) return pts[n - 1].v.slice();
+      let i = 0;
+      while (i < n - 2 && t > pts[i + 1].t) i++;
+      return hermiteSegment(pts[i], pts[i + 1], tangents[i], tangents[i + 1], t);
+    };
+  }
+
+  function monotoneTangents(pts, dims) {
+    const n = pts.length;
+    const m = pts.map(function () { return new Array(dims).fill(0); });
+    if (n < 2) return m;
+    for (let d = 0; d < dims; d++) {
+      const slope = [];
+      for (let i = 0; i < n - 1; i++) {
+        slope.push((pts[i + 1].v[d] - pts[i].v[d]) / ((pts[i + 1].t - pts[i].t) || 1));
+      }
+      m[0][d] = slope[0];
+      m[n - 1][d] = slope[n - 2];
+      for (let k = 1; k < n - 1; k++) {
+        const a = slope[k - 1];
+        const b = slope[k];
+        if (a * b <= 0) continue; // a turning point: flat, so no overshoot
+        const h0 = pts[k].t - pts[k - 1].t;
+        const h1 = pts[k + 1].t - pts[k].t;
+        const w1 = 2 * h1 + h0;
+        const w2 = h1 + 2 * h0;
+        m[k][d] = (w1 + w2) / (w1 / a + w2 / b);
+      }
+    }
+    return m;
+  }
+
+  function hermiteSegment(k1, k2, m1, m2, t) {
+    const h = k2.t - k1.t;
+    const io = k2.ease === "io";
+    let u = h > 0 ? (t - k1.t) / h : 1;
+    if (io) u = u * u * (3 - 2 * u);
+    const u2 = u * u;
+    const u3 = u2 * u;
+    const out = [];
+    for (let d = 0; d < k1.v.length; d++) {
+      const s1 = io ? 0 : m1[d] * h;
+      const s2 = io ? 0 : m2[d] * h;
+      out.push(
+        (2 * u3 - 3 * u2 + 1) * k1.v[d] + (u3 - 2 * u2 + u) * s1 +
+          (-2 * u3 + 3 * u2) * k2.v[d] + (u3 - u2) * s2
+      );
+    }
+    return out;
+  }
+
+  // inWindows(t, windows) -> boolean — t inside any [start, end) of
+  // `windows` ([{start, end}]). Null or empty windows -> false.
+  function inWindows(t, windows) {
+    if (!windows) return false;
+    for (const w of windows) {
+      if (t >= w.start && t < w.end) return true;
+    }
+    return false;
+  }
+
+  // ---------------------------------------------------------------------
   // issues() sink — layout problems recorded by draw helpers
   // ---------------------------------------------------------------------
 
@@ -974,6 +1058,8 @@
     easeOutCubic,
     easeOutBack,
     settle,
+    monotoneTrack,
+    inWindows,
     timeline,
     issues,
     clearIssues,

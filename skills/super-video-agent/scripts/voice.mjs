@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, writeJson, readJson, ensureDir } from "./lib/reeldir.mjs";
 import { ffmpeg, probeDuration, applyAtempo } from "./lib/ffmpeg.mjs";
-import { computeLineTimes, wordsProportional, wordsOnCaption, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
+import { computeLineTimes, wordsProportional, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { chooseProvider } from "./lib/choose-provider.mjs";
 import { resolvePythonPath, runPythonBatch } from "./lib/pyenv.mjs";
 import { compareLine, isGrossMismatch, tailCleared } from "./lib/stt-compare.mjs";
@@ -30,6 +30,7 @@ import {
   readWavMono16,
   writeWavMono16,
 } from "./voice/line-edit.mjs";
+import { alignCaptionWords } from "./voice/word-align.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STT_SCRIPT = path.join(here, "voice", "py", "stt_check.py");
@@ -479,15 +480,17 @@ export async function synthesizeAll({
     const start = offset;
     const end = start + durationSec;
 
-    const measured = synthResult.words && synthResult.words.length ? wordsOnCaption(timedText, synthResult.words) : [];
-    if (measured.length) providerTimed.add(line.id);
+    const measured = providerWords(timedText, synthResult, lang);
+    if (measured) providerTimed.add(line.id);
     // A line reused as-is keeps the word times measured on an earlier run.
     const carried = reused ? carriedWords(prevLine, timedText, start, stripCaptionBreaks) : null;
-    const words = measured.length ? measured : carried || wordsProportional(timedText, start, end);
+    // Until the STT check measures them, a line's words are spread evenly (wordsMeasured 0).
+    const timed = measured || (carried && { words: carried, measured: prevLine.wordsMeasured }) || { words: wordsProportional(timedText, start, end), measured: 0 };
 
     // A reused line keeps the speaker recorded when its audio was made.
     const speaker = reused && prevLine && prevLine.voice ? prevLine.voice : speakerOf(lv);
-    const lineOut = { id: line.id, text: line.text, start, end, words, voice: speaker };
+    const lineOut = { id: line.id, text: line.text, start, end, words: timed.words, voice: speaker };
+    if (timed.measured != null) lineOut.wordsMeasured = timed.measured;
     if (line.say != null) lineOut.say = line.say;
     if (reused && prevLine && prevLine.estimated) lineOut.estimated = true;
     if (reused && prevLine && prevLine.voiceFlag) lineOut.voiceFlag = prevLine.voiceFlag;
@@ -529,7 +532,7 @@ export async function synthesizeAll({
       const linesById = new Map(lines.map((l) => [l.id, l]));
       for (const lineOut of lineResults) {
         if (!checkedIds.includes(lineOut.id)) continue;
-        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id));
+        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id), langCode);
       }
 
       if (retryFlagged > 0) {
@@ -700,18 +703,34 @@ async function sttTranscribe(voiceDir, entries, langCode) {
 }
 
 /**
+ * Caption words timed from the engine's own word times (ElevenLabs), already on
+ * the narration timeline; null when the engine reports none.
+ * @returns {{words:{w:string,start:number,end:number}[], measured:number}|null}
+ */
+function providerWords(timedText, synthResult, lang) {
+  if (!synthResult.words || !synthResult.words.length) return null;
+  const aligned = alignCaptionWords(timedText, synthResult.words, { lang: sttLangCode(lang) });
+  return aligned.words.length ? aligned : null;
+}
+
+/**
  * Compare `heard` against `line.text`/`line.say`, write `lineOut.stt`, and
  * update `lineOut.voiceFlag`: clears a provider TAIL flag when the STT
  * transcript shows the tail wasn't actually cut off, sets MISHEARD only on a
  * gross mismatch, and clears a MISHEARD left by an earlier check when this
- * one passes (references/voice.md).
+ * one passes (references/voice.md). With `sttWords` (clip-relative) the caption
+ * words take the heard times (alignCaptionWords), and `lineOut.wordsMeasured`
+ * counts the words measured rather than interpolated.
  */
-export function applySttResult(lineOut, line, heard, sttWords) {
+export function applySttResult(lineOut, line, heard, sttWords, langCode) {
   const timedText = stripCaptionBreaks(line.text);
   const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
   if (sttWords && sttWords.length) {
-    const words = wordsOnCaption(timedText, sttWords, lineOut.start);
-    if (words.length) lineOut.words = words;
+    const aligned = alignCaptionWords(timedText, sttWords, { offset: lineOut.start, lang: langCode });
+    if (aligned.words.length) {
+      lineOut.words = aligned.words;
+      lineOut.wordsMeasured = aligned.measured;
+    }
   }
   const cmp = compareLine({ text: timedText, say: timedSay, heard });
   const targetText = cmp.against === "say" ? timedSay : timedText;
@@ -788,13 +807,14 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
       lineOut.end = lineOut.start + newDur;
       const idx = lineResults.indexOf(lineOut);
       for (let i = idx + 1; i < lineResults.length; i++) shiftLine(lineResults[i], delta);
-      const measured = synthResult.words && synthResult.words.length ? wordsOnCaption(timedText, synthResult.words) : [];
-      if (measured.length) providerTimed.add(line.id);
+      const measured = providerWords(timedText, synthResult, lang);
+      if (measured) providerTimed.add(line.id);
       else providerTimed.delete(line.id);
-      lineOut.words = measured.length ? measured : wordsProportional(timedText, lineOut.start, lineOut.end);
+      lineOut.words = measured ? measured.words : wordsProportional(timedText, lineOut.start, lineOut.end);
+      lineOut.wordsMeasured = measured ? measured.measured : 0;
       delete lineOut.voiceFlag;
       if (synthResult.flag && synthResult.flag !== "OK") lineOut.voiceFlag = synthResult.flag;
-      applySttResult(lineOut, line, newHeard, measured.length ? null : sttRes.words.get(line.id));
+      applySttResult(lineOut, line, newHeard, measured ? null : sttRes.words.get(line.id), langCode);
       fs.rmSync(backupPath, { force: true });
     } else {
       fs.copyFileSync(backupPath, outPath);
@@ -851,7 +871,7 @@ async function runSttOnly(dir, paths) {
   // ElevenLabs lines keep the word times the engine measured; the rest take the speech-to-text ones.
   for (const lineOut of lines) {
     const engineTimed = ((lineOut.voice && lineOut.voice.provider) || timings.provider) === "elevenlabs";
-    applySttResult(lineOut, lineOut, stt.results.get(lineOut.id) || "", engineTimed ? null : stt.words.get(lineOut.id));
+    applySttResult(lineOut, lineOut, stt.results.get(lineOut.id) || "", engineTimed ? null : stt.words.get(lineOut.id), langCode);
   }
   printSttTable(lines);
   writeJson(paths.timingsJson, timings);

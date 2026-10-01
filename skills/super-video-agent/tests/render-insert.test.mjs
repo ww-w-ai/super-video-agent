@@ -8,7 +8,6 @@ import path from "node:path";
 import {
   parseInsertFlag,
   planInsert,
-  gridTimestampFilter,
   spliceTrack,
   verifyInsertedSpan,
   frameHashes,
@@ -59,10 +58,6 @@ test("planInsert: clip at the very end, off-grid start snaps, out of range throw
   assert.equal(snapped.snapped, true);
   assert.throws(() => planInsert({ segments: SEGS, startSec: 2.5, fps: FPS, clipFrames: 30 }), /does not fit the film's frames \[0,90\)/);
   assert.throws(() => planInsert({ segments: SEGS, startSec: 0, fps: FPS, clipFrames: 0 }), /no frames/);
-});
-
-test("gridTimestampFilter rounds PTS and DTS to the 1/fps grid", () => {
-  assert.equal(gridTimestampFilter(30), "setts=pts=round(PTS*TB*30)/(TB*30):dts=round(DTS*TB*30)/(TB*30)");
 });
 
 // Encodes `frames` frames of a lavfi source the way render.mjs encodes a

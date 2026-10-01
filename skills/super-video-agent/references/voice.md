@@ -286,9 +286,19 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   carry the caption's words (`text`, "MCP를"), even where the voice read a respelling ("엠씨피를"):
   ElevenLabs reports its own; for every other engine the speech-to-text check reports when each
   word was said, trimmed to where its sound starts and stops, so a pause shows as a gap between
-  words. Without `SVA_STT_PYTHON` (or with `--no-stt`) word times fall back to an even spread by
-  letters across the line, which has been up to ~0.4 s off the sound and misses pauses. Word ends
-  inside continuous speech are less exact than word starts; land beats on starts.
+  words.
+- Caption words are matched to the heard words letter by letter, not by position: both sides
+  drop spaces and punctuation and read numbers out ("3분" = "삼 분", "9:15" = "9시 15분",
+  "21" = "twenty-one"), so a caption word split or merged differently by the speech-to-text
+  ("대관람차" heard as "대관 람차의") still gets its own start and end. A caption word that was not
+  said ("집합" when the voice says "모여") or matched under half its letters takes a share of the
+  time between its measured neighbours, by letters. Each `timings.json` line records
+  `wordsMeasured`: how many of its words carry measured times; the rest were interpolated.
+  Words follow the spoken order: a caption word the voice says out of the caption's order is
+  interpolated, not measured. Key a beat to a measured word where it matters.
+- Without `SVA_STT_PYTHON` (or with `--no-stt`) word times fall back to an even spread by letters
+  across the line (`wordsMeasured: 0`), which has been up to ~0.4 s off the sound and misses
+  pauses. Word ends inside continuous speech are less exact than word starts; land beats on starts.
 - Shorts pacing: the user picks 1.0–1.2× at the start (SKILL.md Flow 1); unanswered, a Short speaks at `meta.voice.rate` 1.1 in every language (ffmpeg atempo, clamped
   0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
   `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather
