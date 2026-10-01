@@ -1,0 +1,274 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="stage" width="{{WIDTH}}" height="{{HEIGHT}}"></canvas>
+<script type="importmap">
+{ "imports": {
+  "three": "./assets/vendor/three.module.js",
+  "three/addons/": "./assets/vendor/addons/"
+} }
+</script>
+<script type="module">
+// GLB testbed (references/3d.md). Loads every file listed in
+// assets/models/models.json ({"files": ["a.glb", ...]}; new-reel.mjs --testbed
+// writes it from assets/models/*.glb) and shows one view per second of t:
+//   0           lineup, front — every model side by side at its own scale, rest pose
+//   1           lineup, 3/4 — each model's first animation clip at 0.5 s
+//   then per model: turntable at 0°, 90°, 180°, 270°,
+//                   then one view per face_* node (face toggle), if any
+// The page follows the window.__reel contract, so still.mjs renders it:
+//   still.mjs <dir> --at 0,1,2,3
+// Add your own views with the helpers below (actor, setFace, hold, holdLevel,
+// gradientSky, fitCamera): push {s, c, label} onto `views` inside load().
+/* SCENE:BEGIN */
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
+
+const W = {{WIDTH}}, H = {{HEIGHT}}, FPS = {{FPS}};
+// The WebGL picture renders at this fraction of the stage and is scaled up
+// into it; lower is faster on a software renderer.
+const RENDER_SCALE = 0.75;
+const RW = Math.round(W * RENDER_SCALE), RH = Math.round(H * RENDER_SCALE);
+const stage = document.getElementById("stage");
+const ctx = stage.getContext("2d");
+const gl = document.createElement("canvas");
+gl.width = RW;
+gl.height = RH;
+const renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(RW, RH, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const loader = new GLTFLoader();
+const G = {};           // file name -> loaded gltf
+const views = [];       // {s: Scene, c: Camera, label: string}
+
+// ---- helpers ------------------------------------------------------------------
+
+/** A posed copy of a loaded model: clip at `time` (no clip: rest pose), face shown. */
+function actor(file, clip, time, face, pos = [0, 0, 0], rotY = 0, scale = 1) {
+  const g = G[file];
+  const root = SkeletonUtils.clone(g.scene);
+  root.position.set(...pos);
+  root.rotation.y = rotY;
+  root.scale.setScalar(scale);
+  root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  if (clip) {
+    const c = THREE.AnimationClip.findByName(g.animations, clip);
+    if (!c) throw new Error(file + " has no clip " + clip);
+    const mixer = new THREE.AnimationMixer(root);
+    mixer.clipAction(c).play();
+    mixer.setTime(time);
+  }
+  if (face) setFace(root, face);
+  return root;
+}
+
+/** Face toggle: shows the node named prefix+face, hides every other prefix* node. */
+function setFace(root, face, prefix = "face_") {
+  root.traverse((o) => { if (o.name && o.name.startsWith(prefix)) o.visible = o.name === prefix + face; });
+}
+
+/** Face names a model carries (nodes named face_<name>). */
+function faceNames(root, prefix = "face_") {
+  const out = [];
+  root.traverse((o) => { if (o.name && o.name.startsWith(prefix)) out.push(o.name.slice(prefix.length)); });
+  return out;
+}
+
+/** Parents `obj` to a socket node, so it follows (and tilts with) that bone. */
+function hold(root, socket, obj, pos = [0, 0, 0], rot = [0, 0, 0]) {
+  const s = root.getObjectByName(socket);
+  if (!s) throw new Error("no socket " + socket);
+  obj.position.set(...pos);
+  obj.rotation.set(...rot);
+  s.add(obj);
+  return obj;
+}
+
+// Level hold: the prop sits at the socket (or the midpoint of several) but
+// stays level in the character's frame, so a held object does not tip with
+// the hand. off and rot are in the character's frame. Recompute after the
+// mixer has posed the actor (in a film: every seek).
+function holdLevel(scene, root, sockets, obj, off = [0, 0, 0], rot = [0, 0, 0]) {
+  scene.updateMatrixWorld(true);
+  const p = new THREE.Vector3(), q = new THREE.Vector3();
+  for (const n of sockets) {
+    const s = root.getObjectByName(n);
+    if (!s) throw new Error("no socket " + n);
+    s.getWorldPosition(q);
+    p.add(q);
+  }
+  p.divideScalar(sockets.length);
+  const rq = root.getWorldQuaternion(new THREE.Quaternion());
+  obj.position.copy(p).add(new THREE.Vector3(...off).applyQuaternion(rq));
+  obj.quaternion.copy(rq).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot)));
+  scene.add(obj);
+  return obj;
+}
+
+/** A vertical two-colour sky texture for scene backgrounds. */
+function gradientSky(top = "#9ccbe8", horizon = "#f4ead8") {
+  const cv = document.createElement("canvas");
+  cv.width = 4;
+  cv.height = 256;
+  const g = cv.getContext("2d");
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0, top);
+  grd.addColorStop(0.5, horizon);
+  grd.addColorStop(1, horizon);
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  return t;
+}
+
+function baseScene() {
+  const s = new THREE.Scene();
+  s.background = gradientSky();
+  const sun = new THREE.DirectionalLight(0xfff4e6, 2.6);
+  sun.position.set(4, 7, 5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, { left: -8, right: 8, top: 8, bottom: -8, near: 0.5, far: 40 });
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.02;
+  s.add(sun);
+  s.add(new THREE.HemisphereLight(0xfff6e8, 0xb8c8a8, 0.9));
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(40, 64), new THREE.MeshStandardMaterial({ color: 0xd8dccb, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  s.add(ground);
+  return s;
+}
+
+/** A camera that fits `objects` in frame, looking from direction `dir`. */
+function fitCamera(objects, dir = [0, 0.25, 1], fov = 30) {
+  const box = new THREE.Box3();
+  for (const o of objects) { o.updateMatrixWorld(true); box.expandByObject(o); }
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const vHalf = THREE.MathUtils.degToRad(fov) / 2;
+  const hHalf = Math.atan(Math.tan(vHalf) * (RW / RH));
+  const radius = Math.max(size.length() / 2, 1e-3);
+  const dist = Math.max(radius / Math.sin(Math.min(vHalf, hHalf)), 0.1) * 1.05;
+  const c = new THREE.PerspectiveCamera(fov, RW / RH, Math.max(dist / 100, 0.01), dist * 10);
+  const d = new THREE.Vector3(...dir).normalize();
+  c.position.copy(center).addScaledVector(d, dist);
+  c.lookAt(center);
+  return c;
+}
+
+function firstClip(file) {
+  const a = G[file].animations;
+  return a && a.length ? a[0].name : null;
+}
+
+// ---- views --------------------------------------------------------------------
+
+function lineup(threeQuarter) {
+  const s = baseScene();
+  const roots = [];
+  let x = 0;
+  for (const file of Object.keys(G)) {
+    const clip = threeQuarter ? firstClip(file) : null;
+    const r = actor(file, clip, 0.5, null);
+    const w = new THREE.Box3().setFromObject(r).getSize(new THREE.Vector3()).x;
+    r.position.x = x + w / 2;
+    x += w * 1.25;
+    roots.push(r);
+    s.add(r);
+  }
+  for (const r of roots) r.position.x -= x / 2;
+  const c = fitCamera(roots, threeQuarter ? [-0.6, 0.35, 1] : [0, 0.2, 1]);
+  return { s, c, label: threeQuarter ? "lineup 3/4 · first clip at 0.5 s" : "lineup front · rest pose" };
+}
+
+function turntable(file, deg) {
+  const s = baseScene();
+  const r = actor(file, null, 0, null, [0, 0, 0], THREE.MathUtils.degToRad(deg));
+  s.add(r);
+  return { s, c: fitCamera([r], [0, 0.25, 1]), label: `${file} · turntable ${deg}°` };
+}
+
+function faceView(file, face) {
+  const s = baseScene();
+  const r = actor(file, null, 0, face);
+  s.add(r);
+  return { s, c: fitCamera([r], [0, 0.1, 1], 24), label: `${file} · face ${face}` };
+}
+
+function emptyView(message) {
+  const s = new THREE.Scene();
+  s.background = new THREE.Color(0x333333);
+  return { s, c: new THREE.PerspectiveCamera(30, RW / RH, 0.1, 10), label: message };
+}
+
+async function load() {
+  const res = await fetch("assets/models/models.json");
+  const list = res.ok ? (await res.json()).files || [] : [];
+  const entries = await Promise.all(list.map(async (f) => [f, await loader.loadAsync("assets/models/" + f)]));
+  for (const [f, g] of entries) G[f] = g;
+  if (!entries.length) {
+    views.push(emptyView("no GLB listed in assets/models/models.json"));
+    return;
+  }
+  views.push(lineup(false), lineup(true));
+  for (const file of Object.keys(G)) {
+    for (const deg of [0, 90, 180, 270]) views.push(turntable(file, deg));
+    for (const face of faceNames(G[file].scene)) views.push(faceView(file, face));
+  }
+}
+
+// Copies the WebGL picture into the 2D stage with readPixels (rows flipped),
+// the same way the 3D reel template does.
+function copyToStage() {
+  const glc = renderer.getContext();
+  const px = new Uint8Array(RW * RH * 4);
+  glc.readPixels(0, 0, RW, RH, glc.RGBA, glc.UNSIGNED_BYTE, px);
+  const small = document.createElement("canvas");
+  small.width = RW;
+  small.height = RH;
+  const sctx = small.getContext("2d");
+  const img = sctx.createImageData(RW, RH);
+  const row = RW * 4;
+  for (let y = 0; y < RH; y++) img.data.set(px.subarray((RH - 1 - y) * row, (RH - y) * row), y * row);
+  sctx.putImageData(img, 0, 0);
+  ctx.drawImage(small, 0, 0, RW, RH, 0, 0, W, H);
+}
+
+function seek(t) {
+  const v = views[Math.max(0, Math.min(views.length - 1, Math.floor(t)))];
+  renderer.render(v.s, v.c);
+  copyToStage();
+  ctx.font = "bold 34px sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, W, 60);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(v.label, 24, 42);
+}
+
+const ready = load();
+window.__reel = {
+  width: W, height: H, fps: FPS,
+  get duration() { return Math.max(1, views.length); },
+  ready, seek,
+  get shots() { return []; },
+  issues() { return []; },
+  helpers: { actor, setFace, faceNames, hold, holdLevel, gradientSky, fitCamera, views, G, THREE },
+};
+/* SCENE:END */
+</script>
+</body>
+</html>

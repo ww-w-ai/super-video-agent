@@ -53,6 +53,24 @@ End on a held last screen: after the last line, keep the final picture still for
 card before the Short loops. Most popular Shorts cut on the last sound, but a closing card or
 caption on the last frame was the norm in the viral code-drawn demos.
 
+## A promo makes the viewer want to go
+
+A promo is not an explainer. Open on the subject at its most appealing, on frame 0 — the dish,
+the product in use, the place at its best light — not on a title or a narrator. Then frame every
+fact as a reason for this viewer to act: a location becomes how easy it is to get there, opening
+hours become when to come, a price becomes what they get for it. A narrator walking through the
+subject's features reads as an explainer, however bright the voice. Write the listener into
+`FILM.md` first (who watches, and what they should want to do when it ends) and check each line
+against that want.
+
+## A character holding the camera
+
+When the film is framed as shot by a character on their own phone, the picture reads true when
+the camera behaves like one: a small handheld drift (keyed, smooth noise, not random per frame),
+a selfie flip as a fast whip-pan, cuts or whips placed in the longer pauses between lines, and
+key beats landed on the word times. Whether a film uses this framing at all is a choice for that
+film.
+
 ## Failures real viewers called out on Opus-made films
 
 | Viewer reaction | What went wrong |

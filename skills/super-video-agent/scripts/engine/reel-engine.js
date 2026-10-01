@@ -212,8 +212,10 @@
   // layer / dubCode — for dub.mjs's "let the reel draw its own captions"
   // path (references/pipeline.md "Picture first"): ?layer=captions&dub=<code>
   // tells a page that supports it (declares "captions" in __reel.layers) to
-  // load that dub's placed timings + plan instead of its own, skip the
-  // picture, clear to transparent, and draw only its own caption look.
+  // load that dub's placed timings + plan instead of its own (layerFiles
+  // below), skip the picture, clear to transparent, and draw only its
+  // overlay (captions, titles, stickers). ?layer=captions with no dub draws
+  // the base language's overlay (review.mjs --scan --layer captions).
   // Read once from location.search at load, never inside seek(t).
   // ---------------------------------------------------------------------
   var _layer = null;
@@ -233,6 +235,31 @@
   }
   function dubCode() {
     return _dubCode;
+  }
+
+  function samePrimaryLang(a, b) {
+    if (!a || !b) return false;
+    return String(a).split("-")[0].toLowerCase() === String(b).split("-")[0].toLowerCase();
+  }
+
+  // layerFiles(baseLang, state?) -> {timings: [url...], plan: [url...]} —
+  // the files a page loads, first one that exists wins. A normal render, and
+  // the caption layer with no dub code, read the film's own voice/timings.json
+  // and plan.json. With ?dub=<code> the caption layer reads that dub's placed
+  // timings and plan; for the base language (same primary subtag as
+  // plan.meta.lang) the film's own files follow as a fallback, because
+  // dub/<base>/timings.placed.json exists only after a dub run. `state`
+  // ({layer, dub}) replaces the URL's values (tests).
+  function layerFiles(baseLang, state) {
+    const s = state || { layer: _layer, dub: _dubCode };
+    const own = { timings: ["voice/timings.json"], plan: ["plan.json"] };
+    if (s.layer !== "captions" || !s.dub) return own;
+    const dubTimings = "dub/" + s.dub + "/timings.placed.json";
+    const dubPlan = "dub/" + s.dub + "/plan.json";
+    if (samePrimaryLang(s.dub, baseLang)) {
+      return { timings: [dubTimings].concat(own.timings), plan: [dubPlan].concat(own.plan) };
+    }
+    return { timings: [dubTimings], plan: [dubPlan] };
   }
 
   // ---------------------------------------------------------------------
@@ -447,6 +474,42 @@
     }
     const balanced = greedyFillRows(widths, spaceW, hi);
     return { rows: balanced, widths: balanced.map(rowWidth) };
+  }
+
+  // balanceParts(widths, spaceW, maxW, partSizes) -> {rows, widths} —
+  // balanceRows over consecutive runs of words: partSizes[k] words form part
+  // k, and a part never shares a row with the next (a caption's own "\n").
+  // Row entries are indices into the full `widths` array.
+  function balanceParts(widths, spaceW, maxW, partSizes) {
+    const rows = [];
+    const rowWidths = [];
+    let off = 0;
+    for (const n of partSizes) {
+      if (n > 0) {
+        const r = balanceRows(widths.slice(off, off + n), spaceW, maxW);
+        r.rows.forEach(function (row, k) {
+          rows.push(row.map(function (i) { return i + off; }));
+          rowWidths.push(r.widths[k]);
+        });
+      }
+      off += n;
+    }
+    return { rows: rows, widths: rowWidths };
+  }
+
+  // captionRows(ctx, text, maxW) -> {words, widths, spaceW, rows, rowWidths}
+  // for a film that draws its own caption (pills, per-word colour): the
+  // words with "|" markers removed, each word's width in ctx's current font,
+  // and balanced rows where a "\n" in `text` always starts a new row.
+  function captionRows(ctx, text, maxW) {
+    const parts = String(text || "").split("\n").map(function (part) {
+      return part.split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
+    });
+    const words = [].concat.apply([], parts);
+    const widths = words.map(function (word) { return ctx.measureText(word).width; });
+    const spaceW = ctx.measureText(" ").width;
+    const b = balanceParts(widths, spaceW, maxW, parts.map(function (p) { return p.length; }));
+    return { words: words, widths: widths, spaceW: spaceW, rows: b.rows, rowWidths: b.widths };
   }
 
   // wrapParts(ctx, text, w) — "\n" in `text` forces a break (a caption the
@@ -894,15 +957,19 @@
     imageCover,
     textBlock,
     balanceRows,
+    balanceParts,
+    captionRows,
     captionChunks,
     captionBreaksFromText,
     caption,
     captionsOn,
     layer,
     dubCode,
+    layerFiles,
     safeArea,
     centeredSafeArea,
     setSafeArea,
+    checkSafe,
     transformedBBox,
     easeOutCubic,
     easeOutBack,

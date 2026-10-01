@@ -9,7 +9,8 @@
 /**
  * @param {number[]} times seconds, non-decreasing
  * @param {Array[]} issuesByTime issues() result at each time (possibly empty)
- * @returns {{startSec:number, endSec:number, sampleCount:number, issueCount:number, types:string[]}[]}
+ * @returns {{startSec:number, endSec:number, sampleCount:number, issueCount:number, types:string[], texts:string[]}[]}
+ *   texts = the distinct `text` fields of the run's issues (which caption or label it is)
  */
 export function groupIssueRuns(times, issuesByTime) {
   const runs = [];
@@ -23,9 +24,13 @@ export function groupIssueRuns(times, issuesByTime) {
     let j = i;
     let issueCount = 0;
     const types = new Set();
+    const texts = new Set();
     while (j < times.length && issuesByTime[j] && issuesByTime[j].length > 0) {
       issueCount += issuesByTime[j].length;
-      for (const iss of issuesByTime[j]) types.add((iss && iss.type) || "unknown");
+      for (const iss of issuesByTime[j]) {
+        types.add((iss && iss.type) || "unknown");
+        if (iss && iss.text) texts.add(String(iss.text));
+      }
       j++;
     }
     runs.push({
@@ -34,6 +39,7 @@ export function groupIssueRuns(times, issuesByTime) {
       sampleCount: j - i,
       issueCount,
       types: Array.from(types),
+      texts: Array.from(texts),
     });
     i = j;
   }

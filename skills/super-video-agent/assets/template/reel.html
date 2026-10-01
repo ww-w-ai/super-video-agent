@@ -52,14 +52,17 @@
   var libCues = []; // assets/lib/cues.json's cues, or [] when absent
 
   // Reel.layer()/Reel.dubCode() (references/pipeline.md "Picture first"):
-  // ?layer=captions&dub=<code> asks this page to draw only that dub's
-  // captions, skipping the picture. __reel.layers below declares that this
-  // scaffold supports it — dub.mjs falls back to its own default caption
-  // look for a page that doesn't.
+  // ?layer=captions[&dub=<code>] asks this page to draw only its overlay
+  // (captions and any text), skipping the picture — for dub.mjs and for
+  // review.mjs --scan --layer captions. __reel.layers below declares that
+  // this scaffold supports it — dub.mjs falls back to its own default
+  // caption look for a page that doesn't. Reel.layerFiles picks the files.
   var layer = Reel.layer();
   var dubCode = Reel.dubCode();
-  var isCaptionLayer = layer === "captions" && !!dubCode;
-  var dubPlan = null; // dub/<code>/plan.json, loaded only in caption-layer mode
+  var isCaptionLayer = layer === "captions";
+  var basePlan = null; // plan.json
+  var files = null; // Reel.layerFiles(plan.meta.lang), set once plan.json is read
+  var dubPlan = null; // that language's plan, loaded only in caption-layer mode
 
   // The one allowed network call in scene code (design.md §2.1 exception):
   // loading local JSON as part of building `ready`. `required` files
@@ -76,25 +79,40 @@
     });
   }
 
-  function timingsUrl() {
-    return isCaptionLayer ? "dub/" + dubCode + "/timings.placed.json" : "voice/timings.json";
+  // The first of `urls` that exists; a base-language caption layer falls
+  // back from dub/<base>/ to the film's own files (Reel.layerFiles).
+  function loadFirstJSON(urls, required) {
+    var i = 0;
+    function next() {
+      if (i >= urls.length) {
+        if (required) throw new Error(urls.join(" or ") + " not found — run voice.mjs (or dub.mjs) first");
+        return null;
+      }
+      return loadJSON(urls[i++], false).then(function (data) {
+        return data == null ? next() : data;
+      });
+    }
+    return Promise.resolve().then(next);
   }
 
-  // plan.json's meta.filmKey/meta.title/meta.id -> ReelAudio.setFilmKey
-  // (reel-audio.js: gives this film's kit sfx a character of their own —
-  // references/sound.md "Kit"). Optional: a reel with no plan.json (should
-  // not happen) falls back to "film" rather than failing ready.
-  function loadFilmKey() {
-    return loadJSON("plan.json", false).then(function (plan) {
+  // plan.json: meta.lang picks the layer files; meta.filmKey/meta.title/
+  // meta.id -> ReelAudio.setFilmKey (reel-audio.js: gives this film's kit
+  // sfx a character of their own — references/sound.md "Kit"). Optional: a
+  // reel with no plan.json (should not happen) falls back to "film" rather
+  // than failing ready.
+  function loadBasePlan() {
+    return loadJSON("plan.json", false).catch(function () {
+      return null;
+    }).then(function (plan) {
+      basePlan = plan;
       var meta = (plan && plan.meta) || {};
       ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id || "film");
-    }).catch(function () {
-      ReelAudio.setFilmKey("film");
+      files = Reel.layerFiles(meta.lang || "ko-KR");
     });
   }
 
   function loadTimings() {
-    return loadJSON(timingsUrl(), true).then(function (data) {
+    return loadFirstJSON(files.timings, true).then(function (data) {
       timings = data;
       tl = Reel.timeline(timings);
       // Shot i spans from line i's start (the first shot from 0) to line
@@ -112,13 +130,14 @@
     });
   }
 
-  // dub/<code>/plan.json — that language's per-line fields (e.g. an
-  // `emphasis` word list) for a film's own caption code to key off, keeping
-  // pace with the dub text rather than the base language's. Only loaded in
-  // caption-layer mode; a normal render never fetches plan.json.
+  // dub/<code>/plan.json (plan.json for the base language) — that
+  // language's per-line fields (e.g. an `emphasis` word list) and its
+  // meta.overlay text for a film's own overlay code to key off, keeping pace
+  // with the dub text rather than the base language's. Only loaded in
+  // caption-layer mode.
   function loadDubPlan() {
     if (!isCaptionLayer) return Promise.resolve();
-    return loadJSON("dub/" + dubCode + "/plan.json", true).then(function (data) {
+    return loadFirstJSON(files.plan, true).then(function (data) {
       dubPlan = data;
     });
   }
@@ -332,8 +351,9 @@
   // (Promise.resolve().then(loadMyImages)).
   var ready = Promise.all([
     loadDeclaredFonts(),
-    loadFilmKey(),
-    isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings().then(loadAssetLibrary),
+    loadBasePlan().then(function () {
+      return isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings().then(loadAssetLibrary);
+    }),
   ]).then(function () { return undefined; });
 
   // ---- scene ---------------------------------------------------------

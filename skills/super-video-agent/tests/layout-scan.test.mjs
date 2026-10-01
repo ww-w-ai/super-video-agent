@@ -52,3 +52,9 @@ test("groupIssueRuns: a sample with two issue types reports both types once each
   assert.equal(runs[0].issueCount, 3);
   assert.deepEqual(runs[0].types.sort(), ["clip-frame-load-failed", "text-overflow"]);
 });
+
+test("groupIssueRuns: a run lists the distinct texts of its issues (which caption or sticker)", () => {
+  const issuesByTime = [[{ type: "text-outside-safe-area", text: "SALE" }], [{ type: "text-outside-safe-area", text: "SALE" }, { type: "x" }]];
+  const runs = groupIssueRuns(times(2, 0.1), issuesByTime);
+  assert.deepEqual(runs[0].texts, ["SALE"]);
+});

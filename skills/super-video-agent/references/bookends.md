@@ -60,6 +60,16 @@ over 1 LU but never blocks, since a musical fade at a card's edge can read as a 
 
 Look at the numbers, decide, re-cut if the click or the frame jump surprises you.
 
+Before joining, `join.mjs` trims each part's audio to that part's video length (and pads it with
+silence if it is short). An encoded part's audio usually runs a little past its last frame; left
+as it is, the join would hold the last frame for a few frames and start the next part's sound
+late.
+
+Then review the upload file itself, not only the parts: `review.mjs --file <upload.mp4>
+[--parts t1,t2,...]` needs no page and reports the audio and video stream lengths, the loudness
+of the whole file and of each part (split at the given times), dead air and black frames. A black
+run inside a transition you built is expected; one at a join is not.
+
 ## Ending cards
 
 - Where the link is — description and comments, if that is where it lives — and the description

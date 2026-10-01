@@ -25,10 +25,14 @@ import { buildChatRequest, parseChatResponse } from "./lib/openrouter-jev-client
 import { FIT_THRESHOLD } from "./lib/sfx-judge-rubric.mjs";
 
 const SAMPLE_RATE = 48000;
+// A judge's score for one sound moves a few tenths between runs; within this
+// band of the pass mark one run cannot tell pass from fail.
+const NEAR_LINE_BAND = 0.5;
+const DEFAULT_EXTRA_RUNS = 2;
 const LUFS_MIN_DURATION_SEC = 0.4; // review.mjs's own loudness-gate floor
 
 const HELP = `usage: sfx-cards.mjs measure <reel-dir>
-       sfx-cards.mjs judge <reel-dir>
+       sfx-cards.mjs judge <reel-dir> [--repeat <n>]
        sfx-cards.mjs report <reel-dir>
 
 measure  Fills sound-cards.json's "measured" field for every card: a "kit"
@@ -43,7 +47,12 @@ judge    Scores each card's fit (1-10: does the sound match the event's
          (OPENROUTER_API_KEY) when a key is set; otherwise writes
          sound-judge.md, a scoring sheet for the current model to fill by
          hand, plus a sound-scores.json template.
-report   Prints a fit table and a WARN list (fit < ${FIT_THRESHOLD}) with a redesign hint.
+         The same sound can score either side of ${FIT_THRESHOLD} across runs.
+         --repeat <n> judges every card n times. Without it, a card whose
+         first score is within ${NEAR_LINE_BAND} of ${FIT_THRESHOLD} gets ${DEFAULT_EXTRA_RUNS} extra runs.
+         A card judged more than once stores the mean as "fit", plus "runs"
+         and "spread"; runs on both sides of ${FIT_THRESHOLD} mark it "near the line".
+report  Prints a fit table and a WARN list (fit < ${FIT_THRESHOLD}) with a redesign hint.
 `;
 
 function paths(dir) {
@@ -69,12 +78,19 @@ export async function main(argv) {
   const dir = abs(dirArg);
   try {
     if (cmd === "measure") await runMeasure(dir);
-    else if (cmd === "judge") await runJudge(dir);
+    else if (cmd === "judge") await runJudge(dir, { repeat: parseRepeat(flags.repeat) });
     else if (cmd === "report") await runReport(dir);
     else fail(`unknown command "${cmd}", expected "measure", "judge" or "report"`);
   } catch (e) {
     fail(e.message);
   }
+}
+
+function parseRepeat(value) {
+  if (value == null) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`--repeat must be a whole number >= 1, got "${value}"`);
+  return n;
 }
 
 function loadCards(p) {
@@ -216,14 +232,21 @@ async function measureLufsIfLongEnough(samples, durationSec) {
 // judge
 // ---------------------------------------------------------------------
 
-export async function runJudge(dir) {
+/**
+ * @param {string} dir
+ * @param {{repeat?: number, judge?: (card) => Promise<{id:string, fit:number}>}} [opts]
+ *   repeat: runs per card (default 1, plus DEFAULT_EXTRA_RUNS when the first
+ *   run lands within NEAR_LINE_BAND of FIT_THRESHOLD). judge: replaces the
+ *   network backend (tests).
+ */
+export async function runJudge(dir, opts = {}) {
   const p = paths(dir);
   const cards = loadCards(p);
 
   const typesafeKey = process.env.TYPESAFE_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;
 
-  if (!typesafeKey && !openrouterKey) {
+  if (!opts.judge && !typesafeKey && !openrouterKey) {
     const sheet = buildJudgeSheet(cards);
     fs.writeFileSync(p.sheetPath, sheet, "utf8");
     writeJson(p.scoresPath, buildScoresTemplate(cards));
@@ -234,15 +257,53 @@ export async function runJudge(dir) {
     return;
   }
 
+  const judge =
+    opts.judge ||
+    (typesafeKey ? (card) => judgeWithJev(card, typesafeKey) : (card) => judgeWithOpenRouter(card, openrouterKey));
+  const backend = opts.judge ? "custom" : typesafeKey ? "jev" : "openrouter-jev";
   const scores = [];
   for (const card of cards) {
-    const result = typesafeKey
-      ? await judgeWithJev(card, typesafeKey)
-      : await judgeWithOpenRouter(card, openrouterKey);
-    scores.push(result);
+    scores.push(await judgeCard(card, judge, opts.repeat));
   }
   writeJson(p.scoresPath, scores);
-  process.stdout.write(`judged ${scores.length} card(s) with ${typesafeKey ? "jev" : "openrouter-jev"} -> ${p.scoresPath}\n`);
+  process.stdout.write(`judged ${scores.length} card(s) with ${backend} -> ${p.scoresPath}\n`);
+  const near = scores.filter((s) => s.nearLine);
+  if (near.length) {
+    process.stdout.write(`near the line (runs on both sides of ${FIT_THRESHOLD}): ${near.map((s) => s.id).join(", ")}\n`);
+  }
+  return scores;
+}
+
+async function judgeCard(card, judge, repeat) {
+  const first = await judge(card);
+  const results = [first];
+  const nearMark = Math.abs(first.fit - FIT_THRESHOLD) <= NEAR_LINE_BAND;
+  const total = repeat != null ? repeat : nearMark ? 1 + DEFAULT_EXTRA_RUNS : 1;
+  while (results.length < total) results.push(await judge(card));
+  if (results.length === 1) return first;
+  return { ...results[results.length - 1], ...summarizeRuns(results.map((r) => r.fit)) };
+}
+
+/**
+ * Mean, spread and near-the-line mark for several fit scores of one card.
+ * @param {number[]} runs
+ * @param {number} [threshold]
+ * @returns {{fit:number, runs:number[], spread:number, nearLine:boolean}}
+ */
+export function summarizeRuns(runs, threshold = FIT_THRESHOLD) {
+  const mean = runs.reduce((a, b) => a + b, 0) / runs.length;
+  const min = Math.min(...runs);
+  const max = Math.max(...runs);
+  return {
+    fit: round2(mean),
+    runs: runs.slice(),
+    spread: round2(max - min),
+    nearLine: min < threshold && max >= threshold,
+  };
+}
+
+function round2(x) {
+  return Math.round(x * 100) / 100;
 }
 
 async function judgeWithJev(card, apiKey) {
@@ -280,6 +341,9 @@ export async function runReport(dir) {
       event: card.event,
       fit: score ? score.fit : null,
       backend: score ? score.backend : null,
+      runs: score && score.runs ? score.runs : null,
+      spread: score && score.spread != null ? score.spread : null,
+      nearLine: !!(score && score.nearLine),
     };
   });
 
@@ -292,7 +356,7 @@ export async function runReport(dir) {
   }
   process.stdout.write(`\nWARN (fit < ${FIT_THRESHOLD} or unscored):\n`);
   for (const w of warnings) {
-    const fitText = w.fit == null ? "unscored" : `fit ${w.fit}`;
+    const fitText = w.fit == null ? "unscored" : `fit ${w.fit}${w.nearLine ? ", near the line" : ""}`;
     process.stdout.write(`  - ${w.id} (${fitText}): ${w.event}\n`);
   }
   process.stdout.write(
@@ -303,8 +367,16 @@ export async function runReport(dir) {
 }
 
 function formatTable(rows) {
-  const header = ["id", "event", "fit", "backend"];
-  const cellRows = rows.map((r) => [r.id, r.event, r.fit == null ? "-" : String(r.fit), r.backend || "-"]);
+  const header = ["id", "event", "fit", "runs", "spread", "backend", "note"];
+  const cellRows = rows.map((r) => [
+    r.id,
+    r.event,
+    r.fit == null ? "-" : String(r.fit),
+    r.runs ? r.runs.join("/") : "-",
+    r.spread == null ? "-" : String(r.spread),
+    r.backend || "-",
+    r.nearLine ? "near the line" : "",
+  ]);
   const widths = header.map((h, i) => Math.max(h.length, ...cellRows.map((c) => c[i].length)));
   const line = (cells) => cells.map((c, i) => c.padEnd(widths[i])).join("  ");
   const lines = [line(header), line(widths.map((w) => "-".repeat(w)))];

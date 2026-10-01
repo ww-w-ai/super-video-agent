@@ -26,11 +26,20 @@ import { decodeMonoPcm, rmsWindow } from "./lib/audio-analysis.mjs";
 import { fitAllLines, buildPlacedTimings, computeSlots, trimEdgeSilence } from "./lib/dub-timing.mjs";
 import { levelLineWav } from "./lib/line-level.mjs";
 import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
+import {
+  computeGapDeltas,
+  buildTimeMap,
+  remapTimings,
+  segmentFactors,
+  buildSpaceFilterGraph,
+  buildSpaceFfmpegArgs,
+  formatSpaceReport,
+} from "./lib/dub-space.mjs";
 import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan } from "./render.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const HELP = `usage: dub.mjs <reel-dir> --lang <code>
+const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>]
 
 Lays a language version over a picture-first render (render.mjs
 --no-captions). <reel-dir>/dub/<code>/ holds plan.json (same line ids as
@@ -46,6 +55,14 @@ the film's end). A line longer than its slot is sped up (atempo) up to
 much, instead of cutting audio or moving the picture — shorten the line in
 that language's script.
 
+--min-gap <sec>: for every slot except the last whose gap after the
+placed line is under <sec>, slow that slot's picture (setpts) and bed
+(atempo) so the gap reaches <sec>; the voice keeps its speed. Writes
+dub/<code>/spaced/picture.mp4, picture.bed.wav and picture.timings.json
+(lines and words remapped) and uses them for this language's final. Prints
+each slot's delta and factor and the old -> new length. First and last
+frames are unchanged.
+
 Writes out/final-<code>-<YYYYMMDD-HHMMSS>.mp4 + out/final-<code>.mp4.
 `;
 
@@ -57,8 +74,13 @@ export async function main(argv) {
   }
   const dir = abs(positional[0]);
   const lang = flags.lang;
+  let minGap = null;
+  if (flags["min-gap"] !== undefined) {
+    minGap = Number(flags["min-gap"]);
+    if (!Number.isFinite(minGap) || minGap <= 0) fail(`--min-gap needs a positive number of seconds, got "${flags["min-gap"]}"`);
+  }
   try {
-    const result = await dub({ dir, lang });
+    const result = await dub({ dir, lang, minGap });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -69,12 +91,12 @@ export async function main(argv) {
   }
 }
 
-export async function dub({ dir, lang }) {
+export async function dub({ dir, lang, minGap = null }) {
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
-  const pictureMp4 = path.join(paths.outDir, "picture.mp4");
-  const pictureBedWav = path.join(paths.outDir, "picture.bed.wav");
+  let pictureMp4 = path.join(paths.outDir, "picture.mp4");
+  let pictureBedWav = path.join(paths.outDir, "picture.bed.wav");
   const pictureTimingsJson = path.join(paths.outDir, "picture.timings.json");
   const dubTimingsPath = path.join(dubVoiceDir, "timings.json");
 
@@ -84,7 +106,7 @@ export async function dub({ dir, lang }) {
   requireFile(path.join(dubDir, "plan.json"), `no ${path.join(dubDir, "plan.json")} — create dub/${lang}/plan.json with this reel's line ids, in ${lang}`);
   requireFile(dubTimingsPath, `no ${dubTimingsPath} — run voice.mjs ${dubDir} first`);
 
-  const baseTimings = readJson(pictureTimingsJson);
+  let baseTimings = readJson(pictureTimingsJson);
   const dubPlan = loadPlan(dubDir);
   const dubTimings = readJson(dubTimingsPath);
 
@@ -111,22 +133,22 @@ export async function dub({ dir, lang }) {
       return t && t.leadTrimSec > 0 ? { ...l, start: l.start + t.leadTrimSec } : l;
     });
 
-    const fit = fitAllLines(baseTimings.lines, dubLines, clipDurations, baseTimings.duration);
-    if (!fit.ok) {
-      const detail = fit.failures
-        .map((f) =>
-          f.requiredFactor == null
-            ? `${f.id}: ${f.reason}`
-            : `${f.id}: needs ${f.requiredFactor.toFixed(3)}x, max is ${f.maxAtempo}x — shorten this line's script`
-        )
-        .join("; ");
-      throw new Error(`line(s) do not fit their slot: ${detail}`);
+    let fit = fitOrThrow(baseTimings, dubLines, clipDurations);
+
+    // --min-gap: from here on this language's final uses the widened
+    // picture, bed and timings; the lines are fitted again to the new slots.
+    if (minGap != null) {
+      const spaced = await spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit, minGap });
+      if (spaced) {
+        ({ pictureMp4, pictureBedWav, baseTimings } = spaced);
+        fit = fitOrThrow(baseTimings, dubLines, clipDurations);
+      }
     }
 
     // Report only — a poor fill or a line that needed atempo means the
     // script's wording doesn't match the picture's pace in this language; the
     // film is still written either way (references/pipeline.md "Picture first").
-    const fillReport = reportLineFill(fit.lines, computeSlots(baseTimings.lines, baseTimings.duration));
+    const fillReport = reportLineFill(fit.lines, computeSlots(baseTimings.lines, baseTimings.duration), baseTimings.lines);
     const fillWarning = formatFillWarnings(fillReport);
     if (fillWarning) process.stdout.write(fillWarning);
 
@@ -189,6 +211,51 @@ export async function dub({ dir, lang }) {
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
+}
+
+/** fitAllLines, throwing one message that names every line that does not fit. */
+function fitOrThrow(baseTimings, dubLines, clipDurations) {
+  const fit = fitAllLines(baseTimings.lines, dubLines, clipDurations, baseTimings.duration);
+  if (fit.ok) return fit;
+  const detail = fit.failures
+    .map((f) =>
+      f.requiredFactor == null
+        ? `${f.id}: ${f.reason}`
+        : `${f.id}: needs ${f.requiredFactor.toFixed(3)}x, max is ${f.maxAtempo}x — shorten this line's script`
+    )
+    .join("; ");
+  throw new Error(`line(s) do not fit their slot: ${detail}`);
+}
+
+/**
+ * --min-gap: widens every slot (but the last) whose placed line leaves
+ * less than `minGap` of silence, by slowing that slot's picture and bed
+ * (scripts/lib/dub-space.mjs). Writes dub/<code>/spaced/picture.mp4,
+ * picture.bed.wav and picture.timings.json (remapped lines and words) in
+ * one ffmpeg call. Returns null when no slot needs widening — the base
+ * picture is used as is.
+ */
+async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit, minGap }) {
+  const deltas = computeGapDeltas(baseTimings.lines, fit.lines, minGap);
+  if (!deltas.some((d) => d.delta > 0)) {
+    process.stdout.write(`min-gap: every gap is already ${minGap}s or more — picture unchanged\n`);
+    return null;
+  }
+  const map = buildTimeMap(baseTimings.lines, baseTimings.duration, deltas.map((d) => d.delta));
+  const { fps } = await probeVideoInfo(pictureMp4);
+  const spacedDir = path.join(dubDir, "spaced");
+  ensureDir(spacedDir);
+  const out = {
+    pictureMp4: path.join(spacedDir, "picture.mp4"),
+    pictureBedWav: path.join(spacedDir, "picture.bed.wav"),
+    baseTimings: remapTimings(baseTimings, map),
+  };
+  const graph = buildSpaceFilterGraph(segmentFactors(map), fps, map.newDuration);
+  const frameCount = Math.round(map.newDuration * fps);
+  await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4, bedWav: pictureBedWav, outMp4: out.pictureMp4, outWav: out.pictureBedWav, graph, frameCount }));
+  writeJson(path.join(spacedDir, "picture.timings.json"), out.baseTimings);
+  process.stdout.write(formatSpaceReport(deltas, map, baseTimings.lines));
+  return out;
 }
 
 function requireFile(p, message) {

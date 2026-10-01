@@ -13,7 +13,7 @@ import { ffmpeg } from "./lib/ffmpeg.mjs";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, "..");
 
-const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..."] [--fps 30] [--3d]
+const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..."] [--fps 30] [--3d | --testbed]
 
 Scaffolds <dir>/ with:
   reel.html          template scene + engine inlined
@@ -28,6 +28,18 @@ Scaffolds <dir>/ with:
   assets/vendor/       empty — three.js is not bundled; install it yourself
                        (this command prints the steps)
   plan.json meta.look  "3d"
+
+--testbed scaffolds a GLB testbed instead (references/3d.md): a standalone
+  window.__reel page (no engine, no plan.json) that loads every GLB listed in
+  assets/models/models.json and shows one view per second — lineup front,
+  lineup 3/4, then per model a turntable (0/90/180/270°) and one view per
+  face_* node. Helpers in the page: actor, setFace (face toggle), hold,
+  holdLevel, gradientSky, fitCamera. Render it with still.mjs --at 0,1,...
+  reel.html             the testbed page
+  assets/models/        put .glb files here; models.json lists them
+  assets/vendor/        empty — install three.js and its addons (printed)
+  Re-running --testbed on the folder keeps an existing reel.html and
+  rewrites models.json from the .glb files present.
 `;
 
 const RATIOS = {
@@ -54,6 +66,20 @@ export async function main(argv) {
   const title = flags.title || path.basename(dir);
   const threeD = !!flags["3d"];
 
+  if (flags.testbed) {
+    try {
+      const result = scaffoldTestbed({ dir, width, height, fps, title });
+      process.stdout.write(
+        `${result.keptHtml ? "kept existing" : "wrote"} ${path.join(dir, "reel.html")}\n` +
+          `models.json lists ${result.models.length} GLB file(s)${result.models.length ? ": " + result.models.join(", ") : ""}\n`
+      );
+      process.stdout.write(testbedInstallSteps(dir));
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
+  }
+
   try {
     await scaffold({ dir, width, height, fps, title, ratio, threeD });
   } catch (e) {
@@ -77,6 +103,51 @@ opening reel.html:
 Loaders and other addons (e.g. GLTFLoader for GLB models) need an import map
 and their own copy step: references/3d.md "Install three.js".
 Record the installed version and its MIT license in FILM.md (references/3d.md).
+`;
+}
+
+/**
+ * Scaffolds a GLB testbed folder (see HELP --testbed). Keeps an existing
+ * reel.html; always rewrites assets/models/models.json from *.glb present.
+ * @returns {{keptHtml: boolean, models: string[]}}
+ */
+export function scaffoldTestbed({ dir, width, height, fps, title }) {
+  const paths = reelPaths(dir);
+  const modelsDir = path.join(paths.assetsDir, "models");
+  ensureDir(modelsDir);
+  ensureDir(path.join(paths.assetsDir, "vendor"));
+  ensureDir(paths.outDir);
+  const keptHtml = fs.existsSync(paths.reelHtml);
+  if (!keptHtml) {
+    const html = fs
+      .readFileSync(path.join(REPO_ROOT, "assets", "template", "reel-testbed.html"), "utf8")
+      .replaceAll("{{TITLE}}", escapeHtml(title))
+      .replaceAll("{{WIDTH}}", String(width))
+      .replaceAll("{{HEIGHT}}", String(height))
+      .replaceAll("{{FPS}}", String(fps));
+    fs.writeFileSync(paths.reelHtml, html, "utf8");
+  }
+  const models = fs.readdirSync(modelsDir).filter((f) => f.toLowerCase().endsWith(".glb")).sort();
+  writeJson(path.join(modelsDir, "models.json"), { files: models });
+  return { keptHtml, models };
+}
+
+/** Install steps for three.js plus the addons the testbed imports (GLTFLoader, SkeletonUtils). */
+export function testbedInstallSteps(dir) {
+  const vendor = path.join(dir, "assets", "vendor");
+  const three = path.join(dir, "node_modules", "three");
+  return `
+three.js is not bundled with this skill. Install it and its addons into this
+folder before opening reel.html:
+  npm install three --prefix ${dir}
+  cp ${path.join(three, "build", "three.module.js")} ${vendor}/
+  cp ${path.join(three, "build", "three.core.js")} ${vendor}/
+  cp -R ${path.join(three, "examples", "jsm")} ${path.join(vendor, "addons")}
+Put .glb files in ${path.join(dir, "assets", "models")}/ and re-run
+  new-reel.mjs ${dir} --testbed
+to list them in models.json, then render views with
+  still.mjs ${dir} --at 0,1
+Record the installed three.js version and its MIT license in FILM.md (references/3d.md).
 `;
 }
 

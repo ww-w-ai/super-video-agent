@@ -82,6 +82,13 @@ bottom, twice. A line fails when:
 - **it leaves no time to take it in** — the pause after it is shorter than the table in pass 3
   gives for what just landed.
 
+`validate-plan.mjs <dir> --listener` does the counting: the distribution of line endings, adjacent
+lines with the same ending, and the `!` and comma counts per line. It reports and never fails;
+whether a run tires the ear is still your call.
+
+For a promo, the listener should end up wanting to go or try it: a line that only describes the
+subject fails here (`references/craft.md` "A promo makes the viewer want to go").
+
 Rewrite for the listener and keep the facts. The same holds in every language.
 
 ## Read-out (pass 5)
@@ -91,5 +98,22 @@ applies to every language.
 
 Record in `FILM.md`: the source location of each fact (pass 1) and the lines changed in each
 pass, so a later reader can see why a line reads the way it does.
+
+## Length before synthesis
+
+Once the script is locked, estimate the film's length before the voice is made, and record the
+estimate in `FILM.md`. A script that runs long is cheap to cut now and expensive after synthesis.
+
+```
+validate-plan.mjs <dir> --estimate [--rate <units/s>] [--rate-from <timings.json>]
+```
+
+It prints the spoken units (syllables or words, by language), the total of the pauses, the head
+and tail, and the estimated length. The rate is a default for the language unless you give one:
+`--rate-from` measures it from an earlier `timings.json` made with the same voice and speed,
+which is the closer figure. It reports only and exits 0.
+
+This is a length check, nothing more. The measured voice still sets the clock: never time scenes
+from the estimate.
 
 After synthesis, change a line only for a real error — an STT flag, a misread name or number.

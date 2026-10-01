@@ -31,6 +31,10 @@ Why pure `seek(t)`: the renderer seeks frames out of order and in parallel. `Mat
 Randomness goes through keyed RNG (`Reel.rng(key)`), and time-varying jitter through
 `floor(t * hz)` buckets in the key.
 
+`ready` must settle. The scripts wait for it up to 120 s (`SVA_READY_TIMEOUT_MS` changes the
+limit) and then stop with an error that names the step and lists the page's errors, so a page
+that never finishes loading fails instead of hanging.
+
 ## Timeline
 
 `voice.mjs` writes `voice/timings.json`: each line's measured start/end, and word times (from
@@ -38,6 +42,11 @@ the engine when it reports them, otherwise from the speech-to-text check; always
 words). Derive every scene's timing from it; the scaffold's `Reel.timeline(timings)` gives
 `line(i) → {start, end, u(t)}`, `word(i, j) → {start, end}`, and
 `phrase(i, str) → {start, end} | null` (matches the caption `text`, not `say`).
+
+A picture-only probe made before any voice
+(a hard shot, a look test) has no `voice/timings.json`: `still.mjs`, `verify.mjs` and
+`render.mjs` accept `--stub <sec>` and use one silent line of that length instead. Nothing is
+written to disk.
 
 ## Optional helpers (`scripts/engine/reel-engine.js` → `globalThis.Reel`)
 
@@ -57,6 +66,7 @@ rules come first.
 | `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area, centred on the frame |
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads" \| "none" \| {top, bottom, left, right})` | the box text must stay inside; `"none"` = the whole frame, an object = the film's own margins in canvas px |
 | `centeredSafeArea(w, h)` | the part of that box centred on the frame — for centred titles and captions |
+| `checkSafe(ctx, label, left, top, right, bottom)` | for anything you draw by hand (a sticker, a card, a badge): the box, in the current transform's space, is mapped to canvas space and recorded to `issues()` if it leaves the safe area |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
 
 ### Safe area
@@ -90,7 +100,14 @@ wide picture may run under the button column; only what the viewer must read or 
 of it.
 
 `textBlock` records `text-outside-safe-area` in `issues()` (so `review.mjs` reports it) unless
-the call passes `outsideSafeOk: true` — for decorative lettering that may be covered.
+the call passes `outsideSafeOk: true` — for decorative lettering that may be covered. Text you
+draw yourself goes through `Reel.checkSafe` the same way.
+
+An animated overlay stays inside the safe area on every frame, not only at rest. A pop that
+overshoots its full size, a caption that rises into place, a card that slides in: each can
+leave the box for a few frames while it moves. Let a pop stop at full size when the element
+spans the safe width, and scan every frame rather than one per shot
+(`review.mjs --scan`, and `--layer captions` on a slow 3D picture — "Picture first" below).
 
 ## Sound (`scripts/engine/reel-audio.js` → `globalThis.ReelAudio`)
 
@@ -138,6 +155,23 @@ shorter take is padded with silence, a longer one sped up by up to 10%. Nothing 
 fix. A take more than 10% longer keeps its own length; `voice.mjs` prints which later lines'
 start times shifted, and those shots re-render. After a wording change, pass `--retime` to let
 regenerated lines keep their own length.
+
+### Putting an approved clip in as a shot
+
+A hard shot proved and approved in a probe goes into the film as it is, not rebuilt:
+
+```
+render.mjs <dir> --no-captions --insert <clip.mp4>@<start-sec> [--insert-stills <dir>]
+```
+
+After the picture render, the frames from `<start-sec>` for the clip's frame count are replaced
+by the clip. The result is re-stamped onto the 1/fps grid, the frame count and the inserted
+span's frame hashes (framemd5) are checked against the clip, and `picture.timings.json` is kept.
+Joining the clip by stream copy alone is not enough: its timestamps can sit a few ticks off the
+grid, every later frame shifts with them, and `dub.mjs` then counts the wrong number of frames.
+
+Stills and previews render the page, not the clip. For them to show the shot, the page draws
+JPEG stills of the clip for that span: `--insert-stills <dir>` writes them at the page's fps.
 
 ## Picture first and language versions
 
@@ -197,14 +231,67 @@ phrase punctuation first and only breaks a long phrase into evenly-sized chunks,
 chunk of a line is never a single stranded word. A plan line's own `|` (a standalone token —
 `validate-plan.mjs` rejects `||` or a leading/trailing `|`) forces a break there too: derive
 `opts.breaks` with `Reel.captionBreaksFromText(line.text)` and pass it through — the marker is
-never spoken (`pronounce.mjs`'s `stripCaptionBreaks`) and never shown.
+never spoken (`pronounce.mjs`'s `stripCaptionBreaks`) and never shown. Every custom caption
+drawer honours the plan's forced breaks, the `\n` in `text` as well as `|`: `Reel.caption()`
+does, and a `drawCaptions(t)` that balances all of a line's words as one run silently drops
+them. A caption row never breaks inside a name.
 
-Each language's line should fill about 80-100% of its slot. `dub.mjs` reports every line's fill
-(clip length after atempo / slot length) and prints a `WARN` list for a fill below ~0.75 (the
-scene sits in silence) or a line that needed atempo — it still writes the film either way. When
-fill is below ~0.75 or above 1.0, rewrite that line's wording (longer or shorter to match the
-picture's pace) and re-make only that line (`voice.mjs <dir>/dub/<code> --lines <id>`), up to 3
-rounds, without asking.
+Overlay text other than captions (stickers, a price card, the end card) is per language too.
+Put it in the dub plan's `meta.overlay`, a free-form object the page reads in layer mode
+(`Reel.dubCode()` names the language), with the base language's strings in the page as the
+fallback. A translated string runs a different length, so re-check every overlay against the
+safe area in every language (`review.mjs --scan --layer captions --dub <code>`, below) and
+shorten what runs out.
+
+Write each dub line so the word that drives a picture beat falls near the base language's time
+for that beat. The picture was built to the base timings and does not move: a keyword that
+arrives a second late lands after its picture.
+
+### Judging a dub line: the silence after it
+
+Judge each dub line by the silence after it, not by how much of its slot it fills. A line that
+fills its slot runs straight into the next one, and a run of such lines sounds rushed even when
+every fill looks healthy. About 0.5 s after each line, or the base line's own pause if that is
+longer, is a starting point, not a limit — a language, a voice or a scene may want more.
+
+`dub.mjs` reports every line's fill (clip length after atempo / slot length) and `gapAfter`, the
+silence between the placed line and the next line's start, next to the base line's own gap. It
+prints a `WARN` list for a gap under about 0.4 s (the message suggests `--min-gap`),
+a fill below ~0.75 (the scene sits in silence) and a line that needed atempo. It still writes the
+film either way. The last line has no gap and no low-fill warning: its slot runs on under the end
+card to the film's end.
+
+On a warning, rewrite that line's wording (shorter for a tight gap, longer for a scene left in
+silence) and re-make only that line (`voice.mjs <dir>/dub/<code> --lines <id>`), up to 3 rounds,
+without asking. The same wording can come out at quite different lengths on a hosted voice;
+`--takes N` with `--pick-by length:<sec>` picks the take closest to a target
+(`references/voice.md` "Comparing takes").
+
+When the wording cannot get shorter, widen the slots instead:
+
+```
+dub.mjs <dir> --lang <code> --min-gap <sec>
+```
+
+For every slot except the last whose gap after the placed line is under `<sec>`, that slot's
+picture (setpts) and bed (atempo) are slowed piecewise until the gap reaches `<sec>`; the voice
+keeps its speed. It writes `dub/<code>/spaced/picture.mp4`, `picture.bed.wav` and
+`picture.timings.json` (lines and words remapped) and builds that language's final from them.
+It prints each slot's delta and factor and the old → new length; the first and last frames are
+unchanged. Only that language's film gets longer; the other languages keep the base picture.
+Without the flag nothing changes.
+
+Check the overlays of each dub on its own. On a slow 3D picture, `review.mjs --scan` would
+re-render the whole page at every step; `--layer captions` loads the page with
+`?layer=captions&dub=<code>`, which draws only the overlays, so every frame scans in a
+fraction of the time:
+
+```
+review.mjs <dir> --scan [stepSec] --layer captions [--dub <code>]
+```
+
+For the base language, which has no `dub/<base>/timings.placed.json` outside a dub run, the scan
+falls back to `voice/timings.json`.
 
 ## Asset library
 
@@ -274,6 +361,9 @@ file there and register it in the page's `@font-face`.
 - **Symbols the font lacks show as boxes.** Pretendard covers Korean and Latin. Phonetic symbols
   (ˈ ʊ ə), arrows, math signs or another script may fall back or render as □. Look at a still of
   every frame that shows one before the final render.
+- **Emoji come from the operating system.** An emoji in overlay text is drawn with the render
+  machine's own emoji font, and a render on another OS may fall back or show boxes. Leave emoji
+  out, or bundle an emoji font with a licence that allows it and register it like any other.
 - **Draw text after the fonts load.** A canvas drawn and cached before the web font is attached
   (an offscreen stamp, a pre-rendered label) keeps the fallback face for the whole film. Draw
   such text every frame, or cache it only after `document.fonts.ready`. List loaded faces with

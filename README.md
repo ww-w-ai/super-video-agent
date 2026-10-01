@@ -142,6 +142,7 @@ already approved stay exactly as they were.
 | Caption wording or where a line breaks | edit `plan.json` (a `\|` sets the break), then run `dub.mjs` again on a picture-first film | the picture |
 | One scene | `render.mjs --only <shot>` renders that shot and splices it into the film | every other shot |
 | A second language | `dub.mjs --lang <code>` lays that language's voice and captions over the same picture | the picture, rendered once |
+| Room to breathe between a language's lines | `dub.mjs --min-gap <sec>` slows only the slots where a line runs into the next, picture and effects together, until the gap reaches `<sec>`; the voice keeps its speed | the voice, the first and last frames, every other language |
 | An opening and an ending for upload | `join.mjs` attaches them and reports loudness, click risk and frame match at each join | the body film |
 
 Measured on the 3D film in the gallery: one full render took 11–20 minutes. After review, eight

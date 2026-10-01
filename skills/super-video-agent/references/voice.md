@@ -39,6 +39,11 @@ Hosted models (`meta.voice.model`):
 Neither provider documents a per-request minimum, so one request per line costs the same as one
 long request, and keeps each line regenerable on its own.
 
+For a film that will be public, record in `FILM.md` the provider, model and voice used and what
+their terms say about public and commercial use of the output — a free tier may use requests for
+training, and a library voice has its own owner's terms. List the confirmation under "Needs from
+the owner" unless the owner has already cleared it.
+
 ## Delivery marks
 
 Write delivery directions as our own marks in curly braces, in the line's `say`, never in
@@ -71,11 +76,19 @@ the plain read falls flat (a line that must sound sure, a beat before a turn), n
 
 Set one delivery for the whole film with `meta.voice.delivery` (an EMOTIONS value) instead of
 repeating the same `{emotion}` mark on every line's `say` — a different emotion picked per line
-makes the voice jump around; a line's own emotion mark still overrides it.
+makes the voice jump around; a line's own emotion mark still overrides it. Keep line marks to
+one or two in a film, on the lines that truly turn (an aside, a laugh); the film's delivery
+carries the rest.
 
 Fish Audio reads a Short's lines calm and flat unless tagged, so a 9:16 film on the fish provider
 defaults every untagged line to `{confident}`. Tag a line with its own emotion mark to change it
 for that line; set `meta.voice.delivery: "none"` to turn the default off for the whole film.
+
+Pick the delivery for who is speaking. `confident` suits a narrator presenting something, and it
+reads like an announcer from a character talking about their own thing; a friendly owner or host
+proud of what they made fits `warm` better. When a character speaks, the voice (gender, age),
+how the lines have them refer to themselves, and how they look on screen all agree — the
+listener pass (`references/script-review.md` pass 4) fails a line that breaks the speaker.
 
 ## Local clone (qwen3) — what can go wrong
 
@@ -113,7 +126,14 @@ local) and compares it against the intended line:
 
 Every synthesized line gets an `stt: {heard, cer, diffs}` entry in `timings.json` regardless of
 flag. Small differences (a name, a near-homophone, spacing) are STT noise: they are recorded but
-not flagged, and need no action.
+not flagged, and need no action. A clean later check clears an earlier `MISHEARD` flag.
+
+STT maps a rare or invented name to a common word it knows, in any language. A high error rate
+on a line with such a name, while the take's length stays the same across takes, is the STT's
+limit, not a misread: do not keep re-making the line. Mark it in `FILM.md` as a point for the
+owner to listen to, with its timestamp. The reverse holds too: STT cannot separate homophones,
+so a clean check does not prove a name or a homophone was read the intended way
+(`references/readout-en.md`).
 
 - `--retry-flagged N` (default 1) — re-synthesizes lines still flagged `MISHEARD`/`SHORT`/`TAIL`
   after the check up to `N` more times, keeping whichever take has the lower error rate. Skipped
@@ -121,7 +141,9 @@ not flagged, and need no action.
 - `--no-stt` — skips the check entirely (drafts, or when `faster-whisper` isn't installed).
 - `--stt-only` — re-runs just the STT check against a reel's existing `voice/line-*.wav` files
   without synthesizing anything; updates `timings.json` in place. Useful to re-verify a reel after
-  the fact, or as a lighter-weight check inside the skill.
+  the fact, or as a lighter-weight check inside the skill. It transcribes in the language
+  `timings.json` records in `lang` (written by every voice run), falling back to
+  `plan.meta.lang`.
 - Missing Python or `faster-whisper` never fails the voice step — it prints `STT check skipped:
   <reason>` and continues.
 
@@ -142,6 +164,11 @@ take 1 installs automatically (copied into `voice/line-<id>.wav`,
 narration.wav/timings.json rebuilt as `--lines` does). Pick a different one on a later run with
 `--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild. Picking a take from a
 tone comparison also writes that mark to `meta.voice.delivery`, so every later line is made in it.
+
+Hosted voices can read the same text at quite different lengths from take to take. When a line
+has to fit a slot (a dub line, a fixed picture beat), make a few takes and let the tool pick:
+`--pick-by length:<sec>` installs the take closest to that length, `--pick-by stt` the one with
+the lowest STT error rate. Either prints the take table first.
 
 A line made somewhere else — tone variants in a scratch reel, another provider, the other version
 of an A/B, a recording — goes in with `--use <id>=<wav>[,<id>=<wav>]` (add `--retime` when its
@@ -208,7 +235,14 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - The new take is fitted to the old slot: padded if shorter, sped up by at most 1.1× if longer.
   The picture needs no change.
 - A take more than 1.1× longer moves every later line; `voice.mjs` lists them ("lines with
-  shifted start"). Re-render those shots, or pass `--retime` on purpose.
+  shifted start"). Re-render those shots, or pass `--retime` on purpose. In a dub folder
+  (`dub/<code>/`) nothing re-renders: the picture does not move, and `dub.mjs` re-places the
+  lines; `voice.mjs` says so there.
+- The lines you did not touch keep their measured word times (shifted with their start), with
+  `--lines`, `--pick` and `--use` alike.
+- A finished take that needs a breath inside it gets one without re-synthesis:
+  `--insert-pause <id>@<word-index>=<ms>` inserts that much silence at the quietest 10 ms
+  between that word and the next, and shifts the later word times by the same amount.
 - Keep a copy of `voice/` before a larger redo, so the user can compare and go back.
 
 ## Timing model

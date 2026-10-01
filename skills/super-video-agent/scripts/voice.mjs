@@ -15,6 +15,21 @@ import { compareLine, isGrossMismatch, tailCleared } from "./lib/stt-compare.mjs
 import { spokenText, stripCaptionBreaks } from "./lib/pronounce.mjs";
 import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags.mjs";
 import { levelLineWav } from "./lib/line-level.mjs";
+import {
+  partialRebuildNote,
+  parsePickBy,
+  chooseTake,
+  carriedWords,
+  sttLangCode,
+  sttOnlyLang,
+  parseInsertPause,
+  pauseWindow,
+  quietestSample,
+  insertSilence,
+  shiftForPause,
+  readWavMono16,
+  writeWavMono16,
+} from "./voice/line-edit.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const STT_SCRIPT = path.join(here, "voice", "py", "stt_check.py");
@@ -44,8 +59,12 @@ which provider it picked and why.
                take is padded, a longer one sped up by up to 10%), so the
                picture does not change and render.mjs reuses every shot.
                A take longer than that keeps its length; the lines after
-               it move, and their shots re-render.
---retime       with --lines: let regenerated lines keep their own length
+               it move, and their shots re-render. Every line not
+               regenerated keeps its measured word times (moved by how far
+               its start moved). In a dub folder (<reel>/dub/<code>/) the
+               picture never moves; run dub.mjs --lang <code> afterwards to
+               re-place the lines.
+--retime      with --lines: let regenerated lines keep their own length
                (use after a wording change, not a pronunciation fix).
 
 After synthesis, every synthesized line is checked by transcribing its own
@@ -63,6 +82,9 @@ not actually cut off.
 --stt-only           run the STT check on the existing voice/line-*.wav
                      files without synthesizing anything; updates
                      timings.json in place and does not touch narration.wav.
+                     Transcribes in timings.json's lang, else plan.json
+                     meta.lang. A line that now passes loses an old MISHEARD
+                     flag.
 
 --takes N            with --lines: synthesize N (2-5, default 3 when given
                      with no number) fresh takes of the same text per listed
@@ -91,6 +113,22 @@ not actually cut off.
                      takes are raw). Leveled, STT-checked, and
                      narration.wav/timings.json rebuilt as --lines does;
                      add --retime when its length differs from the old line.
+--pick-by length:<sec> | stt
+                     choose the take to install instead of naming it:
+                     length:<sec> installs the take whose length (at the
+                     film's speed) is closest to <sec>; stt installs the take
+                     with the lowest character error rate. With --takes it
+                     replaces "install take 1"; alone it reads the takes
+                     already in voice/takes/ for the --lines ids (default:
+                     every line in voice/takes/manifest.json). Prints the take
+                     table with the chosen take marked.
+--insert-pause <id>@<word>=<ms>[,...]
+                     insert <ms> of silence into the finished line <id>
+                     between word <word> (0-based index into that line's
+                     timings.json words) and the next, at the quietest 10 ms
+                     point there. No re-synthesis: the line grows by exactly
+                     the pause, its later words and every later line move by
+                     the same amount, narration.wav/timings.json are rebuilt.
 `;
 
 const PROVIDERS = ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"];
@@ -118,6 +156,15 @@ export async function main(argv) {
     plan = loadPlan(dir);
   } catch (e) {
     fail(e.message);
+    return;
+  }
+
+  if (flags["insert-pause"]) {
+    try {
+      await runInsertPause({ dir, paths, plan, spec: flags["insert-pause"] });
+    } catch (e) {
+      fail(e.message);
+    }
     return;
   }
 
@@ -206,6 +253,25 @@ export async function main(argv) {
     return;
   }
 
+  let pickBy = null;
+  if (flags["pick-by"] != null) {
+    try {
+      pickBy = parsePickBy(flags["pick-by"]);
+    } catch (e) {
+      fail(e.message);
+      return;
+    }
+  }
+
+  if (pickBy && !flags.takes) {
+    try {
+      await runPickBy({ dir, paths, plan, flags, pickBy, lineIds: onlyLineIds, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
+  }
+
   if (flags.takes) {
     if (!onlyLineIds || !onlyLineIds.length) {
       fail("--takes requires --lines id,id");
@@ -234,6 +300,7 @@ export async function main(argv) {
         tailSec,
         sttEnabled,
         keepTiming: !flags.retime,
+        pickBy,
       });
     } catch (e) {
       fail(e.message);
@@ -264,9 +331,7 @@ export async function main(argv) {
         `wrote ${paths.timingsJson}\n` +
         `provider: ${providerName}  lines: ${plan.lines.length}  duration: ${result.timings.duration.toFixed(3)}s\n`
     );
-    if (onlyLineIds && result.moved.length) {
-      process.stdout.write(`lines with shifted start (their shots will re-render): ${result.moved.join(", ")}\n`);
-    }
+    if (onlyLineIds) process.stdout.write(partialRebuildNote(dir, result.moved));
   } catch (e) {
     fail(e.message);
   }
@@ -409,7 +474,9 @@ export async function synthesizeAll({
 
     const measured = synthResult.words && synthResult.words.length ? wordsOnCaption(timedText, synthResult.words) : [];
     if (measured.length) providerTimed.add(line.id);
-    const words = measured.length ? measured : wordsProportional(timedText, start, end);
+    // A line reused as-is keeps the word times measured on an earlier run.
+    const carried = reused ? carriedWords(prevLine, timedText, start, stripCaptionBreaks) : null;
+    const words = measured.length ? measured : carried || wordsProportional(timedText, start, end);
 
     const lineOut = { id: line.id, text: line.text, start, end, words };
     if (line.say != null) lineOut.say = line.say;
@@ -505,6 +572,7 @@ export async function synthesizeAll({
     lines: lineResults,
     provider: providerName,
   };
+  if (lang) timings.lang = lang;
 
   // --lines: report which OTHER lines' start times shifted (a regenerated
   // line's new duration pushes every following line) — those lines' shots
@@ -534,12 +602,6 @@ async function checkRefAudioLength(refAudio, reelDir) {
     `meta.voice.refAudio is ${sec.toFixed(1)}s (${refPath}); a clone reference must be ` +
     `${REF_AUDIO_MIN_SEC}-${REF_AUDIO_MAX_SEC}s of clean speech. Supply a clip in that range.`
   );
-}
-
-/** meta.lang ("ko-KR", "en-US", ...) -> a faster-whisper language code. */
-function sttLangCode(lang) {
-  const s = String(lang || "ko").toLowerCase();
-  return s.slice(0, 2) || "ko";
 }
 
 function needsRetry(voiceFlag) {
@@ -584,10 +646,11 @@ async function sttTranscribe(voiceDir, entries, langCode) {
 /**
  * Compare `heard` against `line.text`/`line.say`, write `lineOut.stt`, and
  * update `lineOut.voiceFlag`: clears a provider TAIL flag when the STT
- * transcript shows the tail wasn't actually cut off, and sets MISHEARD only
- * on a gross mismatch (references/voice.md).
+ * transcript shows the tail wasn't actually cut off, sets MISHEARD only on a
+ * gross mismatch, and clears a MISHEARD left by an earlier check when this
+ * one passes (references/voice.md).
  */
-function applySttResult(lineOut, line, heard, sttWords) {
+export function applySttResult(lineOut, line, heard, sttWords) {
   const timedText = stripCaptionBreaks(line.text);
   const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
   if (sttWords && sttWords.length) {
@@ -604,6 +667,8 @@ function applySttResult(lineOut, line, heard, sttWords) {
   }
   if (isGrossMismatch(targetText, heard, cmp.cer)) {
     lineOut.voiceFlag = "MISHEARD";
+  } else if (lineOut.voiceFlag === "MISHEARD") {
+    delete lineOut.voiceFlag;
   }
 }
 
@@ -720,7 +785,14 @@ async function runSttOnly(dir, paths) {
     throw new Error(`--stt-only: missing voice/line-<id>.wav for: ${missing.map((l) => l.id).join(", ")}`);
   }
 
-  const langCode = sttLangCode(timings.lang);
+  let plan = null;
+  try {
+    plan = loadPlan(dir);
+  } catch {
+    plan = null;
+  }
+  const langCode = sttLangCode(sttOnlyLang(timings, plan));
+  process.stdout.write(`STT language: ${langCode}\n`);
   const entries = lines.map((l) => ({ id: l.id, wav: `line-${l.id}.wav` }));
   const stt = await sttTranscribe(paths.voiceDir, entries, langCode);
   if (stt.skipped) {
@@ -936,7 +1008,7 @@ function saveTakesManifest(paths, manifest) {
  * table and installs take 1 (references/voice.md
  * "Comparing takes"). Pick a different one later with --pick.
  */
-export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming }) {
+export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming, pickBy = null }) {
   const takesDir = path.join(paths.voiceDir, "takes");
   ensureDir(takesDir);
   const langCode = sttLangCode(lang);
@@ -983,16 +1055,17 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
           cerVal = compareLine({ text: strippedText, say: strippedSay, heard }).cer;
         }
       }
-      rows.push({ id, k, mark, durationSec, cer: cerVal });
+      rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, voiceCfg, provider), cer: cerVal });
     }
 
     manifest[id] = spec.mode === "tone" ? { mode: "tone", marks: spec.marks } : { mode: "count", n: spec.n };
   }
 
   saveTakesManifest(paths, manifest);
-  printTakesTable(rows);
+  const picked = pickBy ? pickTakes(rows, lineIds, pickBy) : new Map(lineIds.map((id) => [id, 1]));
+  printTakesTable(rows, pickBy ? picked : null);
 
-  const takeWavs = new Map(lineIds.map((id) => [id, path.join(takesDir, `${id}-1.wav`)]));
+  const takeWavs = new Map(lineIds.map((id) => [id, path.join(takesDir, `${id}-${picked.get(id)}.wav`)]));
   const result = await synthesizeAll({
     dir,
     paths,
@@ -1011,18 +1084,39 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
     takeWavs,
   });
   writeJson(paths.timingsJson, result.timings);
-  process.stdout.write(`installed take 1 for: ${lineIds.join(", ")}\n`);
-  return { rows, timings: result.timings };
+  if (pickBy) {
+    process.stdout.write(`installed take(s): ${lineIds.map((id) => `${id}=${picked.get(id)}`).join(", ")}\n`);
+  } else {
+    process.stdout.write(`installed take 1 for: ${lineIds.join(", ")}\n`);
+  }
+  process.stdout.write(partialRebuildNote(dir, result.moved));
+  return { rows, picked, timings: result.timings };
 }
 
-/** Prints a compact `id | take | tone | cer | duration` comparison table. */
-function printTakesTable(rows) {
+/** A raw take's length once the line's tempo is applied on install. */
+function installedLength(durationSec, line, voiceCfg, provider) {
+  const tempo = lineTempo(line, voiceCfg, provider);
+  return tempo && tempo.factor ? durationSec / tempo.factor : durationSec;
+}
+
+/** `--pick-by`: the chosen take number per line id. */
+function pickTakes(rows, lineIds, pickBy) {
+  return new Map(lineIds.map((id) => [id, chooseTake(rows.filter((r) => r.id === id), pickBy)]));
+}
+
+/**
+ * Prints a compact `id | take | tone | cer | duration | length` comparison
+ * table; `picked` (id -> k) marks the takes --pick-by chose.
+ */
+function printTakesTable(rows, picked = null) {
   if (!rows.length) return;
   process.stdout.write("takes:\n");
-  process.stdout.write("id\ttake\ttone\tcer\tduration\n");
+  process.stdout.write(`id\ttake\ttone\tcer\tduration\tlength${picked ? "\tpicked" : ""}\n`);
   for (const r of rows) {
     const cerStr = r.cer == null ? "-" : r.cer.toFixed(2);
-    process.stdout.write(`${r.id}\t${r.k}\t${r.mark || "-"}\t${cerStr}\t${r.durationSec.toFixed(3)}s\n`);
+    const lengthStr = r.lengthSec == null ? "-" : `${r.lengthSec.toFixed(3)}s`;
+    const mark = picked ? (picked.get(r.id) === r.k ? "\t<-" : "\t") : "";
+    process.stdout.write(`${r.id}\t${r.k}\t${r.mark || "-"}\t${cerStr}\t${r.durationSec.toFixed(3)}s\t${lengthStr}${mark}\n`);
   }
 }
 
@@ -1097,6 +1191,7 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
   });
   writeJson(paths.timingsJson, result.timings);
   process.stdout.write(`installed finished audio: ${uses.map((u) => `${u.id} <- ${u.file}`).join(", ")}\n`);
+  process.stdout.write(partialRebuildNote(dir, result.moved));
 }
 
 /**
@@ -1109,7 +1204,65 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
  * in that tone.
  */
 async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
-  const picks = parsePick(flags.pick);
+  await installPicks({ dir, paths, plan, flags, picks: parsePick(flags.pick), providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+}
+
+/**
+ * `--pick-by length:<sec>|stt` without --takes: measures the takes already
+ * in voice/takes/ for each line (duration from disk; CER by transcribing
+ * them for `stt`), prints the table with the chosen take marked, and
+ * installs the chosen takes as --pick does.
+ */
+async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
+  const manifest = loadTakesManifest(paths);
+  const ids = lineIds && lineIds.length ? lineIds : Object.keys(manifest);
+  if (!ids.length) throw new Error("--pick-by: no takes to choose from — run --takes first, or name the lines with --lines");
+  if (pickBy.by === "stt" && !sttEnabled) throw new Error("--pick-by stt needs the STT check (drop --no-stt)");
+  const linesById = new Map(plan.lines.map((l) => [l.id, l]));
+  const langCode = sttLangCode(plan.meta.lang || "ko-KR");
+  const rows = [];
+  for (const id of ids) {
+    const line = linesById.get(id);
+    if (!line) throw new Error(`--pick-by: unknown line id "${id}"`);
+    const found = listTakeFiles(paths, id);
+    if (!found.length) throw new Error(`--pick-by: no takes for "${id}" in ${path.join(paths.voiceDir, "takes")} — run --takes first`);
+    const cers = pickBy.by === "stt" ? await takesCer(paths, line, found, langCode) : new Map();
+    const marks = manifest[id] && manifest[id].mode === "tone" ? manifest[id].marks : [];
+    for (const k of found) {
+      const durationSec = await probeDuration(path.join(paths.voiceDir, "takes", `${id}-${k}.wav`));
+      rows.push({ id, k, mark: marks[k - 1] || null, durationSec, lengthSec: installedLength(durationSec, line, voiceCfg, providerMod), cer: cers.get(k) ?? null });
+    }
+  }
+  const picked = pickTakes(rows, ids, pickBy);
+  printTakesTable(rows, picked);
+  const picks = ids.map((id) => ({ id, k: picked.get(id) }));
+  await installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled });
+}
+
+/** Take numbers k with a voice/takes/<id>-<k>.wav on disk, ascending. */
+function listTakeFiles(paths, id) {
+  const found = [];
+  for (let k = 1; k <= TAKES_MAX; k++) {
+    if (fs.existsSync(path.join(paths.voiceDir, "takes", `${id}-${k}.wav`))) found.push(k);
+  }
+  return found;
+}
+
+/** CER of each take k of `line`, by transcribing the takes on disk. */
+async function takesCer(paths, line, ks, langCode) {
+  const entries = ks.map((k) => ({ id: `${line.id}-${k}`, wav: `takes/${line.id}-${k}.wav` }));
+  const stt = await sttTranscribe(paths.voiceDir, entries, langCode);
+  if (stt.skipped) throw new Error(`--pick-by stt: ${stt.skipped}`);
+  const text = stripCaptionBreaks(line.text);
+  const say = line.say != null ? stripCaptionBreaks(line.say) : line.say;
+  return new Map(ks.map((k) => [k, compareLine({ text, say, heard: stt.results.get(`${line.id}-${k}`) || "" }).cer]));
+}
+
+/**
+ * Installs each picked voice/takes/<id>-<k>.wav without re-synthesis
+ * (shared by --pick and --pick-by).
+ */
+async function installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, gapMs, tailSec, sttEnabled }) {
   const missing = picks.filter((p) => !fs.existsSync(path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)));
   if (missing.length) {
     throw new Error(`--pick: no candidate take(s) for ${missing.map((p) => `${p.id}=${p.k}`).join(", ")} — run --takes first`);
@@ -1151,6 +1304,61 @@ async function runPick({ dir, paths, plan, flags, providerMod, providerName, voi
   if (deliveryWritten) {
     process.stdout.write(`wrote meta.voice.delivery = "${deliveryWritten}" to plan.json — the remaining lines will be made in this tone\n`);
   }
+  process.stdout.write(partialRebuildNote(dir, result.moved));
+}
+
+/**
+ * `--insert-pause id@word=ms`: inserts silence into finished line audio at
+ * the quietest 10 ms point between word `word` and the next (no
+ * re-synthesis, no tempo, no leveling), shifts the timings by exactly the
+ * pause, and rebuilds narration.wav/timings.json keeping every line's
+ * measured word times.
+ */
+export async function runInsertPause({ dir, paths, plan, spec }) {
+  const edits = parseInsertPause(spec);
+  if (!fs.existsSync(paths.timingsJson)) {
+    throw new Error(`--insert-pause: no ${paths.timingsJson} — run a full voice.mjs pass first`);
+  }
+  const timings = readJson(paths.timingsJson);
+  const startsBefore = new Map(timings.lines.map((l) => [l.id, l.start]));
+  for (const edit of edits) {
+    const line = timings.lines.find((l) => l.id === edit.id);
+    if (!line) throw new Error(`--insert-pause: unknown line id "${edit.id}"`);
+    const wavPath = path.join(paths.voiceDir, `line-${edit.id}.wav`);
+    if (!fs.existsSync(wavPath)) throw new Error(`--insert-pause: no ${wavPath}`);
+    const { rate, samples } = readWavMono16(wavPath);
+    const win = pauseWindow(line.words || [], edit.word, line.start, samples.length / rate);
+    const at = quietestSample(samples, rate, win.fromSec, win.toSec);
+    const count = Math.round((edit.ms / 1000) * rate);
+    writeWavMono16(wavPath, insertSilence(samples, at, count), rate);
+    shiftForPause(timings, edit.id, edit.word, count / rate);
+    const word = line.words[edit.word];
+    process.stdout.write(
+      `line "${edit.id}": inserted ${(count / rate).toFixed(3)}s after word ${edit.word} "${word.w ?? ""}" at ${(at / rate).toFixed(3)}s into the line\n`
+    );
+  }
+  writeJson(paths.timingsJson, timings);
+
+  const result = await synthesizeAll({
+    dir,
+    paths,
+    lines: plan.lines,
+    provider: {},
+    providerName: timings.provider,
+    voiceCfg: plan.meta.voice || {},
+    pronounce: plan.meta.pronounce,
+    lang: timings.lang || plan.meta.lang || "ko-KR",
+    gapMs: plan.meta.gapMs == null ? 700 : plan.meta.gapMs,
+    tailSec: plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec,
+    onlyLineIds: [],
+    sttEnabled: false,
+    retryFlagged: 0,
+  });
+  writeJson(paths.timingsJson, result.timings);
+  process.stdout.write(`wrote ${paths.narrationWav}\nwrote ${paths.timingsJson}\n`);
+  const moved = result.timings.lines.filter((l) => Math.abs(l.start - startsBefore.get(l.id)) > 0.001).map((l) => l.id);
+  process.stdout.write(partialRebuildNote(dir, moved));
+  return result.timings;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

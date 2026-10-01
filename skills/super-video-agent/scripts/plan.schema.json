@@ -71,6 +71,10 @@
           "default": 0.4,
           "description": "Trailing silence in seconds after the last line, e.g. to keep a wordless end card. Default 0.4."
         },
+        "overlay": {
+          "type": "object",
+          "description": "Free-form overlay text for this language (titles, stickers, end card), read by the page's own code — a dub's dub/<code>/plan.json carries its language's copy. No tool reads it; keys are the film's own."
+        },
         "distribution": {
           "type": "string",
           "enum": ["personal", "public"],

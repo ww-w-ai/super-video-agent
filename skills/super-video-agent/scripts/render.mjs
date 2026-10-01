@@ -10,11 +10,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame } from "./lib/browser.mjs";
-import { run, ffmpeg, spawnImagePipeEncoder, probeDuration, probeFrameCount } from "./lib/ffmpeg.mjs";
+import { openReel, captureFrame, stubSeconds, stubTimings } from "./lib/browser.mjs";
+import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { writeWavPCM16 } from "./lib/wav.mjs";
 import { buildCueMixFilter, measureMasterGain } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
@@ -27,6 +28,7 @@ import {
 } from "./lib/segments.mjs";
 
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan] [--no-captions]
+                 [--stub <sec>] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
@@ -56,6 +58,28 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               out/picture.bed.wav, and copies the clock it was built on to
               out/picture.timings.json. Use dub.mjs to lay a language's
               caption + voice over the picture afterwards.
+--stub <sec>  for a reel with no voice/timings.json: the page is served one
+              silent line of <sec> seconds (id "stub"); nothing is written to
+              voice/. Use with --no-captions; out/picture.timings.json then
+              holds that stub clock.
+--insert <clip.mp4>@<start-sec>
+              puts an already rendered clip into the picture: frames from
+              <start-sec> (rounded to the frame grid) for the clip's frame
+              count are the clip's own frames. Segments the clip covers
+              entirely are not rendered; a segment it covers in part has its
+              remaining frames re-encoded from its own mp4. The joined track
+              is re-stamped onto the 1/fps grid (-bsf:v setts) — a plain
+              -c copy join can shift later timestamps by a few ticks, which
+              changes a later frame count. The clip must have the reel's fps;
+              a clip whose size or encoding differs from the segments is
+              re-encoded to match first (said in the output). After the join
+              the frame count and the framemd5 of the inserted span (equal to
+              the clip's) are checked. picture.timings.json is kept as usual.
+--insert-stills <dir>
+              with --insert: also writes the clip's frames as JPEG stills to
+              <dir>/frame-<film frame, 6 digits>.jpg plus <dir>/stills.json
+              ({fps, startFrame, count, pattern}), so the page can draw the
+              approved clip in previews and stills.
 
 A segment is reused only when its stored frame range, fps, size and three
 probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
@@ -78,11 +102,26 @@ export async function main(argv) {
   }
   const noCaptions = !!flags["no-captions"];
   if (!noCaptions && !fs.existsSync(paths.narrationWav)) {
-    fail(`no voice/narration.wav in ${dir} — run voice.mjs first`);
+    fail(`no voice/narration.wav in ${dir} — run voice.mjs first${flags.stub !== undefined ? " (a --stub render needs --no-captions)" : ""}`);
     return;
   }
-  if (!fs.existsSync(paths.timingsJson)) {
-    fail(`no voice/timings.json in ${dir} — run voice.mjs first`);
+  let stubSec;
+  let insert;
+  try {
+    stubSec = stubSeconds(flags.stub, paths.timingsJson, fs.existsSync);
+    insert = flags.insert !== undefined ? parseInsertFlag(flags.insert) : null;
+    if (flags["insert-stills"] !== undefined && !insert) throw new Error("--insert-stills needs --insert <clip.mp4>@<start-sec>");
+    if (insert && flags["insert-stills"] !== undefined) {
+      if (typeof flags["insert-stills"] !== "string") throw new Error("--insert-stills takes a directory");
+      insert.stillsDir = abs(flags["insert-stills"]);
+    }
+    if (insert && !fs.existsSync(insert.clipPath)) throw new Error(`--insert clip not found: ${insert.clipPath}`);
+  } catch (e) {
+    fail(e.message);
+    return;
+  }
+  if (!stubSec && !fs.existsSync(paths.timingsJson)) {
+    fail(`no voice/timings.json in ${dir} — run voice.mjs first (or pass --stub <sec> for a picture-only probe)`);
     return;
   }
 
@@ -93,7 +132,7 @@ export async function main(argv) {
 
   const started = Date.now();
   try {
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions });
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert });
     const elapsed = (Date.now() - started) / 1000;
     if (result.planOnly) {
       process.stdout.write(`--plan: ${result.decisions.length} segment(s), nothing rendered\n`);
@@ -131,12 +170,12 @@ export function segmentDirName(quality, noCaptions) {
   return noCaptions ? `${quality}-nocap` : quality;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false }) {
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null }) {
   const server = await serveDir(dir);
   const pageUrl = pictureUrl(server.url, noCaptions);
-  const openAt = { url: pageUrl }; // same shape as `server` for the helpers below; only .url is read
+  const openAt = { url: pageUrl, opts: { stubSec } }; // what every helper below opens: page URL + openReel options
   try {
-    const meta = await probeMeta(pageUrl);
+    const meta = await probeMeta(openAt);
     const fps = meta.fps;
     const duration = meta.duration;
 
@@ -156,7 +195,19 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
     if (onlyIds) validateOnlyOrThrow({ segments, onlyIds, segDir });
 
-    const decisions = await decideAll({ server: openAt, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers });
+    const insertPlan = insert ? await prepareInsert({ insert, segments, fps }) : null;
+
+    const decisions = await decideAll({
+      server: openAt,
+      segments,
+      segDir,
+      fps,
+      targetWidth,
+      targetHeight,
+      onlyIds,
+      workers,
+      coveredIds: insertPlan ? insertPlan.coveredIds : [],
+    });
     for (const d of decisions) {
       process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
     }
@@ -166,15 +217,18 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     await renderNeeded({ server: openAt, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
 
     const videoOnlyPath = path.join(paths.outDir, "_video.mp4");
-    await concatMp4(
-      segments.map((s) => path.join(segDir, `${s.id}.mp4`)),
-      videoOnlyPath
-    );
-
     const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
+    if (insertPlan) {
+      await buildInsertedTrack({ insertPlan, segDir, fps, crf, preset: cPreset, outPath: videoOnlyPath, expectedFrames });
+    } else {
+      await concatMp4(
+        segments.map((s) => path.join(segDir, `${s.id}.mp4`)),
+        videoOnlyPath
+      );
+    }
 
     if (noCaptions) {
-      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions });
+      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec });
     }
 
     await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
@@ -184,7 +238,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     if (sfx) sfxPath = sfx;
 
     const cueInputs = await resolveSoundCues(openAt, paths.root);
-    const narrationWindows = narrationWindowsFor(dir);
+    const narrationWindows = narrationWindowsFor(dir, stubSec);
     const sfxDuckDb = sfxDuckDbFor(dir);
 
     const stampedPath = path.join(paths.outDir, `${quality}-${timestamp()}.mp4`);
@@ -217,7 +271,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
  * out/picture.timings.json so dub.mjs can lay a language's caption + voice
  * over the picture later without re-deriving the shot clock.
  */
-async function finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions }) {
+async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec }) {
   const frameCount = await probeFrameCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
@@ -240,7 +294,8 @@ async function finishPictureRender({ dir, paths, openAt, videoOnlyPath, expected
   const bedPath = pointLatest(paths.outDir, "picture.bed.wav", bedStampedPath);
 
   const timingsPath = path.join(paths.outDir, "picture.timings.json");
-  fs.copyFileSync(paths.timingsJson, timingsPath);
+  if (stubSec) writeJson(timingsPath, stubTimings(stubSec));
+  else fs.copyFileSync(paths.timingsJson, timingsPath);
 
   return {
     outPath,
@@ -281,10 +336,10 @@ export function pointLatest(outDir, name, stampedPath) {
   return linkPath;
 }
 
-async function probeMeta(url) {
+async function probeMeta(target) {
   let session;
   try {
-    session = await openReel(url, {});
+    session = await openReel(target.url, target.opts);
     if (session.errors.length) {
       throw new Error(`page errors on load: ${session.errors.join("; ")}`);
     }
@@ -327,7 +382,7 @@ function validateOnlyOrThrow({ segments, onlyIds, segDir }) {
 }
 
 /** One REUSE/RENDER decision per segment, probing only where needed. */
-async function decideAll({ server, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers }) {
+async function decideAll({ server, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers, coveredIds = [] }) {
   const results = new Array(segments.length);
   let idx = 0;
 
@@ -337,11 +392,15 @@ async function decideAll({ server, segments, segDir, fps, targetWidth, targetHei
       while (idx < segments.length) {
         const i = idx++;
         const segment = segments[i];
+        if (coveredIds.includes(segment.id)) {
+          results[i] = { segment, action: "INSERT", reason: "covered by the --insert clip (not rendered)" };
+          continue;
+        }
         if (onlyIds && !onlyIds.includes(segment.id)) {
           results[i] = { segment, action: "REUSE", reason: "--only fast path (not probed)" };
           continue;
         }
-        if (!session) session = await openReel(server.url, {});
+        if (!session) session = await openReel(server.url, server.opts);
         const forceRender = !!onlyIds; // onlyIds && onlyIds.includes(segment.id)
         results[i] = await decideOne({ session, segment, segDir, fps, targetWidth, targetHeight, forceRender });
       }
@@ -394,7 +453,7 @@ async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, 
         // (isTransportError rejects it) — see scripts/lib/retry.mjs.
         await withTransportRetry(
           async () => {
-            if (!session) session = await openReel(server.url, {});
+            if (!session) session = await openReel(server.url, server.opts);
             await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
           },
           {
@@ -441,6 +500,280 @@ function once(emitter, event) {
   return new Promise((resolve) => emitter.once(event, resolve));
 }
 
+// ---- --insert: an approved clip in place of rendered frames --------------
+
+/**
+ * Reads `--insert <clip.mp4>@<start-sec>`. The last "@" splits, so a clip
+ * path may itself contain "@".
+ * @returns {{clipPath: string, startSec: number}}
+ */
+export function parseInsertFlag(value) {
+  const s = typeof value === "string" ? value : "";
+  const at = s.lastIndexOf("@");
+  const startSec = at > 0 ? Number(s.slice(at + 1)) : NaN;
+  if (at <= 0 || s.slice(at + 1) === "" || !Number.isFinite(startSec) || startSec < 0) {
+    throw new Error(`--insert takes <clip.mp4>@<start-sec>, e.g. --insert out/opening.mp4@0 (got "${value}")`);
+  }
+  return { clipPath: abs(s.slice(0, at)), startSec };
+}
+
+/**
+ * Lays a clip of `clipFrames` frames over the segment tiling from
+ * `startSec` (rounded to the frame grid). Returns the pieces of the joined
+ * track in order — whole segments, the clip, and parts of segments the clip
+ * covers only in part (frame ranges relative to that segment) — plus the
+ * ids of segments the clip covers entirely (never rendered) and partly.
+ * @param {{segments: {id:string, frameStart:number, frameEnd:number}[], startSec: number, fps: number, clipFrames: number}} args
+ */
+export function planInsert({ segments, startSec, fps, clipFrames }) {
+  if (!Number.isInteger(clipFrames) || clipFrames < 1) throw new Error(`--insert clip has no frames (${clipFrames})`);
+  const startFrame = Math.round(startSec * fps);
+  const endFrame = startFrame + clipFrames;
+  const filmStart = segments[0].frameStart;
+  const filmEnd = segments[segments.length - 1].frameEnd;
+  if (startFrame < filmStart || endFrame > filmEnd) {
+    throw new Error(
+      `--insert span frames [${startFrame},${endFrame}) (${clipFrames} frames from t=${startSec}s) does not fit the film's frames [${filmStart},${filmEnd})`
+    );
+  }
+  const pieces = [];
+  const coveredIds = [];
+  const partialIds = [];
+  let clipPlaced = false;
+  const placeClip = () => {
+    if (!clipPlaced) pieces.push({ kind: "clip", frames: clipFrames });
+    clipPlaced = true;
+  };
+  for (const seg of segments) {
+    const { id, frameStart: a, frameEnd: b } = seg;
+    if (b <= startFrame) {
+      pieces.push({ kind: "segment", id, frames: b - a });
+      continue;
+    }
+    if (a >= endFrame) {
+      placeClip();
+      pieces.push({ kind: "segment", id, frames: b - a });
+      continue;
+    }
+    if (a < startFrame) pieces.push({ kind: "part", id, from: 0, to: startFrame - a, frames: startFrame - a });
+    placeClip();
+    if (b > endFrame) pieces.push({ kind: "part", id, from: endFrame - a, to: b - a, frames: b - endFrame });
+    if (a >= startFrame && b <= endFrame) coveredIds.push(id);
+    else partialIds.push(id);
+  }
+  placeClip();
+  return { startFrame, endFrame, clipFrames, pieces, coveredIds, partialIds, snapped: Math.abs(startSec * fps - startFrame) > 1e-6 };
+}
+
+/**
+ * The setts bitstream filter that rounds every packet's PTS and DTS to the
+ * 1/fps grid. A -c copy join of files whose timestamps were cut on a
+ * different tick can leave later packets a few ticks off the grid.
+ */
+export function gridTimestampFilter(fps) {
+  const snap = (v) => `round(${v}*TB*${fps})/(TB*${fps})`;
+  return `setts=pts=${snap("PTS")}:dts=${snap("DTS")}`;
+}
+
+/** Probes the clip, plans the splice, prints the plan, writes stills when asked. */
+async function prepareInsert({ insert, segments, fps }) {
+  const info = await probeVideoInfo(insert.clipPath);
+  if (Math.abs(info.fps - fps) > 1e-3) {
+    throw new Error(`--insert clip runs at ${info.fps} fps, the reel at ${fps} fps — render the clip at the reel's fps`);
+  }
+  const clipFrames = await probeFrameCount(insert.clipPath);
+  const plan = { ...planInsert({ segments, startSec: insert.startSec, fps, clipFrames }), clipPath: insert.clipPath };
+  if (plan.snapped) {
+    process.stdout.write(`note: --insert start ${insert.startSec}s is not on the frame grid; using frame ${plan.startFrame} (t=${(plan.startFrame / fps).toFixed(4)}s)\n`);
+  }
+  process.stdout.write(
+    `insert: ${path.basename(insert.clipPath)} → frames [${plan.startFrame},${plan.endFrame}); ` +
+      `covers ${plan.coveredIds.join(", ") || "no whole segment"}` +
+      (plan.partialIds.length ? `; re-encodes the rest of ${plan.partialIds.join(", ")}` : "") +
+      "\n"
+  );
+  if (insert.stillsDir) await writeInsertStills({ clipPath: insert.clipPath, dir: insert.stillsDir, startFrame: plan.startFrame, count: clipFrames, fps });
+  return plan;
+}
+
+/**
+ * Writes the clip's frames as <dir>/frame-<film frame>.jpg plus
+ * <dir>/stills.json, so the page can draw the approved clip in previews
+ * and stills before the final picture swaps the clip itself in.
+ */
+export async function writeInsertStills({ clipPath, dir, startFrame, count, fps }) {
+  fs.mkdirSync(dir, { recursive: true });
+  const pattern = "frame-%06d.jpg";
+  await ffmpeg(["-y", "-i", clipPath, "-fps_mode", "passthrough", "-q:v", "2", "-start_number", String(startFrame), path.join(dir, pattern)]);
+  writeJson(path.join(dir, "stills.json"), { fps, startFrame, count, pattern });
+  process.stdout.write(`wrote ${count} stills to ${dir} (frame-${String(startFrame).padStart(6, "0")}.jpg …)\n`);
+}
+
+/**
+ * Builds the joined video track from the insert plan, then checks it: the
+ * frame count equals `expectedFrames` and the inserted span's framemd5
+ * equals the clip's.
+ */
+async function buildInsertedTrack({ insertPlan, segDir, fps, crf, preset, outPath, expectedFrames }) {
+  const workDir = path.join(segDir, "_insert");
+  const result = await spliceTrack({
+    pieces: insertPlan.pieces,
+    segmentPath: (id) => segMp4Path(segDir, id),
+    clipPath: insertPlan.clipPath,
+    fps,
+    crf,
+    preset,
+    workDir,
+    outPath,
+  });
+  if (result.clipReencoded) {
+    process.stdout.write(`note: the clip's size or encoder headers differ from the segments; re-encoded it (crf ${crf}) before the join\n`);
+  }
+  await verifyInsertedSpan({ outPath, clipPath: result.clipUsed, startFrame: insertPlan.startFrame, expectedFrames });
+  process.stdout.write(`insert: ${expectedFrames} frames, framemd5 of frames [${insertPlan.startFrame},${insertPlan.endFrame}) equals the clip\n`);
+  fs.rmSync(workDir, { recursive: true, force: true });
+}
+
+/**
+ * Joins `pieces` (planInsert order) into `outPath` with -c copy and the
+ * grid re-stamp. Parts of segments are re-encoded from that segment's mp4
+ * (crf/preset as the render). The clip is used as is when its stream
+ * matches the segments' (size, pixel format, encoder headers); otherwise a
+ * re-encoded copy is used. Returns which clip file went in.
+ * @param {{pieces: object[], segmentPath: (id: string) => string, clipPath: string, fps: number, crf: number, preset: string, workDir: string, outPath: string}} args
+ */
+export async function spliceTrack({ pieces, segmentPath, clipPath, fps, crf, preset, workDir, outPath }) {
+  fs.mkdirSync(workDir, { recursive: true });
+  const files = [];
+  for (const p of pieces) {
+    if (p.kind === "segment") files.push(segmentPath(p.id));
+    else if (p.kind === "part") files.push(await encodePart({ src: segmentPath(p.id), from: p.from, to: p.to, fps, crf, preset, outPath: path.join(workDir, `${p.id}-${p.from}-${p.to}.mp4`) }));
+    else files.push(null);
+  }
+  const reference = files.find(Boolean);
+  let clipUsed = clipPath;
+  let clipReencoded = false;
+  if (reference && !(await sameStream(reference, clipPath))) {
+    clipUsed = path.join(workDir, "clip.mp4");
+    await reencodeLikeSegments({ src: clipPath, like: await streamTags(reference), fps, crf, preset, outPath: clipUsed });
+    clipReencoded = true;
+  }
+  const joined = files.map((f) => f || clipUsed);
+  for (const f of joined) {
+    if (f !== reference && reference && !(await sameStream(reference, f))) {
+      throw new Error(`--insert: ${path.basename(f)} has different encoder headers from ${path.basename(reference)}; a -c copy join would not decode`);
+    }
+  }
+  const listPath = path.join(workDir, "concat.txt");
+  fs.writeFileSync(listPath, joined.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n", "utf8");
+  await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c", "copy", "-bsf:v", gridTimestampFilter(fps), outPath]);
+  return { clipUsed, clipReencoded };
+}
+
+/**
+ * Size, sample aspect ratio and colour tags of `file`'s video stream, as
+ * values the scale/setsar/setparams filters take. These end up in the
+ * H.264 headers, so a re-encoded clip must carry the segments' values.
+ */
+async function streamTags(file) {
+  const { stdout } = await ffprobe([
+    "-v", "error", "-select_streams", "v:0",
+    "-show_entries", "stream=width,height,sample_aspect_ratio,color_range,color_space,color_primaries,color_transfer",
+    "-of", "json", file,
+  ]);
+  const s = JSON.parse(stdout.toString()).streams[0];
+  const known = (v) => (v && v !== "N/A" ? v : "unknown");
+  return {
+    width: s.width,
+    height: s.height,
+    sar: s.sample_aspect_ratio && /^\d+:\d+$/.test(s.sample_aspect_ratio) ? s.sample_aspect_ratio.replace(":", "/") : "0",
+    range: known(s.color_range),
+    colorspace: known(s.color_space),
+    primaries: known(s.color_primaries),
+    trc: known(s.color_transfer),
+  };
+}
+
+// Decodes `src` to PNG frames piped into the same encoder render.mjs uses
+// for segments, with the segments' size, SAR and colour tags (`like`), so
+// the result carries the segments' encoder headers. A direct re-encode
+// keeps the source's tags, which change the headers.
+async function reencodeLikeSegments({ src, like, fps, crf, preset, outPath }) {
+  const { proc, done } = spawnImagePipeEncoder({ fps, outPath, crf, preset });
+  const filter =
+    `scale=${like.width}:${like.height},setsar=${like.sar},format=rgba,` +
+    `setparams=range=${like.range}:color_primaries=${like.primaries}:color_trc=${like.trc}:colorspace=${like.colorspace}`;
+  const decoder = spawn(
+    "ffmpeg",
+    ["-hide_banner", "-loglevel", "error", "-i", src, "-an", "-fps_mode", "passthrough", "-vf", filter, "-f", "image2pipe", "-c:v", "png", "-"],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  let stderr = "";
+  decoder.stderr.on("data", (d) => (stderr += d.toString()));
+  decoder.stdout.pipe(proc.stdin);
+  const code = await new Promise((resolve, reject) => {
+    decoder.on("error", reject);
+    decoder.on("close", resolve);
+  });
+  if (code !== 0) {
+    proc.stdin.destroy();
+    throw new Error(`ffmpeg could not decode ${src} (exit ${code})\n${stderr}`);
+  }
+  await done;
+}
+
+async function encodePart({ src, from, to, fps, crf, preset, outPath }) {
+  await ffmpeg([
+    "-y", "-i", src, "-an",
+    "-vf", `trim=start_frame=${from}:end_frame=${to},setpts=PTS-STARTPTS`,
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf), "-preset", preset, "-r", String(fps),
+    outPath,
+  ]);
+  return outPath;
+}
+
+// Same codec, size, pixel format and encoder headers (avcC extradata), so
+// a -c copy join decodes every piece correctly.
+async function sameStream(a, b) {
+  const [x, y] = await Promise.all([streamSignature(a), streamSignature(b)]);
+  return x === y;
+}
+
+async function streamSignature(file) {
+  const { stdout } = await ffprobe([
+    "-v", "error", "-select_streams", "v:0", "-show_data_hash", "MD5",
+    "-show_entries", "stream=codec_name,profile,pix_fmt,width,height,extradata_hash",
+    "-of", "compact=p=0", file,
+  ]);
+  return stdout.toString().trim();
+}
+
+/** framemd5 hashes (one per decoded frame) of `file`'s first video stream. */
+export async function frameHashes(file) {
+  const { stdout } = await ffmpeg(["-v", "error", "-i", file, "-map", "0:v:0", "-f", "framemd5", "-"]);
+  return stdout
+    .toString()
+    .split("\n")
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => l.split(",").pop().trim());
+}
+
+/**
+ * Throws unless `outPath` has `expectedFrames` frames and its frames from
+ * `startFrame` hash (framemd5) the same as every frame of `clipPath`.
+ */
+export async function verifyInsertedSpan({ outPath, clipPath, startFrame, expectedFrames }) {
+  const [out, clip] = await Promise.all([frameHashes(outPath), frameHashes(clipPath)]);
+  if (out.length !== expectedFrames) {
+    throw new Error(`--insert frame count gate failed: joined video has ${out.length} frames, expected ${expectedFrames}`);
+  }
+  const span = out.slice(startFrame, startFrame + clip.length);
+  const bad = span.findIndex((h, i) => h !== clip[i]);
+  if (span.length !== clip.length || bad !== -1) {
+    throw new Error(`--insert framemd5 gate failed: film frame ${startFrame + Math.max(0, bad)} differs from clip frame ${Math.max(0, bad)}`);
+  }
+}
+
 async function concatMp4(segmentPaths, outPath) {
   const listPath = outPath + ".concat.txt";
   const content = segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n";
@@ -471,7 +804,7 @@ export async function gateAvSync({ videoOnlyPath, narrationPath, expectedFrames 
 async function maybeRenderSfx(server, paths) {
   let session;
   try {
-    session = await openReel(server.url, {});
+    session = await openReel(server.url, server.opts);
     const hasSfx = await session.page.evaluate(
       () => !!(window.__reel.audio && typeof window.__reel.audio.renderSfx === "function")
     );
@@ -501,7 +834,7 @@ async function maybeRenderSfx(server, paths) {
 async function resolveSoundCues(server, dir) {
   let session;
   try {
-    session = await openReel(server.url, {});
+    session = await openReel(server.url, server.opts);
     const hasFn = await session.page.evaluate(() => typeof window.__reel.soundCues === "function");
     if (!hasFn) return [];
     const cues = await session.page.evaluate(() => window.__reel.soundCues());
@@ -700,9 +1033,9 @@ async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
   ]);
 }
 
-/** voice/timings.json's lines as {start,end} narration windows, for ducking (scripts/lib/duck.mjs). */
-function narrationWindowsFor(dir) {
-  const timings = loadTimings(dir);
+/** voice/timings.json's lines (or the --stub line) as {start,end} narration windows, for ducking (scripts/lib/duck.mjs). */
+function narrationWindowsFor(dir, stubSec) {
+  const timings = stubSec ? stubTimings(stubSec) : loadTimings(dir);
   return (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
 }
 

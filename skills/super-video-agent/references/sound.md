@@ -124,6 +124,12 @@ case now — it writes `<reel>/sound-judge.md`, a self-contained scoring sheet, 
 model to score 1-10 by hand (pass at 8), plus a `sound-scores.json` template to fill in. Cards
 that fail get a new sound made for this film instead — it only costs time.
 
+A model judge does not give the same score twice: an unchanged sound can land on either side of
+the pass mark from one run to the next. `judge --repeat <n>` scores each card `n` more times;
+without it, a card whose score is within 0.5 of the pass mark gets 2 more runs. The report shows
+the mean and the spread and marks a card whose runs straddle the mark as "near the line": one
+run could have passed or failed it, so it is worth another design round or an owner listen.
+
 `scripts/sfx-cards.mjs report <reel-dir>` prints every card's fit and warns on fit under 8: redesign
 that sound (a new synth voice, different pitch/envelope/layers, a better library sound, or a new
 one made for this film), re-measure, re-judge — up to 3 rounds, without asking. This tool reports;

@@ -4,11 +4,11 @@
 // to use this. Re-encodes (parts can differ in codec/settings going in);
 // reports facts about each join afterward and never blocks on them.
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { ffmpeg, probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
-import { measureLoudness, decodeMonoPcm } from "./lib/audio-analysis.mjs";
+import { decodeMonoPcm } from "./lib/audio-analysis.mjs";
+import { probeStreamDurations, measureSpansLoudness } from "./lib/join-report-media.mjs";
 import { extractGrayFrames } from "./lib/frame-diff.mjs";
 import { buildJoinFilter, joinOffsets, joinTimes } from "./lib/join-ffmpeg.mjs";
 import {
@@ -26,6 +26,9 @@ const HELP = `usage: join.mjs <out.mp4> <part1> <part2> [...] [--json]
 Joins two or more video parts into one file: scaled to the first part's
 size and fps, yuv420p, H.264 CRF 18, AAC 48kHz stereo 192k, a 10ms audio
 edge fade per part at every join, +faststart. Never overwrites an input.
+Each part's audio is cut (or padded with silence) to that part's video
+length before the join, so encoder padding past the last frame never holds
+a frame or shifts a later part's sound.
 
 After joining, reports facts about each join — it never blocks on them:
   - each part's own integrated loudness inside the joined file, and the
@@ -67,7 +70,7 @@ export async function main(argv) {
 
 async function run(outPath, partPaths, flags) {
   const durationsSec = [];
-  for (const p of partPaths) durationsSec.push(await probeDuration(p));
+  for (const p of partPaths) durationsSec.push(await partVideoSec(p));
   const { width, height, fps } = await probeVideoInfo(partPaths[0]);
 
   const filterComplex = buildJoinFilter({ count: partPaths.length, width, height, fps, durationsSec });
@@ -114,38 +117,24 @@ async function run(outPath, partPaths, flags) {
   process.stdout.write(formatReport(report, { json: !!flags.json }) + "\n");
 }
 
+/** A part's length is its video stream's length — the audio is cut or padded to it (buildJoinFilter). */
+async function partVideoSec(partPath) {
+  const { videoSec } = await probeStreamDurations(partPath);
+  return videoSec != null ? videoSec : probeDuration(partPath);
+}
+
 /** Each part's own integrated loudness measured inside the joined file
- * (not the source file) — reuses the shared measureLoudness on a small
- * per-part audio extract so the number reflects what actually shipped. */
+ * (not the source file), so the number reflects what actually shipped. */
 async function measurePartsLoudness(outPath, offsets, durationsSec, partPaths) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-join-"));
-  try {
-    const results = [];
-    for (let i = 0; i < partPaths.length; i++) {
-      const tmpWav = path.join(tmpDir, `part-${i}.wav`);
-      await ffmpeg([
-        "-ss",
-        String(offsets[i]),
-        "-t",
-        String(durationsSec[i]),
-        "-i",
-        outPath,
-        "-vn",
-        "-acodec",
-        "pcm_s16le",
-        "-ar",
-        String(SAMPLE_RATE),
-        "-ac",
-        "2",
-        tmpWav,
-      ]);
-      const { integratedLufs, truePeakDb } = await measureLoudness(tmpWav);
-      results.push({ index: i, source: partPaths[i], durationSec: durationsSec[i], integratedLufs, truePeakDb });
-    }
-    return results;
-  } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  }
+  const spans = offsets.map((startSec, i) => ({ startSec, durationSec: durationsSec[i] }));
+  const measured = await measureSpansLoudness(outPath, spans);
+  return measured.map(({ integratedLufs, truePeakDb }, i) => ({
+    index: i,
+    source: partPaths[i],
+    durationSec: durationsSec[i],
+    integratedLufs,
+    truePeakDb,
+  }));
 }
 
 /** The click check (sample-jump vs. each part's own typical maximum) and

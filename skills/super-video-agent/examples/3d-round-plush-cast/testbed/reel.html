@@ -1,0 +1,558 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>cast testbed</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="stage" width="1080" height="1920"></canvas>
+<script type="importmap">
+{ "imports": { "three": "./assets/vendor/three.module.js" } }
+</script>
+<script type="module">
+// EXAMPLE cast testbed: checks every cast GLB and the chosen CC0 scenery in the same renderer the
+// reel page uses (three.js r186 on headless SwiftShader, 0.75 render scale, readPixels copy).
+// Copy it into a reel folder: it loads assets/models/*.glb (make_cast.py writes them to
+// <out>/models), assets/scenery/quaternius/ and assets/vendor/ relative to the page.
+// One view per second of t:
+//   0 lineup front (Idle, smile)      1 lineup 3/4, signature clips + faces
+//   2 terrace: scenery test            3 pancake hero (Rest)      4 pancake at the Wobble peak
+//   5 kitchen: counter set, bear lifting a lid     6 shop front and alley     7 station and train
+//   8 bedroom: bear asleep             9 faces of the bear (all six)
+//   15–18 / 18–21 the bear snuggling in while the quilt slides up (moving): cover mask off / on.
+//   window.__reel.overlap(t) reports quilt/part overlaps for scripts/overlap.mjs.
+// It also needs cover/cover-mask.js copied next to it (<reel>/cover/cover-mask.js).
+import * as THREE from "three";
+import { GLTFLoader } from "./assets/vendor/addons/loaders/GLTFLoader.js";
+import * as SkeletonUtils from "./assets/vendor/addons/utils/SkeletonUtils.js";
+import { HDRLoader } from "./assets/vendor/addons/loaders/HDRLoader.js";
+import { createCoverMask, tagBones, tagMesh, boneSelector, coverOverlap } from "./cover/cover-mask.js";
+
+const W = 1080, H = 1920, SCALE = 0.75, RW = W * SCALE, RH = H * SCALE;
+const stage = document.getElementById("stage");
+const ctx = stage.getContext("2d");
+const gl = document.createElement("canvas");
+gl.width = RW; gl.height = RH;
+const renderer = new THREE.WebGLRenderer({ canvas: gl, antialias: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1);
+renderer.setSize(RW, RH, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const loader = new GLTFLoader();
+const M = "assets/models/", Q = "assets/scenery/quaternius/";
+const files = {
+  bear: M + "bear.glb", cat: M + "cat.glb", rabbit: M + "rabbit.glb", puppy: M + "puppy.glb",
+  pancake: M + "pancake.glb", small: M + "props-small.glb", set: M + "props-set.glb", town: M + "props-town.glb",
+  tree1: Q + "CommonTree_1.gltf", tree2: Q + "CommonTree_2.gltf", tree4: Q + "CommonTree_4.gltf",
+  bush: Q + "Bush_Common.gltf", bushf: Q + "Bush_Common_Flowers.gltf", fl3: Q + "Flower_3_Group.gltf",
+  fl4: Q + "Flower_4_Group.gltf",
+};
+const G = {};
+let envTex = null, skyTex = null;
+
+// ---- helpers ------------------------------------------------------------------------
+function actor(key, clip, time, face, pos, rotY = 0, scale = 1) {
+  const g = G[key];
+  const root = SkeletonUtils.clone(g.scene);
+  root.position.set(...pos);
+  root.rotation.y = rotY;
+  root.scale.setScalar(scale);
+  root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  orderDecals(root);
+  const mixer = new THREE.AnimationMixer(root);
+  const c = THREE.AnimationClip.findByName(g.animations, clip);
+  if (!c) throw new Error(key + " has no clip " + clip);
+  const action = mixer.clipAction(c);
+  action.setLoop(THREE.LoopOnce, 1);   // setTime(clip length) holds the last pose instead of wrapping to 0
+  action.clampWhenFinished = true;
+  action.play();
+  mixer.setTime(time);
+  root.userData.mixer = mixer;
+  setFace(root, face);
+  const nc = root.getObjectByName("acc_nightcap");
+  if (nc) nc.visible = false;
+  return root;
+}
+// Alpha-BLEND decals (faces, outfit) write no depth and are sorted per object: draw each after its
+// opaque base (renderOrder) and keep them out of the depth buffer, so their order never flips.
+function orderDecals(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    if (!mats.some((m) => m.transparent)) return;
+    o.renderOrder = 1;
+    for (const m of mats) m.depthWrite = false;
+  });
+}
+function setFace(root, face) {
+  root.traverse((o) => { if (o.name && o.name.startsWith("face_")) o.visible = o.name === "face_" + face; });
+}
+function prop(file, name, pos, rotY = 0, scale = 1) {
+  const src = G[file].scene.getObjectByName(name);
+  if (!src) throw new Error("no node " + name + " in " + file);
+  const o = src.clone(true);
+  o.position.set(...pos);
+  o.rotation.set(0, rotY, 0);
+  o.scale.setScalar(scale);
+  o.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+  return o;
+}
+function scenery(key, pos, scale, rotY = 0) {
+  const o = G[key].scene.clone(true);
+  o.position.set(...pos);
+  o.scale.setScalar(scale);
+  o.rotation.y = rotY;
+  o.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+  return o;
+}
+function hold(root, socket, obj, pos = [0, 0, 0], rot = [0, 0, 0]) {
+  const s = root.getObjectByName(socket);
+  if (!s) throw new Error("no socket " + socket);
+  obj.position.set(...pos);
+  obj.rotation.set(...rot);
+  s.add(obj);
+  return obj;
+}
+// Level hold: the prop sits at the socket (or the midpoint of two sockets) but stays level in the
+// character's frame, so a phone, lid or plate does not tip with the paw. off and rot are in the
+// character's frame. A film page recomputes this every seek, after the mixer has posed the actor.
+function holdLevel(s, root, sockets, obj, off = [0, 0, 0], rot = [0, 0, 0]) {
+  s.updateMatrixWorld(true);
+  const p = new THREE.Vector3(), q = new THREE.Vector3();
+  for (const n of sockets) { root.getObjectByName(n).getWorldPosition(q); p.add(q); }
+  p.divideScalar(sockets.length);
+  const rq = root.getWorldQuaternion(new THREE.Quaternion());
+  obj.position.copy(p).add(new THREE.Vector3(...off).applyQuaternion(rq));
+  obj.quaternion.copy(rq).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(...rot)));
+  s.add(obj);
+  return obj;
+}
+const SELFIE_PHONE = [[0, 0.04, 0], [0, Math.PI, 0]];          // upright, screen toward her
+const PHOTO_PHONE = [[0, 0.0, 0.1], [0.35, Math.PI, 0]];       // both paws, held out clear of the chin, camera tipped toward the plate
+function baseScene(bg = 0xcfe7f2, sunPos = [4, 7, 5], sunCol = 0xfff1dc, sunI = 2.6) {
+  const s = new THREE.Scene();
+  s.background = skyTex || new THREE.Color(bg);
+  s.backgroundBlurriness = 0.0;
+  s.environment = envTex;
+  s.environmentIntensity = 0.75;
+  const sun = new THREE.DirectionalLight(sunCol, sunI);
+  sun.position.set(...sunPos);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  const sc = sun.shadow.camera;
+  sc.left = -6; sc.right = 6; sc.top = 6; sc.bottom = -6; sc.near = 0.5; sc.far = 30;
+  sun.shadow.bias = -0.0004;
+  sun.shadow.normalBias = 0.02;
+  s.add(sun);
+  s.add(new THREE.HemisphereLight(0xfff6e8, 0xa8c890, 0.5));
+  return s;
+}
+function ground(s, color = 0x9fcf86, r = 30) {
+  const g = new THREE.Mesh(new THREE.CircleGeometry(r, 64), new THREE.MeshStandardMaterial({ color, roughness: 1 }));
+  g.rotation.x = -Math.PI / 2;
+  g.receiveShadow = true;
+  s.add(g);
+  return g;
+}
+function cam(pos, look, fov = 32) {
+  const c = new THREE.PerspectiveCamera(fov, RW / RH, 0.05, 200);
+  c.position.set(...pos);
+  c.lookAt(...look);
+  return c;
+}
+
+// ---- views --------------------------------------------------------------------------
+const views = [];
+function lineup(threeQ) {
+  const s = baseScene();
+  s.background = new THREE.Color(0xcfe7f2);
+  ground(s, 0xbfe3a6);
+  const spec = threeQ
+    ? [["bear", "SelfieWave", 0.2, "talk"], ["cat", "Wave", 0.2, "happy"], ["rabbit", "WalkLeash", 0.3, "smile"],
+       ["puppy", "Trot", 0.1, "happy"]]
+    : [["bear", "Idle", 1.0, "smile"], ["cat", "Idle", 1.0, "smile"], ["rabbit", "Idle", 1.0, "smile"],
+       ["puppy", "Idle", 1.0, "smile"]];
+  const xs = [-1.6, -0.52, 0.56, 1.5];
+  spec.forEach(([k, clip, t, f], i) => s.add(actor(k, clip, t, f, [xs[i], 0, i === 3 ? 0.4 : 0])));
+  const c = threeQ ? cam([-4.6, 2.6, 11.5], [-0.1, 1.1, 0.2], 33) : cam([0, 2.0, 14.5], [0, 1.0, 0], 30);
+  return { s, c, label: threeQ ? "lineup 3/4 · signature clips" : "lineup front · Idle" };
+}
+
+// Painted morning sky for backgrounds: pastel blue overhead, warm cream at the horizon.
+// (The Poly Haven sky stays as the lighting environment; its grey clouds read gloomy as a backdrop.)
+function gradientSky() {
+  const cv = document.createElement("canvas");
+  cv.width = 4; cv.height = 256;
+  const g = cv.getContext("2d");
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0.0, "#8cc9ee");
+  grd.addColorStop(0.45, "#bfe3f5");
+  grd.addColorStop(0.5, "#fbe9cf");
+  grd.addColorStop(1.0, "#fbe9cf");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 4, 256);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  return t;
+}
+
+const DECK = 0.06, SEAT = DECK + 0.42, TABLE = DECK + 0.834;  // café furniture heights after scaling
+
+function terrace(restyled) {
+  const s = baseScene(0xcfe7f2, [-4, 8, 6]);
+  if (restyled) s.background = gradientSky();
+  ground(s, restyled ? 0xa9d991 : 0x9fcf86);
+  // shop at the back, deck in front of it, arranged in depth for a 9:16 frame
+  s.add(prop("town", "prop_shop", [0.3, 0, -3.2]));
+  for (let i = -1; i <= 1; i++) for (let j = 0; j < 3; j++) s.add(prop("set", "prop_deck_tile", [i * 2 + 0.3, 0, -2.2 + j * 2]));
+  s.add(actor("bear", "Wave", 0.2, "happy", [1.05, DECK, -2.7], 0));
+  s.add(prop("set", "prop_pot_topiary", [-0.5, DECK, -2.75]));
+  // table A: the cat regular photographing her pancakes; parasol standing beside it
+  s.add(prop("set", "prop_cafe_table", [-0.9, DECK, -0.6]));
+  s.add(prop("set", "prop_chair_mint", [-0.9, DECK, -1.35], 0));
+  const cat = actor("cat", "SitPhoto", 0.5, "smile", [-0.9, SEAT, -1.35], 0);
+  s.add(cat);
+  holdLevel(s, cat, ["hold_L", "hold_R"], prop("small", "prop_phone_cat", [0, 0, 0]), ...PHOTO_PHONE);
+  s.add(scenery2("pancake", [-0.8, TABLE, -0.5], 1.15));
+  s.add(prop("small", "prop_iced_latte", [-1.3, TABLE, -0.35]));
+  s.add(prop("set", "prop_parasol", [-2.0, DECK, -1.1]));
+  // table B: the rabbit regular waving; her puppy sits by the water bowl
+  s.add(prop("set", "prop_cafe_table", [0.55, DECK, 0.9]));
+  s.add(prop("set", "prop_chair_pink", [1.3, DECK, 0.9], -Math.PI / 2));
+  s.add(actor("rabbit", "SitWave", 0.3, "happy", [1.3, SEAT, 0.9], -Math.PI / 2 + 0.55));
+  s.add(scenery2("pancake", [0.5, TABLE, 0.95], 1.15));
+  s.add(actor("puppy", "Sit", 0.5, "happy", [-0.75, DECK, 1.75], 0.35));
+  s.add(prop("small", "prop_water_bowl", [-1.3, DECK, 2.0]));
+  // CC0 foliage (Quaternius): trees behind the shop, bushes at the deck sides, a flower row
+  // in front of the fence so the 9:16 foreground is not bare lawn
+  const trees = [["tree2", [-2.9, 0, -4.9], 0.62], ["tree1", [3.3, 0, -4.7], 0.58]];
+  // as shipped: the CC0 bushes (Bush_Common is autumn-red) and flower cards; after restyle: lifted trees,
+  // our round flower bunches in the same spots
+  const cc0 = [["bush", [2.5, 0, -0.9], 0.55], ["bush", [-2.3, 0, 3.8], 0.45], ["bushf", [-2.4, 0, 0.9], 0.5],
+               ["fl3", [-1.5, 0, 3.55], 0.42], ["fl4", [-0.3, 0, 3.6], 0.4], ["fl3", [0.9, 0, 3.55], 0.42],
+               ["bushf", [1.9, 0, 3.7], 0.45]];
+  for (const [k, p, sc] of restyled ? trees : trees.concat(cc0)) {
+    const o = scenery(k, p, sc);
+    if (restyled) restyleFoliage(o);
+    s.add(o);
+  }
+  if (restyled) {
+    const ours = [["pink", [-2.4, 0, 0.9], 0.3], ["butter", [-1.5, 0, 3.55], 0], ["lav", [-0.3, 0, 3.6], 1.2],
+                  ["pink", [0.9, 0, 3.55], 2.0], ["butter", [1.9, 0, 3.7], 2.8], ["lav", [-2.1, 0, 1.6], 0.8],
+                  ["pink", [2.5, 0, -0.9], 1.6], ["butter", [-2.3, 0, 3.8], 0.5]];
+    for (const [k, p, r] of ours) s.add(prop("set", "prop_flowers_" + k, p, r, 1.3));
+  }
+  s.add(prop("set", "prop_planter", [-2.25, DECK, -2.4], 0.4));
+  for (let i = 0; i < 3; i++) s.add(prop("set", "prop_fence", [-1.2 + i * 1.2, 0, 3.15]));
+  s.add(prop("set", "prop_hedge", [2.45, 0, 1.3], Math.PI / 2));
+  s.add(prop("set", "prop_string_lights", [-1.7, 2.75, -2.65], 0.0));
+  const c = cam([0.1, 3.3, 9.6], [0.1, 0.9, -0.2], 46);
+  return { s, c, label: restyled ? "terrace · after restyle" : "terrace · CC0 scenery as shipped" };
+}
+
+// Quaternius foliage restyle: the leaf cards are shaded hard and read darker and busier than the
+// soft plush cast. Their own texture drives a self-lit share (emissiveMap) — lighter and flatter,
+// same hues — and the bark goes warm and light like the cast's wood.
+function restyleFoliage(root) {
+  root.traverse((m) => {
+    if (!m.isMesh) return;
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    mats.forEach((mat, i) => {
+      const nm = mat.name || "";
+      const c = mat.clone();
+      if (/Leaves|Flowers/.test(nm)) {
+        c.emissiveMap = c.map;
+        c.emissive = new THREE.Color(1, 1, 1);
+        c.emissiveIntensity = 0.38;
+        c.roughness = 1.0;
+        c.normalMap = null;
+      } else if (/Bark/.test(nm)) {
+        c.color = new THREE.Color(0xf3d6b8);
+        c.normalMap = null;
+      }
+      if (Array.isArray(m.material)) m.material[i] = c; else m.material = c;
+    });
+  });
+}
+function scenery2(key, pos, scale) {  // skinned GLB as a static prop (first frame of Rest)
+  const root = SkeletonUtils.clone(G[key].scene);
+  root.position.set(...pos);
+  root.scale.setScalar(scale);
+  root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  return root;
+}
+
+function pancakeView(clip, t) {
+  const s = baseScene(0xf6e7d2, [2, 5, 4], 0xfff0d8, 2.8);
+  s.background = new THREE.Color(0xf4e2c8);
+  const table = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 0.1, 64),
+    new THREE.MeshStandardMaterial({ color: 0xd9a871, roughness: 0.6 }));
+  table.position.y = -0.05;
+  table.receiveShadow = true;
+  s.add(table);
+  const p = actor("pancake", clip, t, "none", [0, 0, 0]);
+  s.add(p);
+  s.add(prop("small", "prop_syrup_pitcher", [0.36, 0, -0.18], -2.2));
+  s.add(prop("small", "prop_fork", [-0.34, 0.004, 0.1], 0.6));
+  const c = cam([0.05, 0.42, 1.2], [0, 0.18, 0], 30);
+  return { s, c, label: "pancake · " + clip + " t=" + t };
+}
+
+// Every hand socket with the prop the script puts there; the leash is a tube built per frame
+// from the rabbit's hold_R to the puppy's leash_ring (a film page does the same per seek).
+function handsScene() {
+  const s = baseScene();
+  s.background = gradientSky();
+  ground(s, 0xa9d991);
+  return s;
+}
+function handsA() {
+  const s = handsScene();
+  const d1 = actor("bear", "SelfieHold", 1.0, "talk", [-0.75, 0, 0], 0.3);
+  const d3 = actor("bear", "LiftLid", 0.73, "happy", [0.75, 0, 0], -0.3);
+  s.add(d1, d3);
+  holdLevel(s, d1, ["hold_R"], prop("small", "prop_phone", [0, 0, 0]), ...SELFIE_PHONE);
+  const lid = prop("small", "prop_cloche", [0, 0, 0]);
+  const lidH = new THREE.Box3().setFromObject(lid).max.y;
+  holdLevel(s, d3, ["hold_R"], lid, [0, -lidH + 0.03, 0]);  // paw on the knob, lid hangs below
+  return { s, c: cam([0, 1.7, 9.0], [0, 1.0, 0], 30), label: "hold_R: selfie phone · lifted lid" };
+}
+function handsB() {
+  const s = handsScene();
+  const d2 = actor("bear", "ShowPlate", 1.0, "happy", [-0.75, 0, 0], 0.2);
+  s.add(prop("set", "prop_chair_mint", [0.75, 0, 0], -0.4));
+  const cat = actor("cat", "SitPhoto", 0.5, "smile", [0.75, 0.42, 0], -0.4);
+  s.add(d2, cat);
+  holdLevel(s, d2, ["hold_L"], scenery2("pancake", [0, 0, 0], 1.0), [0, 0.01, 0]);  // plate on the raised paw
+  holdLevel(s, cat, ["hold_L", "hold_R"], prop("small", "prop_phone_cat", [0, 0, 0]), ...PHOTO_PHONE);
+  return { s, c: cam([0, 1.7, 9.0], [0, 1.0, 0], 30), label: "hold_L plate · cat SitPhoto phone" };
+}
+// the leash is a tube built from the rabbit's hold_R to the puppy's leash_ring (a film page rebuilds it per seek)
+function handsC() {
+  const s = handsScene();
+  s.add(prop("set", "prop_chair_pink", [-0.9, 0, -1.0], 0.4));
+  const cat = actor("cat", "SitSip", 1.0, "blink", [-0.9, 0.42, -1.0], 0.4);
+  hold(cat, "hold_R", prop("small", "prop_iced_latte", [0, 0, 0]), [0, -0.12, 0]);  // tilts with the paw: the sip
+  // walking to +x in profile: her right paw (leash) is on the camera side, the puppy trots ahead
+  const rab = actor("rabbit", "WalkLeash", 0.3, "smile", [-0.3, 0, 0.4], Math.PI / 2);
+  const pup = actor("puppy", "Trot", 0.2, "happy", [0.95, 0, 0.75], Math.PI / 2);
+  s.add(cat, rab, pup);
+  s.updateMatrixWorld(true);
+  const a = new THREE.Vector3(), b = new THREE.Vector3();
+  rab.getObjectByName("hold_R").getWorldPosition(a);
+  pup.getObjectByName("leash_ring").getWorldPosition(b);
+  const mid = a.clone().lerp(b, 0.5); mid.y -= 0.18;
+  const leash = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([a, mid, b]), 24, 0.012, 6, false),
+    new THREE.MeshStandardMaterial({ color: 0xe0785a, roughness: 0.6 }));
+  leash.castShadow = true;
+  s.add(leash);
+  return { s, c: cam([0, 1.9, 9.0], [0, 0.9, 0.2], 30), label: "cat SitSip latte · rabbit leash → puppy" };
+}
+
+function kitchen() {
+  const s = baseScene(0xf3dcc4, [3, 6, 4], 0xffe2c0, 2.4);
+  s.background = new THREE.Color(0xf6e4cf);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), new THREE.MeshStandardMaterial({ color: 0xe8cfa8, roughness: 0.9 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; s.add(floor);
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), new THREE.MeshStandardMaterial({ color: 0xfff1dc, roughness: 0.95 }));
+  wall.position.set(0, 3, -1.4); wall.receiveShadow = true; s.add(wall);
+  s.add(prop("set", "prop_window", [-1.1, 1.3, -1.35]));
+  s.add(prop("small", "prop_wall_clock", [0.9, 2.3, -1.38]));
+  s.add(prop("set", "prop_mug_rack", [0.9, 1.7, -1.3]));
+  s.add(prop("set", "prop_espresso_machine", [1.0, 0.55, -0.9]));
+  s.add(actor("bear", "LiftLid", 0.73, "happy", [0, 0, -0.75]));
+  s.add(prop("set", "prop_counter", [0, 0, 0]));
+  s.add(prop("small", "prop_griddle", [-0.1, 0.55, 0.0]));
+  for (let i = -1; i <= 1; i++) {
+    s.add(prop("small", "prop_ring_mold", [-0.1 + i * 0.26, 0.595, 0.0]));
+    s.add(prop("small", "prop_pancake_raw", [-0.1 + i * 0.26, 0.597, 0.0]));
+    if (i !== 1) s.add(prop("small", "prop_cloche", [-0.1 + i * 0.26, 0.595, 0.0]));
+  }
+  s.add(prop("small", "prop_mixing_bowl", [-0.85, 0.55, 0.05]));
+  s.add(prop("small", "prop_whisk", [-0.72, 0.62, 0.1], 0, 1));
+  s.add(prop("small", "prop_egg_carton", [0.75, 0.55, 0.1], 0.3));
+  const c = cam([0.1, 1.55, 4.2], [0, 0.9, -0.2], 34);
+  return { s, c, label: "kitchen · bear LiftLid" };
+}
+
+function tree(key, pos, scale) {
+  const o = scenery(key, pos, scale);
+  restyleFoliage(o);
+  return o;
+}
+
+function shopFront() {
+  const s = baseScene(0xcfe7f2, [-4, 8, 7]);
+  s.background = gradientSky();
+  ground(s, 0xa9d991);
+  s.add(prop("town", "prop_shop", [0, 0, 0]));
+  for (let j = 0; j < 4; j++) s.add(prop("town", "prop_path_cobble", [0.75, 0.0, 1.2 + j * 2]));
+  s.add(prop("town", "prop_house_peach", [-5.2, 0, 0.2], 0.2));
+  s.add(prop("town", "prop_house_mint", [5.0, 0, 0.6], -0.3));
+  s.add(actor("bear", "FlipBoard", 0.33, "happy", [0.95, 0, 0.55], 0.2));
+  s.add(prop("set", "prop_flowers_pink", [-1.9, 0, 0.9], 0.4, 1.3));
+  s.add(prop("set", "prop_flowers_butter", [2.1, 0, 0.6], 1.1, 1.3));
+  s.add(tree("tree4", [-5.5, 0, -2.5], 0.5));
+  const c = cam([0.6, 1.6, 7.6], [0.4, 1.45, 0], 42);
+  return { s, c, label: "shop front · FlipBoard" };
+}
+
+// town pieces are scaled 1.7 in the generator (TOWN_SCALE): track segments are 6.8 m, rail top 0.17
+function station() {
+  const s = baseScene(0xcfe7f2, [-4, 9, 5]);
+  s.background = gradientSky();
+  ground(s, 0xa9d991, 60);
+  s.add(prop("town", "prop_station", [-1.0, 0, -0.6]));
+  for (let i = -2; i <= 2; i++) s.add(prop("town", "prop_track", [i * 6.8, 0, 2.6]));
+  s.add(prop("town", "prop_train", [0.2, 0.17, 2.6]));
+  for (let j = 0; j < 6; j++) s.add(prop("town", "prop_path_cobble", [4.5, 0, -0.4 - j * 2]));
+  s.add(prop("town", "prop_house_butter", [8.6, 0, -4.2], -0.4));
+  s.add(prop("town", "prop_house_peach", [1.2, 0, -7.5], 0));
+  s.add(tree("tree2", [-5.5, 0, -3.5], 0.5));
+  s.add(tree("tree1", [10.5, 0, 0.5], 0.5));
+  s.add(actor("rabbit", "WalkLeash", 0.2, "smile", [4.5, 0, -1.4], Math.PI));
+  s.add(actor("puppy", "Trot", 0.1, "happy", [4.4, 0, -2.4], Math.PI));
+  const c = cam([-10, 15, 21], [3.0, 0.5, -2.0], 42);
+  return { s, c, label: "station · aerial" };
+}
+
+// The bear goes on the bed's sleep_spot node (on her back, head on the pillow); the quilt's one morph
+// target slides it from her chin up over her face (sleeping in), uncovering her feet.
+function bedroom(pulled) {
+  const s = baseScene(0xf6e2d6, [3, 6, 2], 0xffe6c8, 2.0);
+  s.background = new THREE.Color(0xf6e2d6);
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(12, 12), new THREE.MeshStandardMaterial({ color: 0xe8cfa8, roughness: 0.9 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; s.add(floor);
+  const wall = new THREE.Mesh(new THREE.PlaneGeometry(12, 6), new THREE.MeshStandardMaterial({ color: 0xf9e9dc, roughness: 0.95 }));
+  wall.position.set(0, 3, -1.75); wall.receiveShadow = true; s.add(wall);
+  s.add(prop("set", "prop_curtain_window", [1.35, 1.1, -1.7]));
+  const bed = prop("set", "prop_bed", [0, 0, 0]);
+  s.add(bed);
+  const d = pulled ? actor("bear", "SleepSnuggle", 0.7, "sleep", [0, 0, 0]) : actor("bear", "Sleep", 1.5, "sleep", [0, 0, 0]);
+  d.getObjectByName("acc_nightcap").visible = true;
+  bed.getObjectByName("sleep_spot").add(d);
+  bed.getObjectByName("prop_bed_quilt").traverse((o) => { if (o.morphTargetInfluences) o.morphTargetInfluences[0] = pulled ? 1 : 0; });
+  s.add(prop("small", "prop_alarm_clock", [-1.45, 0.0, 0.1], 0.4));
+  const c = cam([1.3, 3.3, 4.6], [0, 0.6, -0.2], 40);
+  return { s, c, label: pulled ? "bedroom · SleepSnuggle + quilt up" : "bedroom · Sleep" };
+}
+
+// The same bed in motion: SleepSnuggle plays while the quilt's "up" morph follows it (slowed 2×
+// so the slide is visible frame by frame). The cover mask hides the parts tagged as staying under
+// the quilt inside the quilt's footprint. Tags are chosen per shot: in this pose the paws rest
+// on the belly under the quilt, so the arms are tagged; only the head (and its face and cap)
+// comes out. overlap.mjs counts the tagged parts only: the head above the quilt is meant to show.
+const SNUG = 0.70, SNUG_FROM = 0.5, SNUG_SLOW = 2.0, MOTION_DUR = 3.0;
+const UNDER_QUILT = {
+  legs: ["thighL", "thighR", "shinL", "shinR", "footL", "footR"],
+  torso: ["spine", "chest", "tail1", "tail2"],
+  arms: ["shoulderL", "shoulderR", "upper_armL", "upper_armR", "forearmL", "forearmR", "handL", "handR"],
+};
+function bedroomMotion(maskOn) {
+  const v = bedroom(false);
+  const s = v.s;
+  const bed = s.getObjectByName("sleep_spot").parent;
+  s.getObjectByName("sleep_spot").clear();
+  const d = actor("bear", "SleepSnuggle", 0, "sleep", [0, 0, 0]);
+  d.getObjectByName("acc_nightcap").visible = true;
+  bed.getObjectByName("sleep_spot").add(d);
+  const quilt = bed.getObjectByName("prop_bed_quilt");
+  const mask = createCoverMask({ renderer, scene: s, cover: quilt, frame: bed, half: 1.7 });
+  mask.on = maskOn;
+  tagBones(d.getObjectByName("Body"), Object.values(UNDER_QUILT).flat(), mask);
+  tagMesh(d.getObjectByName("outfit"), mask);
+  const select = Object.fromEntries(Object.entries(UNDER_QUILT)
+    .map(([k, bones]) => [k, boneSelector(bones)]));
+  function pose(u) {
+    const k = Math.min(Math.max((u - SNUG_FROM) / (SNUG * SNUG_SLOW), 0), 1);
+    d.userData.mixer.setTime(k * SNUG);
+    quilt.traverse((o) => { if (o.morphTargetInfluences) o.morphTargetInfluences[0] = k; });
+    mask.update();
+  }
+  function overlap() {
+    return Object.entries(select).map(([k, only]) => {
+      const r = coverOverlap({ cover: quilt, frame: bed, part: d.getObjectByName("Body"), only, mask });
+      return { pair: "quilt/" + k, count: r.count, geometric: r.geometric };
+    });
+  }
+  return { s, c: v.c, dur: MOTION_DUR, pose, overlap,
+    label: "bedroom · snuggle in motion · cover mask " + (maskOn ? "on" : "off") };
+}
+
+function faces() {
+  const s = baseScene();
+  s.background = new THREE.Color(0xcfe7f2);
+  const list = ["smile", "talk", "happy", "wink", "blink", "sleep"];
+  list.forEach((f, i) => {
+    const x = (i % 2) * 1.25 - 0.62, y = -Math.floor(i / 2) * 1.35;
+    s.add(actor("bear", "Idle", 0.0, f, [x, y, 0]));
+  });
+  const c = cam([0, -0.3, 7.4], [0, -0.1, 0], 34);
+  return { s, c, label: "bear faces: smile talk / happy wink / blink sleep" };
+}
+
+function copyToStage() {
+  const glc = renderer.getContext();
+  const px = new Uint8Array(RW * RH * 4);
+  glc.readPixels(0, 0, RW, RH, glc.RGBA, glc.UNSIGNED_BYTE, px);
+  const small = document.createElement("canvas");
+  small.width = RW; small.height = RH;
+  const sctx = small.getContext("2d");
+  const img = sctx.createImageData(RW, RH);
+  const row = RW * 4;
+  for (let y = 0; y < RH; y++) img.data.set(px.subarray((RH - 1 - y) * row, (RH - y) * row), y * row);
+  sctx.putImageData(img, 0, 0);
+  ctx.drawImage(small, 0, 0, RW, RH, 0, 0, W, H);
+}
+
+async function load() {
+  const entries = await Promise.all(Object.entries(files).map(async ([k, u]) => [k, await loader.loadAsync(u)]));
+  for (const [k, g] of entries) G[k] = g;
+  const hdr = await new HDRLoader().loadAsync("assets/scenery/hdri/kloppenheim_03_puresky_2k.hdr");
+  hdr.mapping = THREE.EquirectangularReflectionMapping;
+  const pm = new THREE.PMREMGenerator(renderer);
+  envTex = pm.fromEquirectangular(hdr).texture;
+  skyTex = hdr;
+  views.push(lineup(false), lineup(true), terrace(false), pancakeView("Rest", 0), pancakeView("Wobble", 0.12),
+    kitchen(), shopFront(), station(), bedroom(false), faces(), terrace(true), handsA(), bedroom(true),
+    handsB(), handsC(), bedroomMotion(false), bedroomMotion(true));
+  let start = 0;
+  for (const v of views) { v.start = start; start += v.dur || 1; }
+}
+
+// The view at t, posed for its local time when it moves.
+function viewAt(t) {
+  let v = views[0];
+  for (const w of views) if (t >= w.start) v = w;
+  if (v.pose) v.pose(t - v.start);
+  return v;
+}
+
+function seek(t) {
+  const v = viewAt(t);
+  renderer.render(v.s, v.c);
+  copyToStage();
+  ctx.font = "bold 34px sans-serif";
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, W, 60);
+  ctx.fillStyle = "#fff";
+  ctx.fillText(v.label, 24, 42);
+}
+
+const ready = load();
+window.__reel = {
+  width: W, height: H, fps: 30, ready, seek,
+  get duration() { const v = views[views.length - 1]; return v ? v.start + (v.dur || 1) : 0; },
+  get shots() { return []; }, issues() { return []; },
+  // scripts/overlap.mjs: [{pair, count}] for the view at t ([] where nothing is covered)
+  overlap(t) { const v = viewAt(t); return v.overlap ? v.overlap() : []; },
+};
+</script>
+</body>
+</html>

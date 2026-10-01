@@ -15,6 +15,19 @@ English spelling does not mark stress, and some spellings stand for two differen
 
 Silent letters and "the" before a vowel ("thee apple") need nothing; the voice handles them.
 
+## Invented names and homophones
+
+- **An invented name close to a famous one is read, and heard, as the famous one.** A made-up
+  shop, product or character name a vowel away from a well-known name drifts to the well-known
+  vowel. Respell it in `say` by sound, away from the famous name, and list the line as a point
+  for the owner to listen to; a respelling can hold on some takes and not on others.
+- **STT cannot separate homophones.** `won` (the currency) and `one`, `four` and `for`, `eight`
+  and `ate` come back as the same text, so a clean STT check does not prove which one the voice
+  meant, and an invented name heard as a common word is not proof of a misread either
+  (`references/voice.md` "Did the voice say the line?"). List such lines for the owner to
+  listen to; where the meaning hangs on the word, rephrase within what the source says so it
+  cannot be taken the other way.
+
 ## Numbers
 
 | Written | Say | Why |

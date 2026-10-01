@@ -6,15 +6,24 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { reelPaths, writeJson, loadTimings } from "./lib/reeldir.mjs";
+import { reelPaths, writeJson, loadTimings, readJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
-import { probeDuration } from "./lib/ffmpeg.mjs";
+import { probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { excludeEndHold } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
+import { captionLayerAliases, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
 import { markOnsetOffset } from "./lib/sync-marks.mjs";
+import { extractGrayFrames, analyzeMotion } from "./lib/frame-diff.mjs";
+import { loudnessSpread } from "./lib/join-report.mjs";
+import {
+  probeStreamDurations,
+  partSpans,
+  measureSpansLoudness,
+  detectBlackRuns,
+} from "./lib/join-report-media.mjs";
 import {
   measureLoudness,
   decodeMonoPcm,
@@ -22,7 +31,8 @@ import {
 } from "./lib/audio-analysis.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
-       review.mjs <reel-dir> --scan [stepSec]
+       review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
+       review.mjs --file <video.mp4> [--parts t1,t2,...] [--json] [--out <report.json>]
 
 Reviews a rendered reel: builds a contact sheet (one frame per shot's
 readAt, with timestamps), scans for dead air, compares audio/video
@@ -37,6 +47,26 @@ duration, and collects layout issues(). Writes
         runs with their times — catches a problem the normal one-frame-
         per-shot Layout check misses (qa.md "What the tools cannot see").
         Writes <reel-dir>/out/review-scan.json.
+--layer captions
+        with --scan: loads reel.html?layer=captions&dub=<code>, where the
+        page draws only its overlays (captions, labels) and skips the
+        scene, so every frame can be scanned quickly. Default step is one
+        frame (1/fps). <code> is --dub, or plan.json meta.lang when --dub
+        is not given. For the base language (plan.json meta.lang) a
+        missing dub/<code>/timings.placed.json is served from
+        voice/timings.json and a missing dub/<code>/plan.json from
+        plan.json; nothing is written into the reel.
+        Writes <reel-dir>/out/review-scan-captions-<code>.json.
+--file  reviews one finished video with no page (for example a joined
+        upload file): video and audio stream lengths and their delta,
+        integrated loudness of the whole file and of each part, picture
+        dead air (runs of unchanged frames), audio silence after the
+        first sound, and black-picture runs.
+--parts part boundaries in seconds inside --file (e.g. the join times
+        join.mjs printed); loudness is reported per part and the spread
+        across parts.
+--json  with --file, print the report as JSON.
+--out   with --file, also write the JSON report to this path.
 `;
 
 const AV_DELTA_MS_THRESHOLD = 50;
@@ -50,8 +80,12 @@ const DENSE_SCAN_STEP_SEC_DEFAULT = 0.1;
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
-  if (flags.help || flags.h || positional.length === 0) {
+  if (flags.help || flags.h || (positional.length === 0 && typeof flags.file !== "string")) {
     printHelpAndExit(HELP, flags.help || flags.h ? 0 : 1);
+    return;
+  }
+  if (typeof flags.file === "string") {
+    await runFileReview(flags);
     return;
   }
   const dir = abs(positional[0]);
@@ -63,7 +97,15 @@ export async function main(argv) {
 
   try {
     if (flags.scan) {
-      const stepSec = typeof flags.scan === "string" ? parseFloat(flags.scan) : DENSE_SCAN_STEP_SEC_DEFAULT;
+      const stepFlag = typeof flags.scan === "string" ? parseFloat(flags.scan) : undefined;
+      if (flags.layer !== undefined) {
+        if (flags.layer !== "captions") throw new Error(`--layer supports only "captions", got ${JSON.stringify(flags.layer)}`);
+        const report = await scanCaptionLayer({ dir, paths, stepSec: stepFlag, dub: typeof flags.dub === "string" ? flags.dub : undefined });
+        writeJson(path.join(paths.outDir, `review-scan-captions-${report.dub}.json`), report);
+        printScanSummary(report);
+        return;
+      }
+      const stepSec = stepFlag !== undefined ? stepFlag : DENSE_SCAN_STEP_SEC_DEFAULT;
       const report = await scanLayoutDense({ dir, paths, stepSec });
       writeJson(path.join(paths.outDir, "review-scan.json"), report);
       printScanSummary(report);
@@ -102,17 +144,160 @@ export async function scanLayoutDense({ dir, paths, stepSec }) {
   }
 }
 
+/**
+ * --scan --layer captions: the same dense scan on the page's overlay-only
+ * layer (?layer=captions&dub=<code>), one frame per step by default.
+ */
+export async function scanCaptionLayer({ dir, paths, stepSec, dub }) {
+  const baseCode = readBaseLang(paths);
+  const code = dub || baseCode;
+  if (!code) throw new Error("--layer captions needs --dub <code> (plan.json has no meta.lang to use as the base language)");
+  const aliases = captionLayerAliases(dir, { code, baseCode });
+  const placed = path.join(dir, "dub", code, "timings.placed.json");
+  if (!aliases[`/dub/${code}/timings.placed.json`] && !fs.existsSync(placed)) {
+    throw new Error(`no ${placed} — run dub.mjs --lang ${code} first (only the base language falls back to voice/timings.json)`);
+  }
+  const server = await serveDirWithAliases(dir, aliases);
+  let session;
+  try {
+    session = await openReel(`${server.url}reel.html?layer=captions&dub=${encodeURIComponent(code)}`, {});
+    const { duration, fps, layers } = session.meta;
+    const step = stepSec !== undefined ? stepSec : 1 / fps;
+    const { times, issuesByTime } = await scanIssuesBySeek(session.page, { duration, stepSec: step });
+    const runs = groupIssueRuns(times, issuesByTime);
+    const layerDeclared = (layers || []).includes("captions");
+    return {
+      reelDir: dir,
+      layer: "captions",
+      dub: code,
+      baseLang: baseCode,
+      servedInPlace: Object.fromEntries(Object.entries(aliases).map(([u, f]) => [u, path.relative(dir, f)])),
+      layerDeclared,
+      stepSec: step,
+      duration,
+      sampleCount: times.length,
+      totalIssues: issuesByTime.reduce((n, arr) => n + arr.length, 0),
+      runs,
+      pageErrors: session.errors.slice(),
+      note: layerDeclared
+        ? "scanned the page's caption layer only (the scene is not drawn in this mode)."
+        : 'reel.html does not declare "captions" in __reel.layers — it may have drawn its full scene, so this scan covered the whole picture.',
+    };
+  } finally {
+    if (session) await session.close();
+    await server.close();
+  }
+}
+
+/** plan.json meta.lang, or null when the plan has none. */
+function readBaseLang(paths) {
+  if (!fs.existsSync(paths.planJson)) return null;
+  const plan = readJson(paths.planJson);
+  return (plan.meta && plan.meta.lang) || null;
+}
+
 function printScanSummary(report) {
+  const title = report.layer ? `caption-layer scan (dub=${report.dub})` : "dense layout scan";
   const lines = [
-    `dense layout scan: ${report.reelDir}`,
-    `step: ${report.stepSec}s over ${report.duration.toFixed(2)}s (${report.sampleCount} samples)`,
+    `${title}: ${report.reelDir}`,
+    `step: ${report.stepSec.toFixed(4)}s over ${report.duration.toFixed(2)}s (${report.sampleCount} samples)`,
     `issues: ${report.totalIssues} sample-hit(s) in ${report.runs.length} run(s)`,
   ];
+  for (const [u, f] of Object.entries(report.servedInPlace || {})) lines.push(`served ${u} from ${f}`);
   for (const r of report.runs) {
-    lines.push(`  ${r.startSec.toFixed(2)}s-${r.endSec.toFixed(2)}s (${r.sampleCount} sample(s), types: ${r.types.join(", ")})`);
+    const texts = r.texts && r.texts.length ? `, text: ${r.texts.map((t) => JSON.stringify(t)).join(", ")}` : "";
+    lines.push(`  ${r.startSec.toFixed(2)}s-${r.endSec.toFixed(2)}s (${r.sampleCount} sample(s), types: ${r.types.join(", ")}${texts})`);
   }
   if (report.runs.length === 0) lines.push("no layout issues found across the scan");
+  if (report.layer) lines.push(report.note);
   process.stdout.write(lines.join("\n") + "\n");
+}
+
+async function runFileReview(flags) {
+  const file = abs(flags.file);
+  if (!fs.existsSync(file)) {
+    fail(`no such file: ${file}`);
+    return;
+  }
+  try {
+    const cuts = typeof flags.parts === "string" ? parseParts(flags.parts) : [];
+    const report = await reviewFile({ file, cuts });
+    if (typeof flags.out === "string") writeJson(abs(flags.out), report);
+    process.stdout.write((flags.json ? JSON.stringify(report, null, 2) : formatFileReport(report)) + "\n");
+  } catch (e) {
+    fail(e.message);
+  }
+}
+
+/** "8.03,41.5" -> [8.03, 41.5]; rejects anything that is not an ascending list of numbers. */
+export function parseParts(text) {
+  const cuts = text.split(",").map((s) => parseFloat(s.trim()));
+  if (cuts.some((c) => !Number.isFinite(c) || c <= 0)) throw new Error(`--parts expects positive seconds, got "${text}"`);
+  for (let i = 1; i < cuts.length; i++) {
+    if (cuts[i] <= cuts[i - 1]) throw new Error(`--parts must be ascending, got "${text}"`);
+  }
+  return cuts;
+}
+
+/**
+ * --file: facts about one finished video, no page. Every number is
+ * reported; nothing here decides whether the video is good.
+ * @param {{file:string, cuts:number[]}} args
+ */
+export async function reviewFile({ file, cuts }) {
+  const streams = await probeStreamDurations(file);
+  const totalSec = streams.videoSec != null ? streams.videoSec : await probeDuration(file);
+  const avDeltaMs =
+    streams.videoSec != null && streams.audioSec != null ? (streams.audioSec - streams.videoSec) * 1000 : null;
+
+  const whole = await measureLoudness(file);
+  const spans = partSpans(cuts, totalSec);
+  const partLoudness = cuts.length ? await measureSpansLoudness(file, spans) : [];
+  const parts = partLoudness.map((l, i) => ({ ...spans[i], ...l }));
+
+  const { fps } = await probeVideoInfo(file);
+  const { frames } = await extractGrayFrames(file, fps, { width: 64 });
+  const { deadAirRuns } = analyzeMotion(frames, fps);
+
+  const pcm = streams.audioSec != null ? await decodeMonoPcm(file, AUDIO_SAMPLE_RATE) : new Float32Array(0);
+  const silence = longestSilenceAfterFirstSound(pcm, AUDIO_SAMPLE_RATE, { thresholdDb: -50 });
+  const blackRuns = await detectBlackRuns(file, { minSec: 1 / fps });
+
+  return {
+    file,
+    fps,
+    streams: { videoSec: streams.videoSec, audioSec: streams.audioSec, audioMinusVideoMs: avDeltaMs },
+    loudness: {
+      whole,
+      parts,
+      spread: parts.length ? loudnessSpread(parts.map((p) => p.integratedLufs)) : null,
+    },
+    deadAir: {
+      runs: deadAirRuns,
+      note: "runs of >=0.8 s where under 0.2 % of 64-px greyscale pixels change between frames; an intended hold (end card) is reported too",
+    },
+    silence: { ...silence, thresholdDb: -50 },
+    black: { runs: blackRuns },
+  };
+}
+
+function formatFileReport(r) {
+  const f = (v, d = 3) => (v == null ? "n/a" : v.toFixed(d));
+  const lines = [
+    `file: ${r.file}`,
+    `streams: video=${f(r.streams.videoSec)}s audio=${f(r.streams.audioSec)}s audio-video=${f(r.streams.audioMinusVideoMs, 1)}ms`,
+    `loudness (whole): I=${f(r.loudness.whole.integratedLufs, 1)} LUFS truePeak=${f(r.loudness.whole.truePeakDb, 1)} dBFS`,
+  ];
+  for (const p of r.loudness.parts) {
+    lines.push(`  part ${p.index} ${f(p.startSec, 2)}s +${f(p.durationSec, 2)}s: I=${f(p.integratedLufs, 1)} LUFS truePeak=${f(p.truePeakDb, 1)} dBFS`);
+  }
+  if (r.loudness.spread && r.loudness.spread.spreadLu != null) {
+    lines.push(`  spread across parts: ${f(r.loudness.spread.spreadLu, 2)} LU${r.loudness.spread.warn ? " (over 1 LU)" : ""}`);
+  }
+  lines.push(`picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs.map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s`).join(",")}`);
+  lines.push(`audio: longest silence after first sound ${f(r.silence.longestSilenceSec)}s (first sound at ${f(r.silence.firstSoundSec)}s)`);
+  lines.push(`black picture: ${r.black.runs.length} run(s)${r.black.runs.map((x) => ` ${f(x.startSec, 2)}-${f(x.endSec, 2)}s`).join(",")}`);
+  return lines.join("\n");
 }
 
 export async function reviewReel({ dir, paths, mp4Flag }) {
