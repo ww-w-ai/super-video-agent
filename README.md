@@ -489,4 +489,4 @@ given a premise and room to work. Thank you to their makers.
 
 Runtime dependencies and their licenses are listed in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
 
-Built by [DubDubDub Corp.](https://ww-w.ai) · Licensed under [Apache-2.0](LICENSE).
+Built by [DubDubDub Corp.](https://ww-w.ai) · [Super Video Agent License 1.0](LICENSE): use and modify it to make your own videos, commercial ones included. Reselling it, bundling it into paid courses or products, hosting it as a service, and redistributing it are not allowed. Versions 1.3.3 and earlier remain under Apache-2.0.

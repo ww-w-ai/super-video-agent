@@ -472,4 +472,4 @@ Super Video Agent는 아래 Reddit 게시물들에서 출발했습니다. Claude
 
 런타임 의존성과 각 라이선스는 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)에 정리되어 있습니다.
 
-[DubDubDub Corp.](https://ww-w.ai)가 만들었습니다 · [Apache-2.0](LICENSE) 라이선스.
+[DubDubDub Corp.](https://ww-w.ai)가 만들었습니다 · [Super Video Agent License 1.0](LICENSE): 내 영상을 만드는 데는 상업용을 포함해 자유롭게 쓰고 고칠 수 있습니다. 스킬을 되팔기, 유료 강의·상품에 끼워 팔기, 호스팅 서비스로 제공하기, 재배포하기는 허용하지 않습니다. 1.3.3 이하 버전은 Apache-2.0으로 남습니다.
