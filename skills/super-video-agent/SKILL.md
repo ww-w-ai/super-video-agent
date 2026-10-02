@@ -91,9 +91,7 @@ use, adapt or ignore; none of it is a template.
    write `sound-cards.json` → `sfx-cards.mjs measure`, `judge`, `report` (`references/sound.md`
    "Sound cards"); redesign any sound scoring fit < 8, re-measure, re-judge, up to 3 rounds
 5. Final render; report numbers, what you looked at, what you did not check, and a few
-   timestamps for the owner to listen to; end the report by telling the user that platforms
-   such as YouTube ask uploaders to mark realistic AI-generated or altered content (a synthetic
-   voice, a generated person or place) when they upload
+   timestamps for the owner to listen to
 ```
 
 **Skill defects.** Do not edit the skill's own files; work around a defect inside the reel. List
