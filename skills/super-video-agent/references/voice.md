@@ -10,6 +10,7 @@ if the user supplied recordings                    → file        (voice/in/<li
 elif local Qwen3-TTS found and a reference voice    → qwen3       (local clone, Apache-2.0, commercial OK)
 elif FISH_AUDIO_API_KEY (or FISH_API_KEY) is set    → fish        (hosted; cloned or library voice)
 elif ELEVENLABS_API_KEY is set                      → elevenlabs  (hosted; native word timestamps)
+elif TYPECAST_API_KEY is set                        → typecast    (hosted; native word timestamps)
 elif local MeloTTS found                            → melotts     (local, MIT, one Korean speaker, fast)
 else                                                → stop and list what to set up
 ```
@@ -26,6 +27,7 @@ understand the voice" is a top public complaint).
 | `melotts` | `SVA_MELO_PYTHON` | MIT | speech-to-text |
 | `fish` | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | per Fish Audio plan | speech-to-text |
 | `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | per ElevenLabs plan | engine alignment |
+| `typecast` | `TYPECAST_API_KEY`, `TYPECAST_VOICE_ID` (`tc_…`) | per Typecast plan | engine word times |
 | `say` | macOS only; `SAY_VOICE` (default `Yuna`); runs only with `--provider say` | draft use | speech-to-text |
 | `file` / `none` | — | user's own | speech-to-text |
 
@@ -34,10 +36,25 @@ Hosted models (`meta.voice.model`):
 | Provider | Default | Other models | Cost |
 |---|---|---|---|
 | `fish` | `s2.1-pro-free` | `s2.1-pro` (its paid twin; set it once the free model ends), `s2-pro`, `s1` | billed per UTF-8 byte of input ($15 per million; Korean is 3 bytes a character). The default `s2.1-pro-free` is the same model at no cost while Fish Audio offers it (announced through 2026-11-30); its requests may be used to train their models. A private cloned voice can be created with an API key alone (POST /model); Fish's web app needs a paid plan for one |
-| `elevenlabs` | `eleven_multilingual_v2` | `eleven_v3`, `eleven_v4`, `eleven_flash_v2_5` | billed per character; instant cloning and commercial use from the Starter plan. A restricted API key needs the text-to-speech and voice permissions |
+| `elevenlabs` | `eleven_multilingual_v2` | `eleven_v3`, `eleven_v4`, `eleven_flash_v2_5` | billed per character, tags included. Library voices work through the API only on a paid plan. A restricted API key needs the text-to-speech and voice permissions |
+| `typecast` | `ssfm-v30` | `ssfm-v21` (untested) | billed per character |
 
-Neither provider documents a per-request minimum, so one request per line costs the same as one
-long request, and keeps each line regenerable on its own.
+No provider documents a per-request minimum. Fish and Typecast take one request per line.
+
+**ElevenLabs: one request, cut per line.** `voice.mjs` sends every line of one voice in one
+request (several when the script runs past 2,500 characters) and cuts it into one clip per line,
+midway through the silence between one line's last spoken character and the next line's first.
+The voice keeps one read across the film. On eleven_v3/v4 the request ends in a `[pause]` tag:
+without it, eleven_v3 stopped a Korean line mid-sound at the end of a request in 9 of 18 takes;
+with it, 0 of 25. A single line (`--lines` with one id, a take, a retry) is sent as it is, so
+listen to it and re-make it if its end is cut; `voice.mjs` flags such a line `TAIL`. Every clip
+ends at its last sound plus 0.3 s of silence; a short click after a quiet gap at the very end is
+cut as noise.
+
+**Typecast: emotion per line.** Typecast reads no inline tags, so marks are dropped from the text.
+A line ending in `?` or `!` gets the `toneup` preset (the end rises), every other line `normal`.
+`meta.voice.emotion` (`normal` `happy` `sad` `angry` `whisper` `toneup` `tonedown`) sets one preset
+for the whole voice, and `meta.voice.emotionIntensity` (0–2, default 1) its strength.
 
 For a film that will be public, record in `FILM.md` the provider, model and voice used and what
 their terms say about public and commercial use of the output — a free tier may use requests for
@@ -59,14 +76,20 @@ any. The same plan works on every engine.
 
 | Mark | Fish Audio S2 | ElevenLabs v3/v4 |
 |---|---|---|
-| `{pause}` / `{long-pause}` | `[break]` / `[long-break]` | `[pauses]` / `[pauses]` |
-| `{emphasis}` | `[emphasis]` | dropped |
+| `{pause}` / `{long-pause}` | `[break]` / `[long-break]` | `[pause]` / `[long pause]` |
+| `{emphasis}` | `[emphasis]` | dropped (ElevenLabs stresses CAPITALISED words; no effect in scripts without case) |
 | `{whisper}` | `[whispering]` | `[whispers]` |
-| `{soft}` / `{hurry}` / `{shout}` | `[soft tone]` / `[in a hurry tone]` / `[shouting]` | dropped |
+| `{soft}` / `{hurry}` / `{shout}` | `[soft tone]` / `[in a hurry tone]` / `[shouting]` | `[softly]` / `[rushed]` / `[shouts]` |
 | `{laugh}` / `{chuckle}` | `[laughing]` / `[chuckling]` | `[laughs]` / `[laughs]` |
 | `{sigh}` / `{gasp}` | `[sighing]` / `[gasping]` | `[sighs]` / `[gasps]` |
-| `{clear-throat}` | `[clear throat]` | dropped |
+| `{clear-throat}` | `[clear throat]` | `[clears throat]` |
 | an emotion: `{confident}` `{determined}` `{excited}` `{calm}` `{proud}` `{hopeful}` `{happy}` `{sad}` `{nervous}` `{curious}` `{surprised}` `{grateful}` `{serious}` `{warm}` `{sarcastic}` `{annoyed}` | the same word in brackets | the same word in brackets |
+
+Both engines take tags as free-form English descriptions, not a fixed list: a tag in one
+model's own words (`[happily]`, `[drawn out]`) works too, and tags stack (`[happily][shouts]`).
+Write tags in English whatever language the line is in; Fish documents its tags for all its
+languages, and neither engine documents tags written in another language. ElevenLabs bills a
+tag's characters like spoken text (measured: ` [pause]` cost 8 characters).
 
 A mark outside this list is dropped everywhere, and `voice.mjs` names it. A square-bracket tag
 in one model's own words (`[whispers sweetly]` for Fish S2) passes only to an engine that reads

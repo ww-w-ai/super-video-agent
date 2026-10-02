@@ -12,8 +12,14 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"]
+          "enum": ["say", "fish", "elevenlabs", "typecast", "file", "none", "qwen3", "melotts", "fishspeech"]
         },
+        "emotion": {
+          "type": "string",
+          "enum": ["normal", "happy", "sad", "angry", "whisper", "toneup", "tonedown"],
+          "description": "typecast: emotion preset for the whole voice. Unset: a line ending in ? or ! gets toneup, every other line normal."
+        },
+        "emotionIntensity": { "type": "number", "minimum": 0, "maximum": 2, "description": "typecast: emotion_intensity (default 1)." },
         "voiceId": { "type": "string" },
         "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.1." },
         "model": {

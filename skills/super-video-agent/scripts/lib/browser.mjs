@@ -78,6 +78,7 @@ export function stubSeconds(value, timingsPath, exists) {
  * @param {{width?: number, height?: number, stubSec?: number|null, warm?: boolean, readyTimeoutMs?: number}} [opts]
  *   stubSec: serve stubTimings(stubSec) as voice/timings.json.
  *   warm: false skips the per-shot warm-up seeks (verify.mjs's cold probe).
+   picture: {lang, strings}, set as globalThis.__svaPicture before the page runs.
  */
 export async function openReel(url, opts = {}) {
   const chromium = await getChromium();
@@ -106,6 +107,12 @@ export async function openReel(url, opts = {}) {
     await page.route(/\/voice\/timings\.json(\?.*)?$/, (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body })
     );
+  }
+  if (opts.picture) {
+    // Before any page script: Reel.lang / Reel.pictureText() read this (reel-engine.js "picture strings").
+    await page.addInitScript((p) => {
+      globalThis.__svaPicture = p;
+    }, opts.picture);
   }
   await waitUntilReady({ page, browser, url, errors, ms: opts.readyTimeoutMs || readyTimeoutMs() });
   const meta = await page.evaluate(() => {

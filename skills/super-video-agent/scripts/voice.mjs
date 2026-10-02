@@ -39,7 +39,7 @@ const STT_SCRIPT = path.join(here, "voice", "py", "stt_check.py");
 // time), so re-synthesizing a flagged line for --retry-flagged is pointless.
 const DETERMINISTIC_PROVIDERS = new Set(["say", "file", "none"]);
 
-const HELP = `usage: voice.mjs <reel-dir> [--provider say|fish|elevenlabs|file|none|qwen3|melotts|fishspeech] [--lines id,id]
+const HELP = `usage: voice.mjs <reel-dir> [--provider say|fish|elevenlabs|typecast|file|none|qwen3|melotts|fishspeech] [--lines id,id]
 
 Synthesizes voice/line-<id>.wav for each plan.json line, measures each
 with ffprobe, concatenates them with meta.gapMs of silence between lines
@@ -143,7 +143,7 @@ not actually cut off.
                      the same amount, narration.wav/timings.json are rebuilt.
 `;
 
-const PROVIDERS = ["say", "fish", "elevenlabs", "file", "none", "qwen3", "melotts", "fishspeech"];
+const PROVIDERS = ["say", "fish", "elevenlabs", "typecast", "file", "none", "qwen3", "melotts", "fishspeech"];
 
 async function loadProviderModule(name) {
   try {
@@ -213,6 +213,7 @@ export async function main(argv) {
       refAudioSet: !!(plan.meta.voice && plan.meta.voice.refAudio),
       fishKeySet: !!(process.env.FISH_AUDIO_API_KEY || process.env.FISH_API_KEY),
       elevenKeySet: !!process.env.ELEVENLABS_API_KEY,
+      typecastKeySet: !!process.env.TYPECAST_API_KEY,
       melottsPythonFound: !!resolvePythonPath("SVA_MELO_PYTHON", null),
     });
     if (!choice.provider) {
@@ -500,7 +501,7 @@ export async function synthesizeAll({
     const start = offset;
     const end = start + durationSec;
 
-    const measured = providerWords(timedText, synthResult, lang);
+    const measured = providerWords(timedText, synthResult, lang, start, reused || (finishedIds && finishedIds.has(line.id)) ? 1 : tempoFactor(line, lv.voiceCfg, lv.provider));
     if (measured) providerTimed.add(line.id);
     // A line reused as-is keeps the word times measured on an earlier run.
     const carried = reused ? carriedWords(prevLine, timedText, start, stripCaptionBreaks) : null;
@@ -723,13 +724,17 @@ async function sttTranscribe(voiceDir, entries, langCode) {
 }
 
 /**
- * Caption words timed from the engine's own word times (ElevenLabs), already on
- * the narration timeline; null when the engine reports none.
+ * Caption words timed from the engine's own word times (ElevenLabs). Batch providers time them from
+ * the clip start before the line's tempo (speedUp); null when the engine reports none.
  * @returns {{words:{w:string,start:number,end:number}[], measured:number}|null}
  */
-function providerWords(timedText, synthResult, lang) {
+function providerWords(timedText, synthResult, lang, lineStart, speedUp = 1) {
   if (!synthResult.words || !synthResult.words.length) return null;
-  const aligned = alignCaptionWords(timedText, synthResult.words, { lang: sttLangCode(lang) });
+  // synth() results are already on the narration timeline; wordsRelative ones are moved onto it.
+  const speed = synthResult.wordsRelative ? speedUp : 1;
+  const offset = synthResult.wordsRelative ? lineStart : 0;
+  const words = speed === 1 ? synthResult.words : synthResult.words.map((w) => ({ ...w, start: w.start / speed, end: w.end / speed }));
+  const aligned = alignCaptionWords(timedText, words, { lang: sttLangCode(lang), offset });
   return aligned.words.length ? aligned : null;
 }
 
@@ -827,7 +832,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
       lineOut.end = lineOut.start + newDur;
       const idx = lineResults.indexOf(lineOut);
       for (let i = idx + 1; i < lineResults.length; i++) shiftLine(lineResults[i], delta);
-      const measured = providerWords(timedText, synthResult, lang);
+      const measured = providerWords(timedText, synthResult, lang, lineOut.start, tempoFactor(line, voiceCfg, provider));
       if (measured) providerTimed.add(line.id);
       else providerTimed.delete(line.id);
       lineOut.words = measured ? measured.words : wordsProportional(timedText, lineOut.start, lineOut.end);
@@ -1035,6 +1040,12 @@ export function writePickedTone(plan, lineId, mark, lineVoices, baseProvider) {
 // atempo. meta.voice.rate goes through atempo only for providers without
 // native speed control (`export const nativeRate = true`).
 const LINE_RATE_RANGE = { min: 0.5, max: 2 };
+
+/** How much faster than synthesized a line plays after its atempo (1 = unchanged). */
+function tempoFactor(line, voiceCfg, provider) {
+  const tempo = lineTempo(line, voiceCfg, provider);
+  return tempo ? tempo.factor : 1;
+}
 
 /** The atempo to apply to a line's take, or null for none. */
 export function lineTempo(line, voiceCfg, provider) {

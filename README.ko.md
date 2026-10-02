@@ -229,7 +229,7 @@ TTS 라이브러리를 써도 문제가 해결될 때가 많습니다.
   길이를 잽니다. `voice/timings.json`에 줄과 단어마다 시작 시각이 기록되고, 모든 장면이 이 시각에 맞춰
   움직입니다. 그래서 자막이 목소리보다 먼저 나가는 일이 없습니다([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs)).
 - **내 목소리로, 또는 원하는 엔진으로.** Qwen3-TTS로 5–15초짜리 녹음에서 내 목소리를 복제해 내
-  컴퓨터에서 돌립니다. API 비용이 들지 않습니다. Fish Audio, ElevenLabs, MeloTTS, 직접 녹음한 파일도
+  컴퓨터에서 돌립니다. API 비용이 들지 않습니다. Fish Audio, ElevenLabs, Typecast, MeloTTS, 직접 녹음한 파일도
   쓸 수 있습니다. Fish Audio(S2)와 ElevenLabs(v3/v4)는 읽는 문장에 `{confident}`, `{pause}` 같은
   표시도 받습니다. 표시는 모델마다 그 모델의 태그로 바뀌고, 자막에는 나오지 않습니다.
 - **줄마다 다시 들어 봅니다.** 음성을 만든 뒤 음성인식이 줄마다 받아써서 대본과 비교합니다. 잘못
@@ -350,6 +350,7 @@ NVIDIA GPU가 있는 컴퓨터라면 `SVA_QWEN3_DEVICE=cuda`로 둡니다.
 | `SVA_QWEN3_MODEL` | Qwen3-TTS 모델 이름 (기본값 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | 모든 영상에 다른 음성 모델을 쓸 때. plan의 `meta.voice.model`이 있으면 그쪽이 우선 |
 | `SVA_STT_MODEL` | faster-whisper 모델 이름(기본값 `small`) | 선택 사항 |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | 본인의 ElevenLabs 키와 보이스 | 선택적 호스팅 제공자 |
+| `TYPECAST_API_KEY`, `TYPECAST_VOICE_ID` | 본인의 Typecast API 키와 보이스(`tc_…`) | 선택적 호스팅 제공자 |
 | `FISH_AUDIO_API_KEY`(또는 `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` | 본인의 Fish Audio 키와 보이스 | 선택적 호스팅 제공자 |
 | `SAY_VOICE` | macOS `say` 목소리 이름(기본값 `Yuna`) | macOS에서 `--provider say`로 실행할 때만 |
 
@@ -369,13 +370,14 @@ NVIDIA GPU가 있는 컴퓨터라면 `SVA_QWEN3_DEVICE=cuda`로 둡니다.
 영상은 음성 모델 세 가지로 만들어 봤습니다. 기본값은 내 컴퓨터에서 도는 Qwen3-TTS입니다. 돈이 들지
 않기 때문입니다. Fish Audio와 ElevenLabs는 널리 알려진 유료 서비스로, 그 회사 서버에서 돌고 한 줄을
 몇 초 만에 돌려줍니다. `--provider`를 안 주면 `voice.mjs`가 설정된 것을 보고 Qwen3-TTS → Fish Audio →
-ElevenLabs 순서로 고르고, 무엇을 썼는지 알려 줍니다.
+ElevenLabs → Typecast 순서로 고르고, 무엇을 썼는지 알려 줍니다.
 
 | 모델 | 어디서 도나 | 비용 | 속도 | 설정 |
 |---|---|---|---|---|
 | Qwen3-TTS 1.7B (기본값) | 내 컴퓨터 | 무료 | 가장 느림 | `SVA_QWEN3_PYTHON` + 내 목소리 5~15초 녹음 |
 | Fish Audio | Fish Audio 서버 | 유료. 프로 모델은 2026-11-30까지 무료 | 한 줄에 몇 초 | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` |
 | ElevenLabs | ElevenLabs 서버 | 글자 수만큼 유료 | 한 줄에 몇 초 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` |
+| Typecast | Typecast 서버 | 글자 수만큼 유료 | 한 줄에 몇 초 | `TYPECAST_API_KEY`, `TYPECAST_VOICE_ID` |
 
 #### Qwen3-TTS (기본값, 내 컴퓨터)
 
@@ -409,12 +411,23 @@ ElevenLabs 순서로 고르고, 무엇을 썼는지 알려 줍니다.
 
 - **어떤 서비스인가.** 기본 목소리가 많고 그 자리에서 목소리를 복제할 수 있는 음성 서비스입니다. 기본 모델은
   `eleven_multilingual_v2`이고, `eleven_v3`가 감정 표현이 더 큽니다.
-- **가격.** 글자 수만큼 요금이 나갑니다. 상업적으로 쓰는 것과 그 자리에서 목소리를 복제하는 것은 Starter 요금제부터 됩니다.
+- **가격.** 오디오 태그를 포함한 글자 수만큼 요금이 나갑니다. 라이브러리 목소리는 유료 요금제에서만 API로 쓸 수 있습니다.
 - **키 권한.** 권한을 제한한 API 키는 음성 합성 권한이 있어야 합니다. 목소리 목록을 보려면
   `voices_read` 권한도 필요합니다. 이 권한이 없으면 기본 목소리 ID를 `ELEVENLABS_VOICE_ID`에 직접
   넣으세요.
 - **좋은 점.** 질문 끝을 가장 자주 올렸고(아래 표), 단어마다 언제 나오는지도 모델이 알려 줍니다. 영어 기본
   목소리 "Sarah"도 한국어를 읽습니다. 억양이 자연스러운지는 귀로 확인하지 않았습니다.
+- **영상 전체를 한 번에 읽습니다.** `voice.mjs`가 모든 줄을 한 번에 요청하고 줄별로 잘라 쓰므로, 줄마다
+  목소리 결이 바뀌지 않습니다. 한 줄씩 보냈을 때는 `eleven_v3`가 한국어 줄 끝을 18번 중 9번 잘랐고,
+  끝에 `[pause]`를 붙여 한 번에 읽혔을 때는 25번 중 0번이었습니다.
+
+#### Typecast
+
+- **어떤 서비스인가.** 캐릭터 목소리가 많은 음성 서비스입니다. 모델은 `ssfm-v30`입니다.
+- **가격.** 글자 수만큼 요금이 나갑니다.
+- **감정.** 문장 안 태그 대신 줄마다 감정 프리셋 하나를 씁니다. `?`나 `!`로 끝나는 줄은 끝을 올리는
+  `toneup`을 받고, `meta.voice.emotion`으로 모든 줄의 프리셋을 하나로 정할 수 있습니다.
+- **단어 시간.** 단어마다 언제 나오는지 모델이 알려 줍니다.
 
 #### 질문 끝 억양 — 무엇을 쟀나
 

@@ -371,6 +371,11 @@
   // draws the current line's text plainly at the centre, and applies one
   // tiny keyed boil offset so a dead-air check doesn't fail on an
   // unedited scaffold.
+  //
+  // A string drawn INTO the picture that must change per dub language (a
+  // brand, a quoted post): ctx.fillText(Reel.pictureText("brand", "Base text"), x, y).
+  // Translations: dub/<code>/plan.json meta.overlay.picture; render with
+  // render.mjs <dir> --no-captions --lang <code> (references/pipeline.md).
   function drawStub(t, line) {
     var fontPx = Math.round(HEIGHT * 0.05);
     var b = Reel.boil("stub:text", t, { amp: 1.5, rot: 0 });

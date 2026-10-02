@@ -321,6 +321,44 @@
     return _dubCode;
   }
 
+  // ---------------------------------------------------------------------
+  // picture strings — text drawn INTO the picture (not the caption layer)
+  // that changes per dub language. render.mjs --no-captions --lang <code>
+  // injects globalThis.__svaPicture = {lang, strings} before the page runs:
+  // `strings` is dub/<code>/plan.json meta.overlay.picture, `lang` is <code>
+  // (a base render injects the plan's own language and no strings). Read at
+  // call time, so a seek stays a pure function of t.
+  // pictureText(key, fallback) -> strings[key] when present, else fallback.
+  // ---------------------------------------------------------------------
+  function pictureState() {
+    var p = typeof globalThis !== "undefined" ? globalThis.__svaPicture : null;
+    return p && typeof p === "object" ? p : null;
+  }
+  function pictureTextFrom(strings, key, fallback) {
+    if (strings && typeof strings === "object" && Object.prototype.hasOwnProperty.call(strings, key)) {
+      var v = strings[key];
+      if (typeof v === "string" && v !== "") return v;
+    }
+    return fallback;
+  }
+  function pictureText(key, fallback) {
+    var p = pictureState();
+    return pictureTextFrom(p && p.strings, key, fallback);
+  }
+  function pictureLang() {
+    var p = pictureState();
+    if (p && p.lang) return p.lang;
+    return _dubCode || (_layerParamsLang || null);
+  }
+  var _layerParamsLang = null;
+  try {
+    if (typeof location !== "undefined" && location.search) {
+      _layerParamsLang = new URLSearchParams(location.search).get("lang") || null;
+    }
+  } catch (e) {
+    _layerParamsLang = null;
+  }
+
   function samePrimaryLang(a, b) {
     if (!a || !b) return false;
     return String(a).split("-")[0].toLowerCase() === String(b).split("-")[0].toLowerCase();
@@ -1050,6 +1088,11 @@
     layer,
     dubCode,
     layerFiles,
+    pictureText,
+    pictureTextFrom,
+    get lang() {
+      return pictureLang();
+    },
     safeArea,
     centeredSafeArea,
     setSafeArea,

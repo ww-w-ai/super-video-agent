@@ -239,7 +239,7 @@ for this film, up to three rounds.
   every scene is timed from it, so a caption never runs ahead of the voice
   ([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs)).
 - **Your own voice, or any engine.** Clone your voice from a 5–15 s recording with Qwen3-TTS on
-  your own computer, at no API cost. Or use Fish Audio, ElevenLabs, MeloTTS, recordings you made
+  your own computer, at no API cost. Or use Fish Audio, ElevenLabs, Typecast, MeloTTS, recordings you made
   yourself. Fish Audio (S2) and ElevenLabs (v3/v4) also take delivery marks such as `{confident}`
   or `{pause}` in a line's spoken text, translated into each model's own tags; the caption never shows them.
 - **Every line is heard back.** After the voice is made, speech-to-text listens to each line
@@ -364,6 +364,7 @@ Every variable the skill reads:
 | `SVA_QWEN3_MODEL` | a Qwen3-TTS model id (default `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | another voice model on every film; `meta.voice.model` in a plan still wins |
 | `SVA_STT_MODEL` | a faster-whisper model name (default `small`) | optional |
 | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | your ElevenLabs key and voice | optional hosted provider |
+| `TYPECAST_API_KEY`, `TYPECAST_VOICE_ID` | your Typecast API key and voice (`tc_…`) | optional hosted provider |
 | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` | your Fish Audio key and voice | optional hosted provider |
 | `SAY_VOICE` | a macOS `say` voice name (default `Yuna`) | macOS only, with `--provider say` |
 
@@ -383,13 +384,14 @@ Set up at least one voice provider above; with none, the voice step stops and li
 We made our films with three voice models. The default is Qwen3-TTS on your own computer,
 because it costs nothing to run. Fish Audio and ElevenLabs are well-known paid services that run
 on their servers; they return a line in seconds. With no `--provider`, `voice.mjs` tries Qwen3-TTS
-first, then Fish Audio, then ElevenLabs, depending on what you set up, and prints which one ran.
+first, then Fish Audio, then ElevenLabs, then Typecast, depending on what you set up, and prints which one ran.
 
 | Model | Where it runs | Cost | Speed | Set up with |
 |---|---|---|---|---|
 | Qwen3-TTS 1.7B (default) | your computer | free | slowest | `SVA_QWEN3_PYTHON` + a 5–15 s recording of your voice |
 | Fish Audio | Fish Audio servers | paid; the pro model is free until 2026-11-30 | seconds per line | `FISH_AUDIO_API_KEY`, `FISH_AUDIO_VOICE_ID` |
 | ElevenLabs | ElevenLabs servers | paid per character | seconds per line | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` |
+| Typecast | Typecast servers | paid per character | seconds per line | `TYPECAST_API_KEY`, `TYPECAST_VOICE_ID` |
 
 #### Qwen3-TTS (default, local)
 
@@ -424,11 +426,23 @@ first, then Fish Audio, then ElevenLabs, depending on what you set up, and print
 
 - **What it is.** A hosted voice service with many stock voices and instant cloning. The default
   model is `eleven_multilingual_v2`; `eleven_v3` is more expressive.
-- **Price.** Billed per character. Commercial use and instant cloning start on the Starter plan.
+- **Price.** Billed per character, audio tags included. Library voices work through the API only
+  on a paid plan.
 - **Key permissions.** A restricted API key needs the text-to-speech permission. Listing voices
   also needs `voices_read`; without it, put a stock voice id in `ELEVENLABS_VOICE_ID`.
 - **Strengths.** It raised question endings most often (below), and it returns its own word
   timings. Its English stock voice "Sarah" can read Korean; we did not judge the accent by ear.
+- **One read for the whole film.** `voice.mjs` sends every line in one request and cuts it per
+  line, so the voice does not shift between lines. Sent one line at a time, `eleven_v3` cut off
+  the end of a Korean line in 9 of 18 takes; read in one request ending in `[pause]`, 0 of 25.
+
+#### Typecast
+
+- **What it is.** A hosted voice service with many character voices. The model is `ssfm-v30`.
+- **Price.** Billed per character.
+- **Emotion.** Each line gets one emotion preset instead of inline tags. A line ending in `?` or
+  `!` gets `toneup`, which raises its end; `meta.voice.emotion` sets one preset for every line.
+- **Word timings.** It returns its own word times.
 
 #### Question endings: what we measured
 

@@ -12,7 +12,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { reelPaths, writeJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
+import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, stubSeconds, stubTimings } from "./lib/browser.mjs";
 import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid } from "./lib/ffmpeg.mjs";
@@ -24,9 +24,11 @@ import {
   decideSegmentReuse,
   unknownOnlyIds,
   validateOnly,
+  decideLangSegment,
+  neighbourIds,
 } from "./lib/segments.mjs";
 
-const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan] [--no-captions]
+const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan] [--no-captions [--lang <code>]]
                  [--stub <sec>] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
@@ -42,9 +44,12 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
 --workers N   probe/render up to N segments concurrently (separate browser
               sessions). Default 1.
 --only id,id  re-render exactly these segments regardless of their probe
-              hashes; reuse every other segment without probing. Refuses
-              (no render happens) if a segment outside --only no longer
-              matches its stored frame range.
+              hashes. The segment right before and right after each named
+              one is probed: if its frames changed it is rendered too
+              ("--only: also rendering <id> (its frames changed)"); an
+              unchanged neighbour is reused. Every other segment is reused
+              without probing. Refuses (no render happens) if a segment
+              outside --only no longer matches its stored frame range.
 --plan        print REUSE/RENDER per segment and exit without rendering.
 --no-captions loads the page with ?captions=0 (references/pipeline.md
               "Picture first"), so window.__reel.captionsOn() is false and
@@ -57,6 +62,16 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               out/picture.bed.wav, and copies the clock it was built on to
               out/picture.timings.json. Use dub.mjs to lay a language's
               caption + voice over the picture afterwards.
+--lang <code> with --no-captions: renders the picture for that dub language.
+              The page gets Reel.lang = <code> and Reel.pictureText(key,
+              fallback), which returns dub/<code>/plan.json
+              meta.overlay.picture[key] when present, else fallback (a base
+              render always returns fallback). Segments go to
+              out/segments-<code>/<final|preview>-nocap/; a segment whose
+              probe hashes equal the base segment's in out/segments/ is
+              copied from it, not rendered. Writes out/picture-<code>-<stamp>.mp4
+              + out/picture-<code>.mp4, picture-<code>.bed.wav and
+              picture-<code>.timings.json; dub.mjs --lang <code> uses them.
 --stub <sec>  for a reel with no voice/timings.json: the page is served one
               silent line of <sec> seconds (id "stub"); nothing is written to
               voice/. Use with --no-captions; out/picture.timings.json then
@@ -102,6 +117,18 @@ export async function main(argv) {
     return;
   }
   const noCaptions = !!flags["no-captions"];
+  let lang = null;
+  if (flags.lang !== undefined) {
+    if (!noCaptions) {
+      fail("--lang renders a language's picture; add --no-captions");
+      return;
+    }
+    if (!isLangCode(flags.lang)) {
+      fail(`--lang takes a language code such as en or zh-Hans (got "${flags.lang}")`);
+      return;
+    }
+    lang = flags.lang;
+  }
   if (!noCaptions && !fs.existsSync(paths.narrationWav)) {
     fail(`no voice/narration.wav in ${dir} — run voice.mjs first${flags.stub !== undefined ? " (a --stub render needs --no-captions)" : ""}`);
     return;
@@ -133,7 +160,7 @@ export async function main(argv) {
 
   const started = Date.now();
   try {
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert });
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert, lang });
     const elapsed = (Date.now() - started) / 1000;
     if (result.planOnly) {
       process.stdout.write(`--plan: ${result.decisions.length} segment(s), nothing rendered\n`);
@@ -158,8 +185,14 @@ export async function main(argv) {
  * @param {string} baseUrl serveDir()'s server.url
  * @param {boolean} noCaptions
  */
-export function pictureUrl(baseUrl, noCaptions) {
-  return noCaptions ? `${baseUrl}?captions=0` : baseUrl;
+export function pictureUrl(baseUrl, noCaptions, lang = null) {
+  if (!noCaptions) return baseUrl;
+  return lang ? `${baseUrl}?captions=0&lang=${encodeURIComponent(lang)}` : `${baseUrl}?captions=0`;
+}
+
+/** A dub language code safe to use in a file name: letters, digits, "-" (BCP 47 like zh-Hans). */
+export function isLangCode(value) {
+  return typeof value === "string" && /^[A-Za-z][A-Za-z0-9-]{0,31}$/.test(value);
 }
 
 /**
@@ -171,10 +204,58 @@ export function segmentDirName(quality, noCaptions) {
   return noCaptions ? `${quality}-nocap` : quality;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null }) {
+/**
+ * The segment cache directory: out/segments/<name>/, or out/segments-<code>/<name>/
+ * for a language picture, so the base picture's cache is never written by it.
+ */
+export function segmentDirFor(outDir, quality, noCaptions, lang = null) {
+  return path.join(outDir, lang ? `segments-${lang}` : "segments", segmentDirName(quality, noCaptions));
+}
+
+/** File-name stem of the picture outputs: "picture", or "picture-<code>" for a language picture. */
+export function pictureStem(lang = null) {
+  return lang ? `picture-${lang}` : "picture";
+}
+
+/**
+ * What the page receives before it runs (Reel.lang, Reel.pictureText): the
+ * language and, for a --lang render, dub/<code>/plan.json meta.overlay.picture.
+ * A base render gets its own plan's language and no strings.
+ * @param {{lang: string|null, basePlan: object|null, dubPlan: object|null}} args
+ * @returns {{lang: string|null, strings: Record<string,string>}}
+ */
+export function picturePayload({ lang, basePlan, dubPlan }) {
+  if (!lang) return { lang: (basePlan && basePlan.meta && basePlan.meta.lang) || null, strings: {} };
+  const overlay = dubPlan && dubPlan.meta && dubPlan.meta.overlay;
+  const strings = overlay && overlay.picture && typeof overlay.picture === "object" ? overlay.picture : {};
+  return { lang, strings };
+}
+
+function readPicturePayload(dir, lang) {
+  let basePlan = null;
+  try {
+    basePlan = loadPlan(dir);
+  } catch {
+    basePlan = null;
+  }
+  let dubPlan = null;
+  if (lang) {
+    const dubPlanPath = path.join(dir, "dub", lang, "plan.json");
+    if (!fs.existsSync(dubPlanPath)) throw new Error(`no ${dubPlanPath} — --lang needs dub/${lang}/plan.json`);
+    dubPlan = readJson(dubPlanPath);
+  }
+  const payload = picturePayload({ lang, basePlan, dubPlan });
+  if (lang && Object.keys(payload.strings).length === 0) {
+    process.stderr.write(`warning: dub/${lang}/plan.json has no meta.overlay.picture; Reel.pictureText() returns every fallback\n`);
+  }
+  return payload;
+}
+
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null, lang = null }) {
+  const picture = readPicturePayload(dir, lang);
   const server = await serveDir(dir);
-  const pageUrl = pictureUrl(server.url, noCaptions);
-  const openAt = { url: pageUrl, opts: { stubSec } }; // what every helper below opens: page URL + openReel options
+  const pageUrl = pictureUrl(server.url, noCaptions, lang);
+  const openAt = { url: pageUrl, opts: { stubSec, picture } }; // what every helper below opens: page URL + openReel options
   try {
     const meta = await probeMeta(openAt);
     const fps = meta.fps;
@@ -184,7 +265,8 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
 
     const quality = preview ? "preview" : "final";
-    const segDir = path.join(paths.outDir, "segments", segmentDirName(quality, noCaptions));
+    const segDir = segmentDirFor(paths.outDir, quality, noCaptions, lang);
+    const baseSegDir = lang ? segmentDirFor(paths.outDir, quality, noCaptions, null) : null;
     fs.mkdirSync(segDir, { recursive: true });
 
     const targetWidth = preview ? Math.round(meta.width / 2) : meta.width;
@@ -202,6 +284,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
       server: openAt,
       segments,
       segDir,
+      baseSegDir,
       fps,
       targetWidth,
       targetHeight,
@@ -210,11 +293,13 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
       coveredIds: insertPlan ? insertPlan.coveredIds : [],
     });
     for (const d of decisions) {
+      if (d.neighbour && d.action === "RENDER") process.stdout.write(`--only: also rendering ${d.segment.id} (its frames changed)\n`);
       process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
     }
 
     if (plan) return { planOnly: true, decisions };
 
+    copyBaseSegments({ decisions, baseSegDir, segDir });
     await renderNeeded({ server: openAt, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
 
     const videoOnlyPath = path.join(paths.outDir, "_video.mp4");
@@ -230,7 +315,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     }
 
     if (noCaptions) {
-      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec });
+      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, lang });
     }
 
     await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
@@ -273,16 +358,17 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
  * out/picture.timings.json so dub.mjs can lay a language's caption + voice
  * over the picture later without re-deriving the shot clock.
  */
-async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec }) {
+async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, lang = null }) {
   const frameCount = await probeFrameCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
   }
 
+  const stem = pictureStem(lang);
   const stamp = timestamp();
-  const stampedPath = path.join(paths.outDir, `picture-${stamp}.mp4`);
+  const stampedPath = path.join(paths.outDir, `${stem}-${stamp}.mp4`);
   fs.renameSync(videoOnlyPath, stampedPath);
-  const outPath = pointLatest(paths.outDir, "picture.mp4", stampedPath);
+  const outPath = pointLatest(paths.outDir, `${stem}.mp4`, stampedPath);
 
   let sfxPath;
   const sfx = await maybeRenderSfx(openAt, paths);
@@ -290,12 +376,12 @@ async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrame
   const cueInputs = await resolveSoundCues(openAt, paths.root);
 
   const durationSec = String(await probeDuration(stampedPath));
-  const bedStampedPath = path.join(paths.outDir, `picture-${stamp}.bed.wav`);
+  const bedStampedPath = path.join(paths.outDir, `${stem}-${stamp}.bed.wav`);
   await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: bedStampedPath });
   if (sfxPath) fs.rmSync(sfxPath, { force: true });
-  const bedPath = pointLatest(paths.outDir, "picture.bed.wav", bedStampedPath);
+  const bedPath = pointLatest(paths.outDir, `${stem}.bed.wav`, bedStampedPath);
 
-  const timingsPath = path.join(paths.outDir, "picture.timings.json");
+  const timingsPath = path.join(paths.outDir, `${stem}.timings.json`);
   if (stubSec) writeJson(timingsPath, stubTimings(stubSec));
   else fs.copyFileSync(paths.timingsJson, timingsPath);
 
@@ -384,9 +470,11 @@ function validateOnlyOrThrow({ segments, onlyIds, segDir }) {
 }
 
 /** One REUSE/RENDER decision per segment, probing only where needed. */
-async function decideAll({ server, segments, segDir, fps, targetWidth, targetHeight, onlyIds, workers, coveredIds = [] }) {
+async function decideAll({ server, segments, segDir, baseSegDir = null, fps, targetWidth, targetHeight, onlyIds, workers, coveredIds = [] }) {
   const results = new Array(segments.length);
   let idx = 0;
+  // --only: the segments next to a named one are probed, not forced.
+  const neighbours = new Set(onlyIds ? neighbourIds({ segments, onlyIds, skipIds: coveredIds }) : []);
 
   async function worker() {
     let session = null;
@@ -398,13 +486,15 @@ async function decideAll({ server, segments, segDir, fps, targetWidth, targetHei
           results[i] = { segment, action: "INSERT", reason: "covered by the --insert clip (not rendered)" };
           continue;
         }
-        if (onlyIds && !onlyIds.includes(segment.id)) {
+        const neighbour = neighbours.has(segment.id);
+        if (onlyIds && !onlyIds.includes(segment.id) && !neighbour) {
           results[i] = { segment, action: "REUSE", reason: "--only fast path (not probed)" };
           continue;
         }
         if (!session) session = await openReel(server.url, server.opts);
-        const forceRender = !!onlyIds; // onlyIds && onlyIds.includes(segment.id)
-        results[i] = await decideOne({ session, segment, segDir, fps, targetWidth, targetHeight, forceRender });
+        const forceRender = !!onlyIds && !neighbour; // named by --only
+        results[i] = await decideOne({ session, segment, segDir, baseSegDir, fps, targetWidth, targetHeight, forceRender });
+        if (neighbour) results[i].neighbour = true;
       }
     } finally {
       if (session) await session.close();
@@ -416,7 +506,7 @@ async function decideAll({ server, segments, segDir, fps, targetWidth, targetHei
   return results;
 }
 
-async function decideOne({ session, segment, segDir, fps, targetWidth, targetHeight, forceRender }) {
+async function decideOne({ session, segment, segDir, baseSegDir = null, fps, targetWidth, targetHeight, forceRender }) {
   const probeIdx = probeFrameIndices(segment.frameStart, segment.frameEnd);
   const probes = [];
   for (const f of probeIdx) {
@@ -432,9 +522,33 @@ async function decideOne({ session, segment, segDir, fps, targetWidth, targetHei
   }
 
   const stored = readStoredMeta(segDir, segment.id);
+  if (baseSegDir) {
+    const d = decideLangSegment({
+      storedLang: stored,
+      storedBase: readStoredMeta(baseSegDir, segment.id),
+      current,
+      langMp4Exists: fs.existsSync(mp4Path),
+      baseMp4Exists: fs.existsSync(segMp4Path(baseSegDir, segment.id)),
+    });
+    if (d.action === "REUSE") return { segment, action: "REUSE", reason: d.reason };
+    if (d.action === "COPY") {
+      return { segment, action: "COPY", reason: d.reason, current, mp4Path, jsonPath, baseMp4Path: segMp4Path(baseSegDir, segment.id) };
+    }
+    return { segment, action: "RENDER", reason: d.reason, current, mp4Path, jsonPath };
+  }
   const decision = decideSegmentReuse({ stored, current, mp4Exists: fs.existsSync(mp4Path) });
   if (decision.reuse) return { segment, action: "REUSE", reason: decision.reason };
   return { segment, action: "RENDER", reason: decision.reason, current, mp4Path, jsonPath };
+}
+
+/** A language picture takes the base segment where its probes matched (decideLangSegment's COPY). */
+function copyBaseSegments({ decisions, baseSegDir, segDir }) {
+  if (!baseSegDir) return;
+  for (const d of decisions) {
+    if (d.action !== "COPY") continue;
+    fs.copyFileSync(d.baseMp4Path, d.mp4Path);
+    writeJson(d.jsonPath, d.current);
+  }
 }
 
 async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, workers }) {

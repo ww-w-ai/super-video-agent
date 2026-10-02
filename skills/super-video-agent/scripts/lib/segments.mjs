@@ -108,6 +108,44 @@ export function decideSegmentReuse({ stored, current, mp4Exists }) {
 }
 
 /**
+ * Reuse decision for a language picture (render.mjs --no-captions --lang):
+ * the language's own stored segment first; else the base language's stored
+ * segment when its range, fps, size and probe hashes equal the current ones
+ * (the shot draws no string that changes per language), which is copied
+ * instead of rendered; else render.
+ * @param {{storedLang: object|null, storedBase: object|null, current: object, langMp4Exists: boolean, baseMp4Exists: boolean}} args
+ * @returns {{action: "REUSE"|"COPY"|"RENDER", reason: string}}
+ */
+export function decideLangSegment({ storedLang, storedBase, current, langMp4Exists, baseMp4Exists }) {
+  const own = decideSegmentReuse({ stored: storedLang, current, mp4Exists: langMp4Exists });
+  if (own.reuse) return { action: "REUSE", reason: own.reason };
+  const base = decideSegmentReuse({ stored: storedBase, current, mp4Exists: baseMp4Exists });
+  if (base.reuse) return { action: "COPY", reason: "probe hashes equal the base language's segment (copied, not rendered)" };
+  return { action: "RENDER", reason: own.reason };
+}
+
+/**
+ * With `--only`, the segments immediately before and after each named one
+ * that are not named themselves (and not in `skipIds`, e.g. covered by an
+ * --insert clip): their frames can depend on the changed state, so render.mjs
+ * probes them. In timeline order, no duplicates.
+ * @param {{segments: {id:string}[], onlyIds: string[], skipIds?: string[]}} args
+ * @returns {string[]}
+ */
+export function neighbourIds({ segments, onlyIds, skipIds = [] }) {
+  const named = new Set(onlyIds);
+  const skip = new Set(skipIds);
+  const out = new Set();
+  segments.forEach((seg, i) => {
+    if (!named.has(seg.id)) return;
+    for (const n of [segments[i - 1], segments[i + 1]]) {
+      if (n && !named.has(n.id) && !skip.has(n.id)) out.add(n.id);
+    }
+  });
+  return segments.map((s) => s.id).filter((id) => out.has(id));
+}
+
+/**
  * `--only` ids that don't correspond to any current segment (design point 4).
  * @param {{segments: {id:string}[], onlyIds: string[]}} args
  * @returns {string[]}

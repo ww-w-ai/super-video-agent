@@ -17,7 +17,7 @@ test("forEngine: Fish S2 gets its own tags", () => {
 });
 
 test("forEngine: Eleven v3/v4 get theirs, and a mark with no v3 tag is dropped", () => {
-  assert.equal(forEngine(MARKED, elevenlabs, { model: "eleven_v3" }), "[confident] 텔레칩스도 할 수 있고, [pauses] 해야 합니다.");
+  assert.equal(forEngine(MARKED, elevenlabs, { model: "eleven_v3" }), "[confident] 텔레칩스도 할 수 있고, [pause] 해야 합니다.");
   assert.equal(forEngine("{emphasis} 지금 {sigh}", elevenlabs, { model: "eleven_v4" }), "지금 [sighs]");
 });
 
@@ -62,7 +62,7 @@ test("stripTags / compareLine: marks and native tags are never counted as heard 
 });
 
 test("alignmentWithoutTags: tag characters never become caption words", () => {
-  const sent = "[excited] 안녕 [pauses] 세상";
+  const sent = "[excited] 안녕 [pause] 세상";
   const characters = [...sent];
   const starts = characters.map((_, i) => i * 0.1);
   const ends = characters.map((_, i) => i * 0.1 + 0.1);

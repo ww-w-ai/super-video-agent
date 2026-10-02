@@ -150,6 +150,11 @@ render.mjs <dir> [--preview] --only id,id   # force-render exactly these segment
                                              # no longer matches its stored frame range
 ```
 
+With `--only`, the segment right before and right after each named one is also probed (not
+forced). A neighbour whose probe hashes differ from its stored ones renders too and prints
+`--only: also rendering <id> (its frames changed)`: its last or first frames can already show the
+changed state. An unchanged neighbour stays REUSE.
+
 A segment re-renders when: its `.mp4` is missing, its frame range moved (the shot before it
 changed duration), fps or output size changed, or any of its three probe hashes changed (the
 drawn pixels changed). The joined track (picture, preview or final) is re-stamped onto the exact
@@ -207,6 +212,36 @@ The picture's own clock comes from the base language's voice — the user's lang
 as always (`voice.mjs <dir>`); other languages follow as variations over that picture; `--no-captions` loads the page with `?captions=0` so `Reel.caption()` (and
 any scene code that checks `Reel.captionsOn()`) draws nothing, and the segments go to
 `out/segments/<final|preview>-nocap/` — separate from a captioned render's, so the two never mix.
+
+### Strings drawn into the picture
+
+Captions change per language by themselves. A string drawn into the picture does not: a brand on a
+wall, a quoted post. Mark each one with `Reel.pictureText(key, fallback)` in `reel.html`:
+
+```js
+ctx.fillText(Reel.pictureText("brand", "덥덥덥 AI 뉴스"), x, y);
+```
+
+The fallback is the base language's text. A base render always draws the fallback. Put each
+language's text in `dub/<code>/plan.json` under `meta.overlay.picture`:
+
+```json
+{ "meta": { "lang": "en", "overlay": { "picture": { "brand": "DubDubDub AI News" } } } }
+```
+
+Render that language's picture, then dub it:
+
+```
+render.mjs <dir> --no-captions --lang <code>   # out/picture-<code>.mp4 + .bed.wav + .timings.json
+dub.mjs <dir> --lang <code>                    # uses out/picture-<code>.mp4 when it exists
+```
+
+The page gets `Reel.lang` (the code; the plan's own language in a base render) and the strings
+before `ready`. A key missing from `meta.overlay.picture` draws its fallback. Segments go to
+`out/segments-<code>/`, so the base picture's cache is never touched. A segment whose three probe
+hashes equal the base segment's is copied from it, so only shots that draw a changed string render.
+The probe sees three frames: a string that shows only between them is not noticed, so name such a
+shot with `--only <id>`.
 
 Each language, including the first one, lives in its own folder:
 

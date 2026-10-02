@@ -63,6 +63,9 @@ dub/<code>/spaced/picture.mp4, picture.bed.wav and picture.timings.json
 each slot's delta and factor and the old -> new length. First and last
 frames are unchanged.
 
+Picture: out/picture-<code>.mp4 (render.mjs --no-captions --lang <code>) when
+it exists, else out/picture.mp4. The output says which one it used.
+
 Writes out/final-<code>-<YYYYMMDD-HHMMSS>.mp4 + out/final-<code>.mp4.
 `;
 
@@ -91,18 +94,47 @@ export async function main(argv) {
   }
 }
 
+/**
+ * The picture files a language's final is built on: out/picture-<lang>.mp4
+ * (render.mjs --no-captions --lang <lang>) when it exists, else the base
+ * out/picture.mp4. Its bed and timings are that language's own when they
+ * exist, else the base ones (same clock).
+ * @param {string} outDir
+ * @param {string} lang
+ * @param {(p: string) => boolean} [exists]
+ * @returns {{source: "lang"|"base", pictureMp4: string, bedWav: string, timingsJson: string}}
+ */
+export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
+  const own = (name) => path.join(outDir, `picture-${lang}${name}`);
+  const base = (name) => path.join(outDir, `picture${name}`);
+  const useLang = exists(own(".mp4"));
+  const pick = (name) => (useLang && exists(own(name)) ? own(name) : base(name));
+  return {
+    source: useLang ? "lang" : "base",
+    pictureMp4: useLang ? own(".mp4") : base(".mp4"),
+    bedWav: pick(".bed.wav"),
+    timingsJson: pick(".timings.json"),
+  };
+}
+
 export async function dub({ dir, lang, minGap = null }) {
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
-  let pictureMp4 = path.join(paths.outDir, "picture.mp4");
-  let pictureBedWav = path.join(paths.outDir, "picture.bed.wav");
-  const pictureTimingsJson = path.join(paths.outDir, "picture.timings.json");
+  const picked = pickPictureFiles(paths.outDir, lang);
+  let pictureMp4 = picked.pictureMp4;
+  let pictureBedWav = picked.bedWav;
+  const pictureTimingsJson = picked.timingsJson;
   const dubTimingsPath = path.join(dubVoiceDir, "timings.json");
 
   requireFile(pictureMp4, `no ${pictureMp4} — run render.mjs ${dir} --no-captions first`);
   requireFile(pictureBedWav, `no ${pictureBedWav} — run render.mjs ${dir} --no-captions first`);
   requireFile(pictureTimingsJson, `no ${pictureTimingsJson} — run render.mjs ${dir} --no-captions first`);
+  process.stdout.write(
+    picked.source === "lang"
+      ? `picture: ${path.basename(pictureMp4)} (this language's own picture)\n`
+      : `picture: ${path.basename(pictureMp4)} (base picture; no out/picture-${lang}.mp4)\n`
+  );
   requireFile(path.join(dubDir, "plan.json"), `no ${path.join(dubDir, "plan.json")} — create dub/${lang}/plan.json with this reel's line ids, in ${lang}`);
   requireFile(dubTimingsPath, `no ${dubTimingsPath} — run voice.mjs ${dubDir} first`);
 
