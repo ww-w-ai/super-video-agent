@@ -359,7 +359,7 @@ Every variable the skill reads:
 | `SVA_QWEN3_PYTHON` | a Python where `import qwen_tts` works ([Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)) | voice cloning (default provider) |
 | `SVA_STT_PYTHON` | a Python with `faster-whisper` installed | the voice check (skipped with a notice if unset) |
 | `SVA_MELO_PYTHON` | a Python with MeloTTS | optional provider |
-| `SVA_FISH_DIR` | a folder holding `fish-speech/` (the checkout) and `.venv-tts/` (its Python) | optional (Fish-Speech's model weights are licensed for non-commercial use) |
+| `SVA_FISH_DIR` | a folder holding `fish-speech/` (the checkout) and `.venv-tts/` (its Python) | optional |
 | `SVA_QWEN3_DEVICE`, `SVA_FISH_DEVICE` | `mps` (default), `cuda` or `cpu` | non-Apple machines |
 | `SVA_QWEN3_MODEL` | a Qwen3-TTS model id (default `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | another voice model on every film; `meta.voice.model` in a plan still wins |
 | `SVA_STT_MODEL` | a faster-whisper model name (default `small`) | optional |
@@ -396,8 +396,7 @@ first, then Fish Audio, then ElevenLabs, then Typecast, depending on what you se
 #### Qwen3-TTS (default, local)
 
 - **What it is.** An open voice model from the Qwen team. It copies a voice from one short
-  recording, so the film speaks in your voice. Its weights are Apache-2.0, so commercial films
-  are fine.
+  recording, so the film speaks in your voice.
 - **What you install.** The repository holds only the code that calls it. You install the
   `qwen-tts` package yourself (see Install above), and the model downloads from Hugging Face on
   the first film: about 4.2 GB for 1.7B, about 2.3 GB for 0.6B.

@@ -3,10 +3,6 @@
 // pre-encoded reference (plan.json meta.voice.refTokens .npy +
 // meta.voice.refText) so every line shares one consistent voice.
 // Env: SVA_FISH_DIR, SVA_FISH_DEVICE.
-//
-// WEIGHTS LICENSE: openaudio-s1-mini is CC-BY-NC-SA-4.0 — non-commercial
-// only. This provider prints a warning every run; it is not a substitute
-// for checking the license fits your use.
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -36,22 +32,11 @@ function run(bin, args, opts) {
   });
 }
 
-let warnedThisRun = false;
-function warnLicenseOnce() {
-  if (warnedThisRun) return;
-  warnedThisRun = true;
-  process.stderr.write(
-    "WARNING: fishspeech provider uses openaudio-s1-mini weights, licensed CC-BY-NC-SA-4.0 " +
-      "(non-commercial). Confirm this fits your use before shipping audio synthesized with it.\n"
-  );
-}
-
 /**
  * @param {{id:string, text:string, outPath:string, reelDir:string,
  *   voiceCfg?: {refTokens?:string, refText?:string}}} args
  */
 export async function synth({ text, outPath, reelDir, voiceCfg }) {
-  warnLicenseOnce();
   const fishDir = findFishDir();
   if (!fishDir) {
     throw new Error("fishspeech provider: not configured. Set SVA_FISH_DIR to a local Fish-Speech checkout (with a .venv-tts venv).");
@@ -112,4 +97,3 @@ export async function synth({ text, outPath, reelDir, voiceCfg }) {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
   return { wavPath: outPath };
-}

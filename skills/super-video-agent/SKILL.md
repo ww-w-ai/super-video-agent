@@ -91,7 +91,9 @@ use, adapt or ignore; none of it is a template.
    write `sound-cards.json` → `sfx-cards.mjs measure`, `judge`, `report` (`references/sound.md`
    "Sound cards"); redesign any sound scoring fit < 8, re-measure, re-judge, up to 3 rounds
 5. Final render; report numbers, what you looked at, what you did not check, and a few
-   timestamps for the owner to listen to
+   timestamps for the owner to listen to; end the report by telling the user that platforms
+   such as YouTube ask uploaders to mark realistic AI-generated or altered content (a synthetic
+   voice, a generated person or place) when they upload
 ```
 
 **Skill defects.** Do not edit the skill's own files; work around a defect inside the reel. List
@@ -204,7 +206,6 @@ must not shift titles, captions or pictures left.
 ## Hard lines (these protect the owner, not the look)
 
 - Facts come from the source: no numbers, names or claims it does not contain.
-- A commercial film never uses a non-commercial voice model (`references/voice.md`).
 - A library asset marked `commercialSafe: false` goes only into a film the owner marked
   personal (`meta.distribution`) or explicitly allowed; record every used asset's license in
   `FILM.md`.

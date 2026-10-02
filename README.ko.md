@@ -345,7 +345,7 @@ NVIDIA GPU가 있는 컴퓨터라면 `SVA_QWEN3_DEVICE=cuda`로 둡니다.
 | `SVA_QWEN3_PYTHON` | `import qwen_tts`가 되는 Python ([Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)) | 음성 복제(기본 제공자) |
 | `SVA_STT_PYTHON` | `faster-whisper`가 설치된 Python | 음성 확인(설정 안 하면 안내와 함께 건너뜀) |
 | `SVA_MELO_PYTHON` | MeloTTS가 설치된 Python | 선택적 제공자 |
-| `SVA_FISH_DIR` | `fish-speech/`(체크아웃)와 `.venv-tts/`(그 Python)가 있는 폴더 | 선택 사항(Fish-Speech 모델 가중치는 비상업용 라이선스) |
+| `SVA_FISH_DIR` | `fish-speech/`(체크아웃)와 `.venv-tts/`(그 Python)가 있는 폴더 | 선택 사항 |
 | `SVA_QWEN3_DEVICE`, `SVA_FISH_DEVICE` | `mps`(기본값), `cuda` 또는 `cpu` | Apple 외 기기 |
 | `SVA_QWEN3_MODEL` | Qwen3-TTS 모델 이름 (기본값 `Qwen/Qwen3-TTS-12Hz-1.7B-Base`) | 모든 영상에 다른 음성 모델을 쓸 때. plan의 `meta.voice.model`이 있으면 그쪽이 우선 |
 | `SVA_STT_MODEL` | faster-whisper 모델 이름(기본값 `small`) | 선택 사항 |
@@ -382,7 +382,7 @@ ElevenLabs → Typecast 순서로 고르고, 무엇을 썼는지 알려 줍니�
 #### Qwen3-TTS (기본값, 내 컴퓨터)
 
 - **어떤 모델인가.** Qwen 팀이 공개한 음성 모델입니다. 짧은 녹음 하나로 목소리를 따라 하기 때문에
-  영상이 내 목소리로 말합니다. 모델 라이선스가 Apache-2.0이라 상업용 영상에 써도 됩니다.
+  영상이 내 목소리로 말합니다.
 - **직접 설치하는 것.** 저장소에는 이 모델을 부르는 코드만 들어 있습니다. `qwen-tts` 패키지는 위 설치
   안내대로 직접 설치하고, 모델은 첫 영상을 만들 때 Hugging Face에서 받습니다. 1.7B는 약 4.2GB,
   0.6B는 약 2.3GB입니다.
