@@ -1,6 +1,6 @@
 {
   "name": "super-video-agent",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "description": "Turn a PDF, essay, card news or topic into a narrated film where every frame is drawn in code: Shorts, 16:9, square or 3D. Voice first, read-out rules for any language, and after the render fix one line, one scene or one language without touching the rest.",
   "author": {
     "name": "ww-w-ai"

@@ -151,6 +151,8 @@ caption left alone on its line) without rendering the 3D picture again. A 2D fil
 the changed shots, in minutes.
 ([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs), [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs), [`scripts/render.mjs`](skills/super-video-agent/scripts/render.mjs), [`scripts/join.mjs`](skills/super-video-agent/scripts/join.mjs))
 
+For existing recordings, follow the [audio editing guide](skills/super-video-agent/guides/audio-editing.md): adjust pauses and tempo locally, then replace narration without rendering the picture again.
+
 ### 3. Any frame, any format, your own template
 
 - **Any frame size.** Four sizes come ready with one flag: 9:16 (Shorts, Reels, TikTok), 16:9

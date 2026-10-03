@@ -87,7 +87,8 @@ not actually cut off.
 --no-stt            skip the speech-to-text check entirely.
 --retry-flagged N   re-synthesize lines flagged MISHEARD/SHORT/TAIL up to N
                      more times, keeping the candidate with the lowest
-                     character error rate (default 1; skipped for
+                     character error rate (default 0; opt in only after reviewing
+                     the advisory evidence; skipped for
                      deterministic providers: say, file, none).
 --stt-only           run the STT check on the existing voice/line-*.wav
                      files without synthesizing anything; updates
@@ -265,7 +266,7 @@ export async function main(argv) {
   }
 
   const sttEnabled = !flags["no-stt"];
-  const retryFlagged = flags["retry-flagged"] != null ? Number(flags["retry-flagged"]) : 1;
+  const retryFlagged = flags["retry-flagged"] != null ? Number(flags["retry-flagged"]) : 0;
 
   const refAudios = new Set(
     [...lineVoices.values()].filter((v) => CLONE_PROVIDERS.has(v.providerName) && v.voiceCfg.refAudio).map((v) => v.voiceCfg.refAudio)
@@ -400,7 +401,7 @@ export async function synthesizeAll({
   tailSec = TAIL_SILENCE_SEC,
   onlyLineIds,
   sttEnabled = true,
-  retryFlagged = 1,
+  retryFlagged = 0,
   keepTiming = true,
   takeWavs = null,
   // Line ids whose takeWavs file is finished audio (--use): already at the
@@ -759,7 +760,16 @@ export function applySttResult(lineOut, line, heard, sttWords, langCode) {
   }
   const cmp = compareLine({ text: timedText, say: timedSay, heard });
   const targetText = cmp.against === "say" ? timedSay : timedText;
-  lineOut.stt = { heard, cer: cmp.cer, diffs: cmp.diffs };
+  lineOut.stt = {
+    advisory: true,
+    target: targetText,
+    against: cmp.against,
+    heard,
+    cer: cmp.cer,
+    diffs: cmp.diffs,
+    grossMismatch: isGrossMismatch(targetText, heard, cmp.cer),
+    tailMatched: tailCleared(targetText, heard),
+  };
 
   if (lineOut.voiceFlag === "TAIL" && tailCleared(targetText, heard)) {
     delete lineOut.voiceFlag;
@@ -851,7 +861,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
 /** Prints a compact `id | cer | flag | diffs` table for the checked lines. */
 function printSttTable(checkedLines) {
   if (!checkedLines.length) return;
-  process.stdout.write("stt check:\n");
+  process.stdout.write("stt check (advisory evidence, not a quality verdict; review before retrying):\n");
   process.stdout.write("id\tcer\tflag\tdiffs\n");
   for (const l of checkedLines) {
     const cerStr = l.stt ? l.stt.cer.toFixed(2) : "-";

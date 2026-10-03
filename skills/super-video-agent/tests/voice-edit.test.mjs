@@ -328,3 +328,18 @@ test("runInsertPause: the line grows by exactly the pause at its quiet point; la
   assert.ok(fs.existsSync(paths.narrationWav));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("STT evidence is advisory and compares numeric speech with the matching target", () => {
+  const line={id:"a",text:"Opus cut 20%, to $4 in, $20 out.",say:"Opus cut twenty percent, to four in, twenty out."};
+  const out={id:"a",start:0,end:3};
+  applySttResult(out,line,"Opus cut 20% to 4 in, 20 out.",null,"en");
+  assert.equal(out.stt.advisory,true);
+  assert.equal(out.stt.against,"text");
+  assert.equal(out.stt.target,line.text);
+  assert.equal(out.stt.grossMismatch,false);
+  assert.equal(out.voiceFlag,undefined);
+  applySttResult(out,line,"unrelated words entirely",null,"en");
+  assert.equal(out.stt.advisory,true);
+  assert.equal(out.stt.grossMismatch,true);
+  assert.ok(out.stt.diffs.length);
+});

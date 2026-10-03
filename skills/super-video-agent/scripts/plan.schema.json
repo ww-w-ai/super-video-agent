@@ -20,6 +20,7 @@
           "description": "typecast: emotion preset for the whole voice. Unset: a line ending in ? or ! gets toneup, every other line normal."
         },
         "emotionIntensity": { "type": "number", "minimum": 0, "maximum": 2, "description": "typecast: emotion_intensity (default 1)." },
+        "removeSilenceMs": { "type": "integer", "minimum": 0, "maximum": 1000, "description": "typecast: cap detected silence at this retained duration. Omit to disable. For existing audio, use audio-edit.mjs locally instead of regenerating." },
         "voiceId": { "type": "string" },
         "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.1." },
         "model": {

@@ -56,6 +56,12 @@ A line ending in `?` or `!` gets the `toneup` preset (the end rises), every othe
 `meta.voice.emotion` (`normal` `happy` `sad` `angry` `whisper` `toneup` `tonedown`) sets one preset
 for the whole voice, and `meta.voice.emotionIntensity` (0–2, default 1) its strength.
 
+`meta.voice.removeSilenceMs` optionally caps Typecast's detected pauses at 0–1000 ms.
+It is the silence to **retain**, not remove; `0` removes detected silence and omission
+disables the option. It only shortens pauses. Provider timestamps already include this
+processing. For audio you already have, use [audio editing guide](../guides/audio-editing.md) to shorten
+or lengthen pauses without a paid request or local model inference.
+
 Record in `FILM.md` the provider, model and voice used.
 
 ## Delivery marks
@@ -169,9 +175,12 @@ local) and compares it against the intended line:
   take, babble or words never in the script). Error rate is taken as the *minimum* over `text`
   (caption) and `say` (spoken, if it differs).
 
-Every synthesized line gets an `stt: {heard, cer, diffs}` entry in `timings.json` regardless of
-flag. Small differences (a name, a near-homophone, spacing) are STT noise: they are recorded but
-not flagged, and need no action. A clean later check clears an earlier `MISHEARD` flag.
+Every synthesized line gets `stt: {advisory, target, against, heard, cer, diffs,
+grossMismatch, tailMatched}` in `timings.json`. These measurements are evidence for the
+LLM, not a quality verdict. Read the target and transcript before deciding whether to
+listen, edit locally, or regenerate. Names, homophones, and numeric spellings may differ
+without an audio error. A clean later check clears an earlier heuristic `MISHEARD` flag;
+it does not certify the pronunciation. A flag alone must not trigger a paid or slow retry.
 
 STT maps a rare or invented name to a common word it knows, in any language. A high error rate
 on a line with such a name, while the take's length stays the same across takes, is the STT's
@@ -180,9 +189,10 @@ owner to listen to, with its timestamp. The reverse holds too: STT cannot separa
 so a clean check does not prove a name or a homophone was read the intended way
 (`references/readout-en.md`).
 
-- `--retry-flagged N` (default 1) — re-synthesizes lines still flagged `MISHEARD`/`SHORT`/`TAIL`
+- `--retry-flagged N` (default 0) — explicitly opts into re-synthesizing lines flagged `MISHEARD`/`SHORT`/`TAIL`
   after the check up to `N` more times, keeping whichever take has the lower error rate. Skipped
   for deterministic providers (`say`, `file`, `none`) — regenerating gives the same result.
+  Prefer selecting confirmed problem lines with `--lines` after inspecting the evidence.
 - `--no-stt` — skips the check entirely (drafts, or when `faster-whisper` isn't installed).
 - `--stt-only` — re-runs just the STT check against a reel's existing `voice/line-*.wav` files
   without synthesizing anything; updates `timings.json` in place. Useful to re-verify a reel after
@@ -328,3 +338,9 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   than speeding further.
 - A line's own `rate` (0.5–2) replaces the film's rate for that line — for a deliberately rushed
   run, such as a quick list of extras that should feel like "and much more".
+
+## Local edits and finished-video replacement
+
+Use [audio editing guide](../guides/audio-editing.md) to resize pauses or adjust tempo in existing
+WAVs from any provider. [Audio-only replacement](../guides/audio-editing.md#replace-narration-in-a-finished-video) copies a
+finished video and replaces its narration without rendering frames.

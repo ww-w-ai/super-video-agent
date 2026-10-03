@@ -36,10 +36,11 @@ export function fitLineToSlot(clipDurationSec, slotDurationSec, maxAtempo = DEFA
     return { ok: true, atempoFactor: 1, actualDurationSec: clipDurationSec };
   }
   const requiredFactor = clipDurationSec / slotDurationSec;
-  if (requiredFactor > maxAtempo) {
+  if (requiredFactor > maxAtempo + 1e-9) {
     return { ok: false, requiredFactor, maxAtempo };
   }
-  return { ok: true, atempoFactor: requiredFactor, actualDurationSec: clipDurationSec / requiredFactor };
+  const atempoFactor = Math.min(requiredFactor, maxAtempo);
+  return { ok: true, atempoFactor, actualDurationSec: clipDurationSec / atempoFactor };
 }
 
 /**
@@ -126,6 +127,36 @@ export function buildPlacedTimings(fittedLines, filmDuration, lang = null) {
 }
 
 export const MAX_ATEMPO_DEFAULT = DEFAULT_MAX_ATEMPO;
+
+/** Fit replacement narration inside frozen caption windows, without moving the picture clock. */
+export function fitFrozenLines(frozen, dubLines, clipDurations) {
+  if (!Number.isFinite(frozen.duration) || frozen.duration <= 0 || !Array.isArray(frozen.lines) || !frozen.lines.length) {
+    throw new Error("frozen timings need a positive duration and nonempty lines");
+  }
+  if (dubLines.length !== frozen.lines.length) throw new Error("replacement line count differs from frozen captions");
+  const seen = new Set();
+  return frozen.lines.map((slot, i) => {
+    const line = dubLines[i];
+    if (typeof slot.id !== "string" || !/^[\w-]+$/.test(slot.id) || seen.has(slot.id)) throw new Error("invalid or duplicate frozen line id");
+    seen.add(slot.id);
+    if (line.id !== slot.id || typeof slot.text !== "string" || slot.text !== line.text) {
+      throw new Error(`line ${slot.id}: frozen caption text or order changed; use normal dub for caption changes`);
+    }
+    if (![slot.start, slot.end, line.start].every(Number.isFinite) || slot.start < 0 || slot.end <= slot.start ||
+        slot.end > frozen.duration || (i > 0 && slot.start < frozen.lines[i - 1].end)) {
+      throw new Error(`line ${slot.id}: invalid frozen window`);
+    }
+    const duration = clipDurations.get(slot.id);
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error(`line ${slot.id}: missing or invalid clip duration`);
+    const fit = fitLineToSlot(duration, slot.end - slot.start);
+    if (!fit.ok) throw new Error(`line ${slot.id}: needs ${fit.requiredFactor.toFixed(3)}x; edit pauses locally before regenerating`);
+    return {
+      id: slot.id, text: slot.text, start: slot.start, end: slot.start + fit.actualDurationSec,
+      slotEnd: slot.end, atempoFactor: fit.atempoFactor,
+      words: shiftAndScaleWords(line.words, line.start, fit.atempoFactor, slot.start),
+    };
+  });
+}
 
 const DEFAULT_TRIM_THRESHOLD_DB = -45;
 const DEFAULT_TRIM_PAD_SEC = 0.04;

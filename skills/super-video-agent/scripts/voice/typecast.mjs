@@ -69,6 +69,12 @@ export function buildBody({ text, voiceId, lang, voiceCfg }) {
     emotion_intensity: intensity,
   };
   body.output = { audio_format: "wav" };
+  if (cfg.removeSilenceMs != null) {
+    if (!Number.isInteger(cfg.removeSilenceMs) || cfg.removeSilenceMs < 0 || cfg.removeSilenceMs > 1000) {
+      throw new Error("typecast removeSilenceMs must be an integer from 0 to 1000 (retained silence, not removed silence)");
+    }
+    body.output.remove_silence_ms = cfg.removeSilenceMs;
+  }
   return body;
 }
 

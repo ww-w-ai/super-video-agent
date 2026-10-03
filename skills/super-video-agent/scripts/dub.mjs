@@ -23,7 +23,7 @@ import { ffmpeg, probeDuration, probeVideoInfo, applyAtempo, snapToFrameGrid, no
 import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr } from "./lib/duck.mjs";
 import { decodeMonoPcm, rmsWindow } from "./lib/audio-analysis.mjs";
-import { fitAllLines, buildPlacedTimings, computeSlots, trimEdgeSilence } from "./lib/dub-timing.mjs";
+import { fitAllLines, fitFrozenLines, buildPlacedTimings, computeSlots, trimEdgeSilence } from "./lib/dub-timing.mjs";
 import { levelLineWav } from "./lib/line-level.mjs";
 import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
 import {
@@ -67,6 +67,14 @@ Picture: out/picture-<code>.mp4 (render.mjs --no-captions --lang <code>) when
 it exists, else out/picture.mp4. The output says which one it used.
 
 Writes out/final-<code>-<YYYYMMDD-HHMMSS>.mp4 + out/final-<code>.mp4.
+
+--replace-audio <final.mp4> --timings <frozen.json> --bed <clean-bed.wav>:
+copy an existing captioned video's stream and replace only its audio.
+Uses dub/<code>/plan.json and voice/. Caption text and line IDs must match
+the frozen timings. Fits inside each frozen start/end window, never moves
+the picture, and never renders captions. Supply a narration-free bed on
+the same clock. Cannot combine with --min-gap. Writes a new revoice MP4
+and timing sidecar; preserves the source video and frozen timings.
 `;
 
 export async function main(argv) {
@@ -83,7 +91,13 @@ export async function main(argv) {
     if (!Number.isFinite(minGap) || minGap <= 0) fail(`--min-gap needs a positive number of seconds, got "${flags["min-gap"]}"`);
   }
   try {
-    const result = await dub({ dir, lang, minGap });
+    const replacing = flags["replace-audio"] !== undefined;
+    if (replacing && (minGap != null || !["replace-audio", "timings", "bed"].every(k => typeof flags[k] === "string"))) {
+      throw new Error("--replace-audio requires --timings and --bed; --min-gap cannot change a frozen picture");
+    }
+    const result = replacing
+      ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed) })
+      : await dub({ dir, lang, minGap });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -115,6 +129,60 @@ export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
     bedWav: pick(".bed.wav"),
     timingsJson: pick(".timings.json"),
   };
+}
+
+/** Replace narration in an already-captioned final video. All source files remain immutable. */
+export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPath }) {
+  if (typeof lang !== "string" || !/^[\w-]+$/.test(lang)) throw new Error("invalid language code");
+  const paths = reelPaths(dir);
+  const dubDir = path.join(dir, "dub", lang);
+  const dubVoiceDir = path.join(dubDir, "voice");
+  for (const file of [videoPath, timingsPath, bedPath]) requireFile(file, `missing ${file}; preserve the clean bed and frozen timings for audio replacement`);
+  const frozen = readJson(timingsPath);
+  const plan = loadPlan(dubDir);
+  const voice = readJson(path.join(dubVoiceDir, "timings.json"));
+  // Validate before using line IDs in paths or launching media processing.
+  const placeholderDurations = new Map((frozen.lines || []).map(l => [l.id, l.end - l.start]));
+  fitFrozenLines(frozen, plan.lines.map(l => ({ ...l, start: 0 })), placeholderDurations);
+  fitFrozenLines(frozen, voice.lines, placeholderDurations);
+  const meta = await probeVideoInfo(videoPath);
+  const videoDuration = await probeDuration(videoPath);
+  const bedDuration = await probeDuration(bedPath);
+  const tolerance = 1 / meta.fps + 0.002;
+  if (Math.abs(videoDuration - frozen.duration) > tolerance || Math.abs(bedDuration - frozen.duration) > tolerance) {
+    throw new Error("video, clean bed and frozen timings must share the same clock");
+  }
+  ensureDir(paths.outDir);
+  const workDir = fs.mkdtempSync(path.join(dubDir, ".revoice-work-"));
+  try {
+    const trims = await trimDubClips({ dubTimings: voice, dubVoiceDir, workDir });
+    const durations = new Map([...trims].map(([id, t]) => [id, t.trimmedDurationSec]));
+    const shifted = voice.lines.map(l => ({ ...l, start: l.start + (trims.get(l.id)?.leadTrimSec || 0) }));
+    const fit = { lines: fitFrozenLines(frozen, shifted, durations) };
+    const clips = await placeLineClips({ fit, trims, workDir });
+    await verifyReplacementDurations(fit.lines, clips);
+    const audioPath = path.join(workDir, "audio.wav");
+    await mixDubAudio({ placedClips: clips, bedPath, narrationWindows: fit.lines,
+      duckDb: sfxDuckDbFromPlan(plan), durationSec: frozen.duration, outPath: audioPath });
+    const outPath = path.join(paths.outDir, `revoice-${lang}-${timestamp()}-${crypto.randomBytes(4).toString("hex")}.mp4`);
+    await muxVideoAudio({ videoPath, audioPath, durationSec: videoDuration, outPath });
+    writeJson(`${outPath}.json`, { sourceVideo: videoPath, frozenTimings: timingsPath, cleanBed: bedPath,
+      videoMode: "stream-copy", ...buildPlacedTimings(fit.lines, frozen.duration, lang) });
+    return { outPath, lineCount: fit.lines.length, seconds: videoDuration, captionNote: "Original captioned video stream copied; no browser render." };
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+/** ffmpeg tempo may round clip lengths; reject overflow instead of clipping speech. */
+async function verifyReplacementDurations(lines, clips) {
+  for (let i = 0; i < lines.length; i++) {
+    const duration = await probeDuration(clips[i].path);
+    if (lines[i].start + duration > lines[i].slotEnd + 1 / 48000) {
+      throw new Error(`line ${lines[i].id}: measured fitted audio exceeds frozen window; shorten a pause locally before replacing`);
+    }
+    lines[i].end = lines[i].start + duration;
+  }
 }
 
 export async function dub({ dir, lang, minGap = null }) {

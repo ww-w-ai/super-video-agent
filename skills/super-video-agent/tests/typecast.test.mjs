@@ -121,3 +121,9 @@ test("synth: clear errors when key or voice id is missing", async () => {
     if (prevVoice !== undefined) process.env.TYPECAST_VOICE_ID = prevVoice;
   }
 });
+
+ test("removeSilenceMs: retained milliseconds, including zero, with invalid values rejected", () => {
+  for (const value of [0,100,1000]) assert.equal(buildBody({text:"a",voiceId:"v",voiceCfg:{removeSilenceMs:value}}).output.remove_silence_ms,value);
+  for (const value of [-1,1001,1.5,true,"100",NaN]) assert.throws(()=>buildBody({text:"a",voiceId:"v",voiceCfg:{removeSilenceMs:value}}),/integer/);
+  assert.equal("remove_silence_ms" in buildBody({text:"a",voiceId:"v"}).output,false);
+});

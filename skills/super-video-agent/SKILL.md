@@ -10,7 +10,7 @@ own frames, fix, and deliver.
 
 This skill follows how the viral Opus 5.5 code-drawn films were actually made
 (`references/community.md`): the maker gave a premise and a tone — and the model chose the
-tools, invented the look, and checked its own renders. Keep that freedom. Everything under `references/` and `scripts/` is support you may
+tools, invented the look, and checked its own renders. Keep that freedom. Everything under `guides/`, `references/` and `scripts/` is support you may
 use, adapt or ignore; none of it is a template.
 
 ## What you must hold
@@ -36,8 +36,9 @@ use, adapt or ignore; none of it is a template.
    (`references/script-review.md`: facts, story, spoken wording, listener, read-out, final read) so the
    voice is made once.
    Every wording change after synthesis costs a re-synthesis and shifts every line after it.
-   After the voice is made, change a line only to fix a real error (an STT flag, a misread),
-   then regenerate its voice with `voice.mjs --lines <id>`. A pronunciation fix keeps the
+   After the voice is made, change a line only to fix a confirmed error. STT flags are advisory
+   evidence: compare the intended and recognized text before deciding to regenerate.
+   Regenerate only the affected voice with `voice.mjs --lines <id>`. A pronunciation fix keeps the
    line's old time slot, so the film does not change: re-render only to remix the audio.
    While a scene or film session runs, its reel's `plan.json` and `voice/` are frozen: make
    voice fixes in a copy of those two, and bring them into the reel once, after the film is done.
@@ -80,7 +81,7 @@ use, adapt or ignore; none of it is a template.
      `confident`) with `voice.mjs --lines <openingId> --takes <tone>,<tone>`, show the comparison
      table, and install the user's pick (`--pick <id>=<k>`); the pick becomes the film's
      delivery (`meta.voice.delivery`) for every other line (`references/voice.md`)
-   → make the voice once → voice/timings.json (measured line times); fix only STT flags
+   → make the voice once → voice/timings.json (measured line times); review STT evidence and fix confirmed errors
    → 3D in voice-first order: play the whole narration to the user and get a confirm before
      building scenes (a changed line length re-renders every later shot, and a 40 s 3D film
      took 11–20 min to render). Every other case: build the film and fix voice lines after
@@ -147,8 +148,9 @@ caption box and says so. Judge each language's line by the silence after it, not
 its slot it fills: a line that fills its slot leaves no breath before the next one and sounds
 rushed. About 0.5 s after each line, or the base line's own pause if that is longer, is a
 starting point, not a limit. When `dub.mjs` warns about a line — a short gap after it, a fill
-low enough that the scene sits in silence, or atempo — rewrite that line's wording and re-make
-only it with `voice.mjs --lines`, up to 3 rounds, without asking. When the wording
+low enough that the scene sits in silence, or atempo — inspect the timing first. Use local
+pause or tempo edits when they solve the issue (`guides/audio-editing.md`). Rewrite and
+regenerate only when local editing cannot solve it, up to 3 rounds. When the wording
 cannot get shorter, `dub.mjs --min-gap <sec>` slows only the tight slots' picture and bed so each
 gap reaches `<sec>`, voice speed unchanged (`references/pipeline.md`).
 
@@ -249,4 +251,5 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/sound.md` | Effects on visible events, music bed, mix |
 | `references/script-review.md` | The review passes a script goes through before the voice is made |
 | `references/voice.md` | Voice providers, cloning, pronunciation |
+| [Audio editing guide](guides/audio-editing.md) | Local pause and tempo edits, timing updates, and replacing narration in a finished video |
 | `references/qa.md` | What the review numbers mean and what they cannot see |

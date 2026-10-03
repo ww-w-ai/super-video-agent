@@ -146,6 +146,8 @@ TTS 라이브러리를 써도 문제가 해결될 때가 많습니다.
 반영했습니다. 2D 영상은 바뀐 장면만 몇 분 안에 다시 렌더합니다.
 ([`scripts/voice.mjs`](skills/super-video-agent/scripts/voice.mjs), [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs), [`scripts/render.mjs`](skills/super-video-agent/scripts/render.mjs), [`scripts/join.mjs`](skills/super-video-agent/scripts/join.mjs))
 
+이미 만든 음성은 [음성 후보정·교체 가이드](skills/super-video-agent/guides/audio-editing.md)에 따라 쉼과 속도를 로컬에서 조절하고, 화면을 다시 렌더하지 않고 교체할 수 있습니다.
+
 ### 3. 어떤 화면 비율, 어떤 형식, 내 템플릿까지
 
 - **어떤 화면 비율이든.** 네 가지 크기는 옵션 하나로 바로 시작합니다: 9:16(쇼츠·릴스·틱톡), 16:9(유튜브·
