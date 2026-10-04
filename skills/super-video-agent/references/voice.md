@@ -323,7 +323,7 @@ greeting inside a Korean film:
 
 ```json
 { "meta": { "lang": "ko-KR" },
-  "lines": [ { "id": "hi", "lang": "en", "text": "Hello, I'm Tae." },
+  "lines": [ { "id": "hi", "lang": "en", "text": "Hello, everyone." },
              { "id": "intro", "text": "오늘은 영상 만드는 법을 알려드릴게요." } ] }
 ```
 
