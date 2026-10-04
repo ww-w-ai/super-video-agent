@@ -45,3 +45,5 @@ Nothing to extract; the look is yours to choose.
 
 - The user's direction overrides defaults but not facts. Record it in `FILM.md` in their words.
 - Numbers, names, rankings, prices and claims: only if the source states them.
+- Research and news: check dates and figures against the primary official source and note the
+  reference date in `FILM.md`; whether the date also appears on screen depends on the film's concept.

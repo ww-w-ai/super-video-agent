@@ -12,7 +12,8 @@
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
 | Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its frame |
-| Silence | `review.mjs` | longest silence inside the narration (first sound to last line end); FAIL above 1 s |
+| Silence | `review.mjs` | every silence over 1 s inside the narration (first sound to last line end) is listed with the line ids around it; FAIL unless the plan asks for it (`pauseAfterMs`, or a long `meta.gapMs`) — a planned pause is listed, not failed. Same measurement as the voice stage's silence gate (`voice.mjs`, `dub.mjs`, `fit-track.mjs`), which runs before the voice is locked |
+| Caption breaks | `validate-plan.mjs --breaks [--dub <code>]` | not a gate — the table lists every break; the reviewer finds none that cuts a phrase (`script-review.md` "Caption breaks"; a dub reads it once per language) |
 
 A failing gate prints a DIAGNOSIS line naming the time or element. Fix the cause, not the threshold.
 
@@ -58,6 +59,51 @@ with `?captions=0` as in `render.mjs --no-captions`, and the file is `still-<at>
   per language (`references/pipeline.md` "Judging a dub line").
 - **Taste**: a passing sheet is not an approved film. Say "technically verified" and list what a
   human should watch for.
+
+## Check tools that report facts (a model judges)
+
+None of these fails a reel; each prints what it measured and exits 0. Boil, motion, flicker and blink
+are judged from the source and the page state, never from frames: a screenshot shows one frame, and
+these defects live between frames. **Source review first, state scan second**: the source review
+points at the line that causes it, the state scan confirms it in the rendered timeline.
+
+- **Word times** — `scripts/word-times.mjs <dir> [--threshold <ms>] [--window <ms>] [--lines <ids>]`.
+  Re-measures each word's start from `voice/narration.wav` (the steepest 10 ms loudness rise within
+  `--window` of the recorded start, never past halfway to the next word) and lists words whose sound
+  starts more than `--threshold` (default 120 ms) from `timings.json`, and words with no clear onset.
+  A line with `wordsMeasured` below its word count is tagged: its other words are interpolated.
+  Writes `out/word-times.json`. A word run into the next in continuous speech has no sharp onset;
+  hear it before moving a beat.
+- **Sound cue words** — `scripts/cue-check.mjs <dir> [--threshold <ms>]`. For each `word:<text>` cue:
+  `cue-word-missing` (no word of the line holds it: the cue lands on the line start),
+  `cue-word-not-heard` (the speech-to-text transcript lacks it), `cue-word-uncertain` (interpolated
+  word times, or no clear onset), `cue-word-moved` (the waveform puts the word elsewhere).
+  Without `narration.wav` only the text checks run. Writes `out/cue-check.json`.
+- **Text overlap, glyph fallback, one-frame flicker** — `scripts/state-checks.mjs <dir> [--only
+  overlap,glyphs,flicker] [--step <frames>]`. It wraps the canvas text calls while the page seeks
+  every frame, so a reel needs no change. *overlap*: text boxes sharing area with another text box
+  (a string drawn twice, as a shadow or outline, is one element). *glyphs*: characters a font in
+  use lacks, so a fallback font drew them (a script missing from the chosen font); a family that is
+  not loaded shows every character. *flicker*: texts, and any layer listed by the optional page hook
+  `window.__reel.visibleAt(t)` → `[{id, opacity?}]`, visible for one sampled frame with neither
+  neighbour showing it. Writes `out/state-checks.json`.
+  - Flicker, source first: the same command first reads `reel.html`, its scripts and `src/*.js` for
+    show/hide windows under 2 frames at the film's fps, a one-frame gap or overlap between
+    neighbouring windows, one condition on two clocks (base and dub, shot-local and global), a
+    boundary rounded inside the test (different rounding functions make neighbours disagree by a
+    frame), and a fade of 0 or 1 frame; each is printed as `file:line`, the window and why. A hit is a
+    candidate to read, not a verdict. `--source-only` stops there; the state scan then confirms or
+    clears it.
+- **Character blink** — `scripts/blink-check.mjs <dir> [--glb <file>] [--morph <regex>] [--step <frames>]`.
+  Per character: blink count, start-to-start intervals, closing and opening times. Flags
+  `fast-blink` (closes and opens in under ~100 ms; a human blink is ~100–400 ms), `close-blinks` (under
+  1.5 s apart; people blink about every 2–10 s) and `flutter` (3 blinks within 1 s); thresholds are
+  named constants in `scripts/lib/blink.mjs`. Source first: it reads the code for blink intervals,
+  durations, per-minute rates, `t % period` loops, keyframe arrays and random or timer drives
+  (a random draw can also break determinism). Second, the page hook `window.__reel.blink(t)` →
+  `[{character, closed: 0..1}]` is sampled every frame (`references/3d.md`). `--glb` reads a clip's
+  own morph-weight keyframes for the blink targets, with no page. A screenshot cannot catch a
+  blink that lasts two frames; this does.
 
 ## Round limit
 

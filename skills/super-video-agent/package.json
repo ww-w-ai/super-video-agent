@@ -1,6 +1,6 @@
 {
   "name": "super-video-agent",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
@@ -22,6 +22,7 @@
     "sva-verify": "./scripts/verify.mjs",
     "sva-render": "./scripts/render.mjs",
     "sva-dub": "./scripts/dub.mjs",
+    "sva-fit-track": "./scripts/fit-track.mjs",
     "sva-review": "./scripts/review.mjs",
     "sva-assets": "./scripts/assets.mjs"
   },

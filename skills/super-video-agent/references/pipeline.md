@@ -49,6 +49,13 @@ Derive every scene's timing from it; the scaffold's `Reel.timeline(timings)` giv
 `line(i) → {start, end, u(t)}`, `word(i, j) → {start, end}`, and
 `phrase(i, str) → {start, end} | null` (matches the caption `text`, not `say`).
 
+**Lead.** `meta.lead` (a number of seconds, or `true` for 3 s; absent = no lead) puts an opening
+before the first story line. Every story line's time shifts by the lead, `timings.json` records it
+(`lead`, seconds), and render, dub, captions, sfx cues and fit all read that one clock; scene code
+gets `t` from 0, so the picture draws the lead span too. Dubs inherit the same lead length — one
+timing for all languages. The lead must carry sound (`references/sound.md` "Lead sound"); a line
+marked `lead: true` is the opening line spoken inside it.
+
 Each `timings.json` line also records who spoke it: `voice: {provider, voiceId}`. A `plan.json`
 line's own `voice` (any `meta.voice` keys, merged over `meta.voice` for that line) gives a film
 several speakers (`references/voice.md` "Several speakers in one film").
@@ -194,6 +201,20 @@ the inserted span's frame hashes (framemd5) are checked against the clip, and
 Stills and previews render the page, not the clip. For them to show the shot, the page draws
 JPEG stills of the clip for that span: `--insert-stills <dir>` writes them at the page's fps.
 
+### Drafts with handles
+
+```
+render.mjs <dir> --only id,id --handle 0.5   # out/drafts/<id>.mp4 + <id>.json per shot
+render.mjs <dir> --no-captions --use-draft <id>
+```
+
+A draft covers the shot's slot plus `--handle` seconds each side, clamped at the film's first and
+last frame; the film is not joined and `out/segments/` is untouched. `<id>.json` holds the slot
+start/end (seconds and frames), the handle, and the frames gained on each side. `--use-draft`
+cuts exactly the slot frames out of the clip (re-encoded, no page render) and splices them in at
+the slot start through the `--insert` path, with the same frame-count and framemd5 checks. Use
+the same `--preview` setting for the draft and for `--use-draft`.
+
 ## Picture first and language versions
 
 When the picture is slow to render (WebGL/3D on CPU, heavy particles) or several languages share
@@ -252,15 +273,37 @@ Each language, including the first one, lives in its own folder:
   voice/        # voice.mjs <reel-dir>/dub/<code>  ->  line-<id>.wav + timings.json
 ```
 
-`dub.mjs` first trims each take's own leading/trailing silence (an RMS scan at ~-45dBFS, keeping
-~40ms of pad on each side; an internal pause is never touched) — a take's edge silence, not its
-speech, should never be what decides whether it fits its slot. It then places each dub line's own
-(trimmed) audio at its base line's slot (that base line's start to the next base line's start; the
-last line's slot runs to the film's end), speeding a too-long line up (atempo) by up to 1.2× to fit
-— never cutting audio, never moving the picture — and refuses (naming the line and by how much) if
-even that is not enough, so the script gets shortened for that language rather than the render
-silently drifting. The base language is dubbed the same way: `dub/<base-lang>/` may simply copy the
-base `plan.json` and `voice/`.
+The picture's time is the reference. `dub.mjs` fits each line in four steps, in this order:
+
+1. **Trim.** Each take is cut to its voiced span plus 0.05 s head and 0.3 s tail (an RMS scan at
+   −50 dBFS; an internal pause is never touched) — a take's edge silence, not its speech, should
+   never be what decides whether it fits its slot.
+2. **Speed.** The trimmed audio is placed at its base line's slot (that base line's start to the
+   next base line's start; the last line's slot runs to the film's end). A line longer than its
+   slot is sped up (atempo, pitch kept) by at most 10% (`--max-speed`, default 1.1). Widening the
+   flag is the user's call.
+3. **Breath.** When the slot has room, at least 0.5 s of silence (`MIN_BREATH_SEC`) stays after
+   the line; a line that would leave less is sped up within `--max-speed` to make it. A line
+   that keeps under 0.5 s even then is listed with its id, never cut silently.
+4. **Gap.** Whatever remains of the slot stays voice-free, up to 1.0 s (`MAX_BREATH_SEC`, the
+   silence gate's limit). A line that leaves more is slowed (atempo, pitch kept) down to 0.95x to
+   close the rest; a gap still over 1.0 s is listed with its id (the last line's tail is not
+   limited). The picture is never stretched and audio is never cut.
+
+A line that still does not fit within 10% fails the run, naming the line and the factor it needs
+(for example `needs 1.120x, max is 1.1x`), so the script is reworded and re-made for that
+language rather than sped further. After placing, the silence gate lists every pause over 1 s in
+the placed narration with the line ids around it; the picture's own pause (a base line's end to
+the next line's start, when over 1 s) and a line's `pauseAfterMs` are listed as planned.
+The base language is dubbed the same way: `dub/<base-lang>/` may simply copy the base `plan.json`
+and `voice/`.
+
+**Fit a track to an existing video.** `scripts/fit-track.mjs --timings <picture.timings.json>
+--voice <voice-dir> --out <track.wav> [--video <picture.mp4>] [--plan <plan.json>] [--max-speed <x>]`
+runs the same four steps for a language's voice lines against a video's timing reference and
+writes one mono 48 kHz track of exactly the video's length (the length of `--video` when given,
+else the timings' `duration`). It prints the same fill and gap warnings and the silence gate, and
+writes no track when a line needs more than `--max-speed`.
 
 The mix is stereo and runs the picture's full length. The bed (`picture.bed.wav`) keeps its own
 channels, so each cue's pan survives; the voice sits centred at full level in both channels. Both
@@ -294,6 +337,22 @@ drawer honours the plan's forced breaks, the `\n` in `text` as well as `|`: `Ree
 does, and a `drawCaptions(t)` that balances all of a line's words as one run silently drops
 them. A caption row never breaks inside a name.
 
+Without a `|` the engine breaks by an automatic fallback (one rule set, `Reel.captionGlue`, used by
+`Reel.caption()`, `captionRows` and `captionChunks`; pass `lang`, a BCP 47 code, or it guesses from
+the script): a line that fits one row is not cut at a comma; a number stays with its unit (`10 kg`,
+`3 개`, `30分`); a short article or preposition never ends a row (en, fr, es, pt, it, de lists);
+a Korean dependent noun or particle token (`수`, `것`, `밖에`, `은`) stays with the word before it;
+nothing breaks inside a short parenthesis or quote span; Japanese and Chinese wrap by character
+but keep a number+unit, a Latin word and closing/opening marks whole. A `|` always wins.
+
+Caption breaks differ per language, so it helps to check a translation for them, e.g. once after the
+language's lines are written and before the final render: run `validate-plan.mjs <reel-dir>
+--breaks --dub <code>` and read the whole table, looking at where each caption breaks. A break inside a phrase (a word cut from its particle, auxiliary or
+bound noun; an article from its noun; `can / not`; a Vietnamese two-syllable word) is fixed by
+putting a standalone `|` in that line of `dub/<code>/plan.json` — a Korean line `이렇게 할 | 수
+밖에 없다` becomes `이렇게 | 할 수 밖에 없다`, an English one `We can | not` becomes `We cannot |
+do it`. The break is never spoken or shown.
+
 Overlay text other than captions (stickers, a price card, the end card) is per language too.
 Put it in the dub plan's `meta.overlay`, a free-form object the page reads in layer mode
 (`Reel.dubCode()` names the language), with the base language's strings in the page as the
@@ -305,6 +364,18 @@ Write each dub line so the word that drives a picture beat falls near the base l
 for that beat. The picture was built to the base timings and does not move: a keyword that
 arrives a second late lands after its picture.
 
+**Two clocks in a dub.** Captions follow that language's voice (`dub/<code>/timings.placed.json`).
+Every other layer — sound cues, on-screen labels and stickers, beats, animations keyed to a word —
+reads the base language's clock (`voice/timings.json`), unchanged from the original film, so it
+lands where it did there. In the caption layer (`?layer=captions&dub=<code>`) the scaffold loads
+both: `tl` and `timings` are the dub's clock, `clk = Reel.clocks(timings, baseTimings)` adds the
+base one. Captions read `tl`; a label or word-keyed animation drawn in that layer reads
+`clk.base.line(i)`, `clk.word(lineId, "<base-language word>")` ({start, end} on the base clock) or
+`clk.cueTime(cue, lineId)`, never `tl`. Line ids are the same in both clocks. In a render with no
+dub there is one clock and `clk.base` equals `tl`. The picture render itself (`--no-captions`)
+always runs on the base clock. A string that must change per language is a picture string
+(`Reel.pictureText`), not a caption.
+
 ### Judging a dub line: the silence after it
 
 Judge each dub line by the silence after it, not by how much of its slot it fills. A line that
@@ -315,7 +386,7 @@ longer, is a starting point, not a limit — a language, a voice or a scene may 
 `dub.mjs` reports every line's fill (clip length after atempo / slot length) and `gapAfter`, the
 silence between the placed line and the next line's start, next to the base line's own gap. It
 prints a `WARN` list for a gap under about 0.4 s (the message suggests `--min-gap`),
-a fill below ~0.75 (the scene sits in silence) and a line that needed atempo. It still writes the
+a fill below ~0.75 (the scene sits in silence) and a line that needed atempo (up to 5%). It still writes the
 film either way. The last line has no gap and no low-fill warning: its slot runs on under the end
 card to the film's end.
 

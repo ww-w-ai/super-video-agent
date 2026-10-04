@@ -39,22 +39,68 @@ Hosted models (`meta.voice.model`):
 | `elevenlabs` | `eleven_multilingual_v2` | `eleven_v3`, `eleven_v4`, `eleven_flash_v2_5` | billed per character, tags included. Library voices work through the API only on a paid plan. A restricted API key needs the text-to-speech and voice permissions |
 | `typecast` | `ssfm-v30` | `ssfm-v21` (untested) | billed per character |
 
-No provider documents a per-request minimum. Fish and Typecast take one request per line.
+No provider documents a per-request minimum.
 
-**ElevenLabs: one request, cut per line.** `voice.mjs` sends every line of one voice in one
-request (several when the script runs past 2,500 characters) and cuts it into one clip per line,
-midway through the silence between one line's last spoken character and the next line's first.
-The voice keeps one read across the film. On eleven_v3/v4 the request ends in a `[pause]` tag:
+**One read per voice, cut per line.** Every provider makes all lines of one voice in one request
+(several when the text passes the provider's limit: 2,500 characters for ElevenLabs and Fish,
+2,000 for Typecast) and `voice.mjs` cuts it into one clip per line, so the voice keeps one read
+across the film. Cut by the timestamps the service returns (ElevenLabs characters, Typecast
+words) midway through the silence between one line's last spoken word and the next line's first;
+a service that returns none (Fish), or whose words do not map onto the lines, is cut at the
+silences: the longest quiet stretches inside the speech are the breaks between lines. If the
+audio holds fewer breaks than lines, or a cut would split a line unevenly, the lines are sent one
+request each. The word times a service returns become the line's caption words. A single line (`--lines` with one id, a take, a
+retry) is sent alone.
+
+**Edge trim and the silence gate.** Per-line synthesis leaves 0.1–0.5 s of dead air at a clip's
+head and tail; summed over a film it becomes a voice gap of a second or more. Every synthesized
+line is therefore cut to its voiced span plus 0.05 s at the head and 0.3 s at the tail (voiced =
+above −50 dBFS in 10 ms windows, the level `review.mjs` uses; a pause inside the line is never
+touched). The untrimmed clip is kept once at `voice/raw/<id>.wav`. When the narration is placed,
+`voice.mjs` measures it and lists every silence over 1 s between voiced audio with the line ids
+around it. A pause the plan asks for (`pauseAfterMs` on a line, or a long `meta.gapMs`) is listed
+as a planned pause, not a problem; a gap over what the plan asked for is a `WARN`. Re-make the
+named line (`--lines <id>`), or add `pauseAfterMs` where the pause is meant. The same gate runs on
+a dub's placed narration and on a track made by `fit-track.mjs`.
+
+A starting point before a full run: make about four lines once and listen; then make all lines together.
+
+**ElevenLabs.** On eleven_v3/v4 the request ends in a `[pause]` tag:
 without it, eleven_v3 stopped a Korean line mid-sound at the end of a request in 9 of 18 takes;
-with it, 0 of 25. A single line (`--lines` with one id, a take, a retry) is sent as it is, so
-listen to it and re-make it if its end is cut; `voice.mjs` flags such a line `TAIL`. Every clip
-ends at its last sound plus 0.3 s of silence; a short click after a quiet gap at the very end is
-cut as noise.
+with it, 0 of 25. A single line is sent as it is, so listen to it and re-make it if its end is
+cut; `voice.mjs` flags such a line `TAIL`. A short click after a quiet gap at the very end is cut
+as noise.
 
-**Typecast: emotion per line.** Typecast reads no inline tags, so marks are dropped from the text.
-A line ending in `?` or `!` gets the `toneup` preset (the end rises), every other line `normal`.
-`meta.voice.emotion` (`normal` `happy` `sad` `angry` `whisper` `toneup` `tonedown`) sets one preset
-for the whole voice, and `meta.voice.emotionIntensity` (0–2, default 1) its strength.
+**Typecast.** Typecast reads no inline tags, so marks are dropped from the text. One request
+carries one emotion preset: `meta.voice.emotion` (`normal` `happy` `sad` `angry` `whisper` `toneup`
+`tonedown`), default `normal`, with `meta.voice.emotionIntensity` (0–2, default 1) its strength.
+Lines keep their `?` and `!`, so the model reads the intonation from the punctuation; no line
+gets a preset from its ending. Measured: Typecast `toneup` raises the pitch of the whole
+sentence, not only its end.
+
+Typecast takes the language without a region (ISO 639-3, e.g. `por`), so `pt-BR` and `pt-PT`
+(likewise `en-US`/`en-GB`, `es-ES`/`es-419`) send the same code. The regional accent comes from
+the chosen voice, and the script's regional spelling and words come from the plan text. The
+voice's accent can be noted in `FILM.md` as checked or unchecked.
+
+**A word or sentence that must carry a specific emotion** depends on the provider:
+
+- Providers with inline tags that work on a span (ElevenLabs v3/v4, Fish S2; see the table
+  under "Delivery marks"): put the mark on that span in `say`. It stays inside the one-read
+  request; no separate request.
+- Providers without inline tags (Typecast, emotion is per request): set the line's `emotion`
+  (a preset above). A line whose `emotion` differs from the voice's is left out of the one-read
+  request, made alone with that preset, and placed like any other line. To give only a
+  sentence its own emotion, make it its own line.
+
+**Fish.** Fish returns no word times, so its lines are cut at the silences and their caption
+words come from the speech-to-text check.
+
+`meta.voice.removeSilenceMs` optionally caps Typecast's detected pauses at 0–1000 ms.
+It is the silence to **retain**, not remove; `0` removes detected silence and omission
+disables the option. It only shortens pauses. Provider timestamps already include this
+processing. For audio you already have, use [audio editing guide](../guides/audio-editing.md) to shorten
+or lengthen pauses without a paid request or local model inference.
 
 `meta.voice.removeSilenceMs` optionally caps Typecast's detected pauses at 0–1000 ms.
 It is the silence to **retain**, not remove; `0` removes detected silence and omission
@@ -214,11 +260,15 @@ picks, the pick becomes `meta.voice.delivery`, and the remaining lines are made 
 SKILL.md's flow asks whether to compare tones before building a film; if not chosen, or
 unattended, one take.
 
-Each take is kept as `voice/takes/<id>-<k>.wav` with its STT CER and duration, printed as a table;
-take 1 installs automatically (copied into `voice/line-<id>.wav`,
-narration.wav/timings.json rebuilt as `--lines` does). Pick a different one on a later run with
-`--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild. Picking a take from a
-tone comparison also writes that mark to `meta.voice.delivery`, so every later line is made in it.
+Compare → pick → restore. Each take is kept as `voice/takes/<id>-<k>.wav` with its STT CER and
+duration, printed as a table. `--takes` only makes candidates: it never changes an installed
+`voice/line-<id>.wav`, timings.json or narration.wav. Install one with
+`--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild as `--lines` does. Picking
+a take from a tone comparison also writes that mark to `meta.voice.delivery`, so every later line
+is made in it. The clip a pick (or `--use`) replaces is kept first as
+`voice/takes/<id>/installed-<timestamp>.wav` and its path is printed; restore it with
+`--use <id>=<that file>`. A line with no installed clip yet (first synthesis through `--takes`)
+gets take 1 installed so the reel is complete.
 
 Hosted voices can read the same text at quite different lengths from take to take. When a line
 has to fit a slot (a dub line, a fixed picture beat), make a few takes and let the tool pick:
@@ -266,6 +316,26 @@ Fish Audio console (or via their official skill: `npx skills add https://docs.fi
 its id in `FISH_AUDIO_VOICE_ID`. Sample quality decides clone quality — a noisy sample gives an
 uncanny half-version. Cloning a voice needs that person's consent; do not clone anyone else.
 
+## A line in another language
+
+A plan line may carry `lang` (BCP 47), which replaces `meta.lang` for that line only — an English
+greeting inside a Korean film:
+
+```json
+{ "meta": { "lang": "ko-KR" },
+  "lines": [ { "id": "hi", "lang": "en", "text": "Hello, I'm Tae." },
+             { "id": "intro", "text": "오늘은 영상 만드는 법을 알려드릴게요." } ] }
+```
+
+For that line: the voice is made in `en` (Typecast sends its `language` code, `eng`; other providers
+get the same `lang` where they take one); lines of one voice are sent in one request per language,
+so the read stays one per language; the speech-to-text check transcribes it in `en`, and its
+`--stt-only` and `--pick-by stt` passes do too (`timings.json` records the line's `lang`); the
+built-in respellings and the read-out rules are the line's language's (`references/readout.md`
+lists the page per language); the caption break rules (`validate-plan.mjs --breaks`, the engine's
+fallback) use it. A voice made for one language reads another with an accent, so a voice that
+reads that language natively is a good choice.
+
 ## Pronunciation
 
 Before synthesis, rewrite the spoken text (not the caption) for names, numbers and English terms
@@ -288,7 +358,7 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 
 - In a dub folder (`dub/<code>/`) there is no old-slot fit: a re-made take keeps its natural
   length and is re-measured, as with `--retime` (no flag needed). The line's real limit is the
-  base-language slot on the picture, which `dub.mjs` fits (atempo up to 1.2×, `--min-gap`).
+  base-language slot on the picture, which `dub.mjs` fits (trim, then atempo up to 1.1×, then at least 0.5 s of breath, then the voice-free gap up to 1.0 s; `--min-gap`).
   `voice.mjs` prints one line saying so. The rest of this list is the base reel.
 - The new take is fitted to the old slot: padded if shorter, sped up by at most 1.1× if longer.
   The picture needs no change. `voice.mjs` prints one line per fitted take, so a padded take is

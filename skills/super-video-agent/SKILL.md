@@ -54,7 +54,9 @@ use, adapt or ignore; none of it is a template.
 
 ```
 1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
-   length, whether they want to review the script before the voice, the order — voice first
+   length (a target; slightly over is fine), the opening type (none; a short lead matching the
+   cover, `meta.lead`; or a highlight preview, about 5–10 s of the film's own best shots before
+   the story, common in long-form and cut after the film is built), whether they want to review the script before the voice, the order — voice first
    (default) or picture first; both make the base language's voice (the user's language) before
    the picture, and picture first then renders the picture once without captions so other
    languages are laid over it — recommend picture first when the picture renders slowly
@@ -74,8 +76,13 @@ use, adapt or ignore; none of it is a template.
    → review passes until a full read changes nothing; estimate the length before any synthesis
      (`validate-plan.mjs --estimate`, `references/script-review.md`) — a length check only; the
      voice still sets the clock
-   → if the user wants to review: show the whole script (text, and say where it differs) and
-     wait; apply their edits, then continue
+   → opening lead (the film's choice, not forced): if the film or the user wants a few seconds
+     before the first story line, set `meta.lead` (seconds; `true` = 3 s) and give it sound — a
+     music bed from t=0 (`meta.sound.bed`), a sound cue, or an opening line marked `lead: true` —
+     e.g. one that leads naturally into the next scene (`references/pipeline.md` "Timeline", `references/sound.md`
+     "Lead sound"); absent = no lead
+   → if the user wants to review: show the whole script as plain text in the conversation (and
+     say where it differs) and wait; apply their edits, then continue
    → if a tone comparison was requested: make the opening line in 2–4 tones chosen freely for
      this film from the full emotion list (`EMOTIONS` in `scripts/lib/tags.mjs`; e.g.
      `confident`) with `voice.mjs --lines <openingId> --takes <tone>,<tone>`, show the comparison
@@ -87,7 +94,15 @@ use, adapt or ignore; none of it is a template.
      took 11–20 min to render). Every other case: build the film and fix voice lines after
      (a 2D film re-renders only the changed shots in minutes; picture first only re-dubs)
 3. `assets.mjs fetch`, then build scenes onto the measured times: hardest frame first, look at
-   it, fix it; then the rest
+   it, fix it; then the rest. Build scene drafts on the locked voice slots; an approved draft can
+   be the final segment (e.g. trim or speed only; when one element is fixed, keep the rest). One
+   way is to render a draft shot with a short handle before and after its slot: `render.mjs --only
+   <ids> --handle 0.5` (about 0.5 s each side is a starting point) writes `out/drafts/<id>.mp4` + `<id>.json`, so it
+   can be trimmed or reused if the voice shifts a little; `--use-draft <id>` cuts the slot back
+   out and splices it in without a page render. Rendering a draft a little longer than its
+   slot and cutting it to fit is the same practice as generated video clips, which are made long
+   and trimmed in the edit. The handle costs the extra frames (+25% for a 4 s shot at 0.5 s), and
+   a film with slow 3D pictures may choose smaller handles
 4. Render → look at a contact sheet → fix → repeat until it holds. After the sounds are built:
    write `sound-cards.json` → `sfx-cards.mjs measure`, `judge`, `report` (`references/sound.md`
    "Sound cards"); redesign any sound scoring fit < 8, re-measure, re-judge, up to 3 rounds
@@ -117,6 +132,12 @@ own characters adds a cast stage between voice and film.
 | Voice | 2 from "make the voice" | `plan.json` | `voice/` with `timings.json` in the base language, in either order; STT flags handled | low |
 | Cast (3D films with their own characters) | between 2 and 3 | `plan.json`, `FILM.md` (who appears, in which lines, doing what) | the character and prop GLBs, a lineup still the owner approved, the contract table in `FILM.md` (`references/3d.md`) | xhigh |
 | Film | 3–5 | `plan.json`, `voice/`, `FILM.md`, the source (and the cast files) | `reel.html`, `out/final.mp4`, the report | xhigh |
+| Language dub (one film, several language versions) | after the base voice | the locked base `plan.json`, `voice/timings.json` | `dub/<code>/plan.json`, `voice/`, `out/final-<code>.mp4` | medium |
+
+The language dub stage is adaptation more than creation, so a lighter path is a good starting
+point: write the whole table of languages at once, make the voice without a review before it,
+fix the lines that fail, and run one review focused on caption breaks (`references/pipeline.md`).
+Add passes where a language needs them; the creation stages keep their repeated review passes.
 
 A stage ends only when its files are written, and its notes count as files: a stage or a probe
 writes what it found (in `FILM.md` or the probe's own notes) before it ends, because the next
@@ -138,9 +159,14 @@ language: build its `voice/` first, same as always, and build the picture on its
 languages come after, as variations over that picture. The picture itself renders once, with no caption baked in
 (`render.mjs --no-captions`), and every language — including the base one — is laid over it with
 `dub.mjs`, each in its own `dub/<code>/`. A language whose lines run longer than the base
-language's is sped up to fit (up to 1.2×) or the film reports which lines to shorten; the picture
+language's is sped up to fit (`dub.mjs` and `fit-track.mjs` fit a line by at most 10% faster, 5% slower by
+default) or the film reports which lines to shorten; the picture
 never moves unless you ask for it (`--min-gap`, below) and no other language's lines run long
 because of it (`references/pipeline.md`).
+When one film gets several language versions or several voice/subtitle versions, write every
+language's lines to the same time slots from the start; the picture is not lengthened for a
+language. Example words shown inside the picture in the source language can be localised or
+translated per language version; IDs and handles usually stay as they are.
 A film with its own caption look (word-by-word highlight, emphasis colours) keeps that look in
 every dub — write `drawCaptions(t)` in `reel.html` (the scaffold's reference implementation) and
 declare `"captions"` in `__reel.layers`; otherwise `dub.mjs` falls back to the engine's default
@@ -173,7 +199,8 @@ Style: at the start, ask the user which one to use.
 
 Ask this together with frame size, length, the script review, the voice-first-or-picture-first
 order and (for 9:16) the voice speed, in one question. If the user already said, do not ask
-again. If nobody can answer (an unattended run), use free style, skip the script review, leave
+again. If nobody can answer (an unattended run), use free style, skip the script review, use no
+opening unless the brief asks, leave
 the speed at 1.1, use voice first unless the brief names a slow 3D picture (then picture first),
 and note these in `FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
 
@@ -205,7 +232,9 @@ must not shift titles, captions or pictures left.
 
 ## Hard lines (these protect the owner, not the look)
 
-- Facts come from the source: no numbers, names or claims it does not contain.
+- Facts come from the source: no numbers, names or claims it does not contain. For research or
+  news films, check dates and figures against the primary official source and note the reference
+  date in `FILM.md`; whether it also appears on screen is the film's call.
 - A library asset marked `commercialSafe: false` goes only into a film the owner marked
   personal (`meta.distribution`) or explicitly allowed; record every used asset's license in
   `FILM.md`.
@@ -230,13 +259,19 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | sound cards | `scripts/sfx-cards.mjs measure\|judge\|report <dir>` | fills each sound card's measured audio features, scores its fit (Jev or the current model), and warns on fit < 8 (`references/sound.md` "Sound cards") |
 | check | `scripts/verify.mjs <dir>` | determinism (warm and cold first-seek probes) + contract scan + `boil(` call-site info line |
 | poke-through (3D) | `scripts/overlap.mjs <dir> [--step <frames>] [--out <json>]` | per cover/part pair, the frame spans where the page hook `window.__reel.overlap(t)` counts vertices on the wrong side; reports only, never fails (`references/3d.md` "Covers and soft bodies") |
+| word times | `scripts/word-times.mjs <dir> [--threshold <ms>]` | re-measures word starts from `narration.wav` and lists words whose sound is off the recorded time; reports only (`references/qa.md`) |
+| sound cue words | `scripts/cue-check.mjs <dir>` | warns when a `word:` cue's word is missing from the line, not heard, interpolated or moved; reports only |
+| text, glyphs, flicker | `scripts/state-checks.mjs <dir> [--only overlap,glyphs,flicker]` | text boxes that overlap, characters drawn by a fallback font, one-frame flicker (source windows first, then every frame's state); reports only |
+| blink | `scripts/blink-check.mjs <dir> [--glb <file>]` | per character blink count, intervals, durations; flags blinks under ~100 ms, under 1.5 s apart, flutter; source first, then the page hook `window.__reel.blink(t)` (`references/3d.md`); reports only |
 | review | `scripts/render.mjs <dir> --preview` then `scripts/review.mjs <dir>` | contact sheet, dead-air runs, A/V sync, loudness, sync marks |
 | dense layout scan | `scripts/review.mjs <dir> --scan [stepSec] [--layer captions [--dub <code>]]` | issue runs with times from seeking the whole film every `stepSec` (default 0.1s), catching a layout bug the once-per-shot Layout gate misses; `--layer captions` scans only the overlay layer, fast on a slow 3D picture |
 | file review | `scripts/review.mjs --file <mp4>` | a finished or joined file with no page: A/V stream lengths, loudness whole and per part, dead air, black frames (`references/qa.md`) |
+| draft with handles | `scripts/render.mjs <dir> --only <ids> --handle <sec>`; later `--use-draft <id>` | `out/drafts/<id>.mp4` over the shot's slot ± handle (clamped to the film) + `<id>.json` (slot start/end, handle); `--handle 0` (default) keeps the plain `--only` full-film render; `--use-draft` cuts the slot from the draft and splices it like `--insert` (`references/pipeline.md`) |
 | picture-only probe | `still.mjs`, `verify.mjs`, `render.mjs` with `--stub <sec>` | runs on a reel with no `voice/timings.json` yet, as one silent line of that length |
 | final | `scripts/render.mjs <dir>` | `out/final-<YYYYMMDD-HHMMSS>.mp4` at -16 LUFS; `out/final.mp4` links to the newest |
 | picture (picture first) | `scripts/render.mjs <dir> --no-captions [--insert <clip.mp4>@<sec>]` | `out/picture.mp4` (video only) + `out/picture.bed.wav` + `out/picture.timings.json` — the picture, rendered once, no caption baked in; `--insert` puts an approved clip in from `<sec>` (`references/pipeline.md`) |
-| language (picture first) | `scripts/dub.mjs <dir> --lang <code> [--min-gap <sec>]` | `out/final-<code>.mp4` — that language's caption + voice laid over `out/picture.mp4`; `--min-gap` widens the tight slots for that language |
+| language (picture first) | `scripts/dub.mjs <dir> --lang <code> [--min-gap <sec>] [--max-speed <x>]` | `out/final-<code>.mp4` — that language's caption + voice laid over `out/picture.mp4`; each line is trimmed, sped up by at most 10% (`--max-speed`), kept at least 0.5 s of breath, then left its voice-free gap (up to 1.0 s, else slowed to 0.95x); `--min-gap` widens the tight slots for that language |
+| track fitted to a video | `scripts/fit-track.mjs --timings <picture.timings.json> --voice <voice-dir> --out <track.wav> [--video <mp4>]` | one narration track of exactly the video's length (trim → speed ≤10% → breath ≥0.5 s → gap ≤1.0 s), with the silence gate; a line needing more is listed for rewording (`references/pipeline.md`) |
 | upload version (on demand) | `scripts/join.mjs <out.mp4> <part1> <part2> [...]` | joins an opening + body + ending (any count, any order) into one file, and reports each join's loudness, click risk and frame match (`references/bookends.md`) |
 
 ## Support reading (optional, read when useful)

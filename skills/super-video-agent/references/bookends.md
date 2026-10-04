@@ -4,6 +4,12 @@ Use this only when the user asks for an upload version with something attached t
 channel end card, a title card, a series episode. Not part of the default flow — build the body
 film as usual, then read this.
 
+When the opening is part of the film itself — a short beat of music, a sound cue or an opening
+line before the story — set `meta.lead` in the plan instead of rendering a separate opening clip
+and joining it in front (`references/pipeline.md` "Timeline", `references/sound.md` "Lead sound").
+The lead is on the film's own clock, so voice, captions, dubs and cues stay in step. A
+separate opening reel suits a channel title card or series intro that is not part of the film.
+
 ## Order that worked
 
 ```

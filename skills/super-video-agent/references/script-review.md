@@ -13,9 +13,20 @@ Read every line in every pass. Fix what the pass finds, then move to the next pa
 | 3. Spoken wording | each line read aloud as a person would say it, and each line against the next; each line's `cues` | it reads like a caption, not speech; it ends on a bare noun; it has a comma that is not there for real emphasis; it packs two ideas; a word will be hard to hear; its pause does not match how it joins the next line (see below); a signature effect (`sound.md` §1) lands mid-sentence instead of in a pause |
 | 4. Listener | the whole script heard as the film's listener hears it (see below) | it talks at the listener instead of to them, breaks the speaker, tires the ear, or leaves no time to take it in |
 | 5. Read-out (`say`) | how the voice will pronounce each number, unit, name, abbreviation, English word and symbol | the `say` text is missing where the written form is ambiguous, or it reads a unit twice or drops one (`4.4점` → "사쩜사 점 점", `27.3%` read without "percent"), or a sound the spelling hides is left to chance (see `references/readout.md`) |
-| 6. Final read | the whole script once more, as a viewer | anything above still fails |
+| 6. Final read | the whole script once more, as a viewer, with the caption-break table (see below) | anything above still fails, or a caption break cuts a phrase |
 
 Repeat pass 6 until a full read changes nothing. Then synthesize.
+
+## Caption breaks (pass 6)
+
+A caption breaks only where the meaning breaks, in every language. A break inside a phrase is a
+defect: a word cut from its particle, auxiliary or bound noun (`이렇게 할 / 수 밖에 없다`), an
+article from its noun, `can / not`, a two-syllable word split (Vietnamese). Run
+`validate-plan.mjs <reel-dir> --breaks` and read every break as `line id: …before | after…`
+(`--max-chars <n>` adds the automatic splits of a long phrase at the film's chunk size). Mark the
+break you want with a standalone `|` in the line's `text` (`We cannot | do it any other way.`)
+instead of rewording; it is never spoken or shown. Like every pass, repeat until a read changes
+nothing.
 
 ## Narration that flows (pass 3)
 

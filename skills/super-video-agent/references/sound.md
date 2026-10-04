@@ -62,6 +62,22 @@ I–IV–V–I, a triplet 1-5-3-5 arpeggio, no pads, no drones, no reverb tails.
 (`duck`) so every word stays clear; it rises only in gaps longer than about a second.
 Skip it for serious or news-like films — silence under a voice is a style, not a gap.
 
+### Lead sound
+
+A film with `meta.lead` (seconds before the first story line; `true` = 3 s) must carry sound in
+the lead — at least one of: a music bed playing from t=0 (declare it with `meta.sound.bed: true`),
+a sound-effect cue inside the lead (a line cue that sounds before the first story line, e.g. `at:
+"start"` with a negative `offsetMs` on the first story line), or an opening line spoken in the
+lead (the first plan lines, marked `lead: true`, inside the lead window).
+`validate-plan.mjs` fails a lead with none of them, and the silence gates report a lead without
+sound. One way to choose the sound is by what comes next: a bed's key or an effect's material that
+leads naturally into the first scene keeps the cut from lead to story from feeling like a
+different film. Example: when the first scene opens
+with a spoken greeting, a second spoken line right before it in the 3 s lead sounds crowded, and
+a sound effect suited the lead better there.
+A bed that starts in the lead continues under the story. The lead is part of the film's clock:
+sfx cue times are measured from the film's t = 0, lead included.
+
 ## 4. Mix
 
 - Master to **-16 LUFS integrated**, true peak ≤ -1 dBTP (render does this) with one static gain

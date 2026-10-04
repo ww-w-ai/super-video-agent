@@ -53,6 +53,9 @@ End on a held last screen: after the last line, keep the final picture still for
 card before the Short loops. Most popular Shorts cut on the last sound, but a closing card or
 caption on the last frame was the norm in the viral code-drawn demos.
 
+A starting point for a cut's first frame: show what the shot is before moving into detail; an
+ambiguous close-up as the first frame read as noise in one film.
+
 ## A promo makes the viewer want to go
 
 A promo is not an explainer. Open on the subject at its most appealing, on frame 0 — the dish,
