@@ -27,9 +27,10 @@ import {
   decideLangSegment,
   neighbourIds,
 } from "./lib/segments.mjs";
+import { draftsDir, draftSpan, draftSidecar, slotCut } from "./lib/drafts.mjs";
 
-const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id] [--plan] [--no-captions [--lang <code>]]
-                 [--stub <sec>] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]]
+const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code>]]
+                 [--stub <sec>] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
@@ -50,6 +51,16 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               unchanged neighbour is reused. Every other segment is reused
               without probing. Refuses (no render happens) if a segment
               outside --only no longer matches its stored frame range.
+--handle <sec>
+              with --only: renders each named shot as a separate draft clip,
+              from (slot start - sec) to (slot end + sec) clamped to the film,
+              to out/drafts/<id>.mp4 + <id>.json (slot start/end, handle, frames
+              gained each side). The film is not joined and out/segments/ is
+              not touched. Default 0: --only splices the full film as before.
+--use-draft <id>
+              puts out/drafts/<id>.mp4 in as the shot: the slot span is cut out
+              of the handled clip (no page render) and spliced at the slot start
+              like --insert. Needs the same --preview setting the draft had.
 --plan        print REUSE/RENDER per segment and exit without rendering.
 --no-captions loads the page with ?captions=0 (references/pipeline.md
               "Picture first"), so window.__reel.captionsOn() is false and
@@ -135,6 +146,7 @@ export async function main(argv) {
   }
   let stubSec;
   let insert;
+  let handleSec = 0;
   try {
     stubSec = stubSeconds(flags.stub, paths.timingsJson, fs.existsSync);
     insert = flags.insert !== undefined ? parseInsertFlag(flags.insert) : null;
@@ -144,6 +156,12 @@ export async function main(argv) {
       insert.stillsDir = abs(flags["insert-stills"]);
     }
     if (insert && !fs.existsSync(insert.clipPath)) throw new Error(`--insert clip not found: ${insert.clipPath}`);
+    handleSec = parseHandleFlag(flags.handle);
+    if (handleSec > 0 && typeof flags.only !== "string") throw new Error("--handle renders drafts of the shots named by --only id,id");
+    if (flags["use-draft"] !== undefined) {
+      if (insert) throw new Error("--use-draft and --insert both place a clip; use one");
+      insert = await cutDraftSlot({ dir, paths, id: flags["use-draft"], preview: !!flags.preview });
+    }
   } catch (e) {
     fail(e.message);
     return;
@@ -160,8 +178,13 @@ export async function main(argv) {
 
   const started = Date.now();
   try {
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert, lang });
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert, lang, handleSec });
     const elapsed = (Date.now() - started) / 1000;
+    if (result.draftsOnly) {
+      const frames = result.drafts.reduce((n, d) => n + d.frameEnd - d.frameStart, 0);
+      process.stdout.write(`drafts: ${result.drafts.length} clip(s), ${frames} frames  render time: ${elapsed.toFixed(2)}s\n`);
+      return;
+    }
     if (result.planOnly) {
       process.stdout.write(`--plan: ${result.decisions.length} segment(s), nothing rendered\n`);
       return;
@@ -251,7 +274,7 @@ function readPicturePayload(dir, lang) {
   return payload;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null, lang = null }) {
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null, lang = null, handleSec = 0 }) {
   const picture = readPicturePayload(dir, lang);
   const server = await serveDir(dir);
   const pageUrl = pictureUrl(server.url, noCaptions, lang);
@@ -276,6 +299,10 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     const scaleFilter = preview ? `scale=${targetWidth}:${targetHeight}` : undefined;
 
     const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
+    if (onlyIds && handleSec > 0) {
+      const drafts = await renderDrafts({ server: openAt, segments, onlyIds, handleSec, fps, meta, quality, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, outDir: paths.outDir, workers });
+      return { draftsOnly: true, drafts };
+    }
     if (onlyIds) validateOnlyOrThrow({ segments, onlyIds, segDir });
 
     const insertPlan = insert ? await prepareInsert({ insert, segments, fps }) : null;
@@ -614,6 +641,75 @@ function sha256Hex(buf) {
 
 function once(emitter, event) {
   return new Promise((resolve) => emitter.once(event, resolve));
+}
+
+// ---- --handle / --use-draft: drafts a little longer than their slot --------
+
+/** `--handle <sec>`: 0 when absent, else seconds >= 0. */
+export function parseHandleFlag(value) {
+  if (value === undefined) return 0;
+  const n = typeof value === "string" ? Number(value) : NaN;
+  if (value === "" || !Number.isFinite(n) || n < 0) throw new Error(`--handle takes seconds >= 0, e.g. --handle 0.5 (got "${value}")`);
+  return n;
+}
+
+/**
+ * Renders each shot of `onlyIds` as out/drafts/<id>.mp4 (+ <id>.json) over its
+ * slot widened by the handle. Nothing else is written: no segment cache, no join.
+ */
+async function renderDrafts({ server, segments, onlyIds, handleSec, fps, quality, crf, preset, scaleFilter, targetWidth, targetHeight, outDir, workers }) {
+  const unknown = unknownOnlyIds({ segments, onlyIds });
+  if (unknown.length) throw new Error(`--only references unknown segment(s): ${unknown.join(", ")}`);
+  const filmStart = segments[0].frameStart;
+  const filmEnd = segments[segments.length - 1].frameEnd;
+  const dir = draftsDir(outDir);
+  fs.mkdirSync(dir, { recursive: true });
+  const jobs = onlyIds.map((id) => {
+    const segment = segments.find((s) => s.id === id);
+    const span = draftSpan({ segment, fps, filmStart, filmEnd, handleSec });
+    return { segment, span, mp4Path: path.join(dir, `${id}.mp4`), jsonPath: path.join(dir, `${id}.json`) };
+  });
+  let idx = 0;
+  async function worker() {
+    let session = null;
+    try {
+      while (idx < jobs.length) {
+        const job = jobs[idx++];
+        if (!session) session = await openReel(server.url, server.opts);
+        await encodeSegment({ session, segment: job.span, outPath: job.mp4Path, fps, crf, preset, scaleFilter });
+        writeJson(job.jsonPath, draftSidecar({ segment: job.segment, span: job.span, fps, handleSec, quality, width: targetWidth, height: targetHeight }));
+        process.stdout.write(
+          `DRAFT  ${job.segment.id}  frames [${job.span.frameStart},${job.span.frameEnd})  slot [${job.segment.frameStart},${job.segment.frameEnd})  handle -${job.span.handleBefore}/+${job.span.handleAfter} frames\n`
+        );
+      }
+    } finally {
+      if (session) await session.close();
+    }
+  }
+  const n = Math.max(1, Math.min(workers, jobs.length || 1));
+  await Promise.all(Array.from({ length: n }, worker));
+  return jobs.map((j) => j.span);
+}
+
+/**
+ * `--use-draft <id>`: cuts the slot span out of out/drafts/<id>.mp4 (frame
+ * exact, no page render) into out/drafts/<id>.slot.mp4 and returns it as the
+ * --insert clip, placed at the slot's start.
+ */
+export async function cutDraftSlot({ paths, id, preview }) {
+  if (typeof id !== "string" || !id) throw new Error("--use-draft takes a shot id");
+  const dir = draftsDir(paths.outDir);
+  const mp4 = path.join(dir, `${id}.mp4`);
+  const jsonPath = path.join(dir, `${id}.json`);
+  if (!fs.existsSync(mp4) || !fs.existsSync(jsonPath)) throw new Error(`no draft for ${id} in ${dir} — render it with --only ${id} --handle <sec>`);
+  const sidecar = readJson(jsonPath);
+  const quality = preview ? "preview" : "final";
+  if (sidecar.quality !== quality) throw new Error(`draft ${id} was rendered as ${sidecar.quality}; render with${sidecar.quality === "preview" ? "" : "out"} --preview to use it`);
+  const cut = slotCut(sidecar);
+  const clipPath = path.join(dir, `${id}.slot.mp4`);
+  await encodePart({ src: mp4, from: cut.from, to: cut.to, fps: sidecar.fps, crf: preview ? 28 : 18, preset: preview ? "veryfast" : "medium", outPath: clipPath });
+  process.stdout.write(`use-draft: ${id} slot cut from draft frames [${cut.from},${cut.to}) (${cut.frames} frames) at t=${cut.startSec.toFixed(4)}s\n`);
+  return { clipPath, startSec: cut.startSec };
 }
 
 // ---- --insert: an approved clip in place of rendered frames --------------

@@ -18,7 +18,7 @@ import { measureLoudness, decodeMonoPcm } from "./lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "./lib/wav.mjs";
 import { openLibrary, getById, assetFilePath } from "./lib/library.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel } from "./lib/browser.mjs";
+import { openReel, stubSeconds } from "./lib/browser.mjs";
 import { buildJudgeSheet, buildScoresTemplate } from "./lib/sfx-judge-sheet.mjs";
 import { buildDecideRequest, parseDecideResponse } from "./lib/jev-client.mjs";
 import { buildChatRequest, parseChatResponse } from "./lib/openrouter-jev-client.mjs";
@@ -31,7 +31,7 @@ const NEAR_LINE_BAND = 0.5;
 const DEFAULT_EXTRA_RUNS = 2;
 const LUFS_MIN_DURATION_SEC = 0.4; // review.mjs's own loudness-gate floor
 
-const HELP = `usage: sfx-cards.mjs measure <reel-dir>
+const HELP = `usage: sfx-cards.mjs measure <reel-dir> [--stub <sec>]
        sfx-cards.mjs judge <reel-dir> [--repeat <n>]
        sfx-cards.mjs report <reel-dir>
 
@@ -43,6 +43,8 @@ measure  Fills sound-cards.json's "measured" field for every card: a "kit"
          recipe.maxSec, else to the maxSec its plan.json cues share, else
          the whole file. Prints the span per asset card and reports which
          cards it could not measure.
+         --stub <sec>  for a reel with no voice/timings.json (a teaser): the
+         page is served one silent line of <sec> seconds, as in render.mjs.
 judge    Scores each card's fit (1-10: does the sound match the event's
          size/material/speed and this film's world/topic). Uses Jev
          (TYPESAFE_API_KEY) or OpenRouter's typesafe/jev-1.13
@@ -80,7 +82,9 @@ export async function main(argv) {
   const [cmd, dirArg] = positional;
   const dir = abs(dirArg);
   try {
-    if (cmd === "measure") await runMeasure(dir);
+    if (cmd === "measure") {
+      await runMeasure(dir, { stubSec: stubSeconds(flags.stub, paths(dir).timingsJson, fs.existsSync) });
+    }
     else if (cmd === "judge") await runJudge(dir, { repeat: parseRepeat(flags.repeat) });
     else if (cmd === "report") await runReport(dir);
     else fail(`unknown command "${cmd}", expected "measure", "judge" or "report"`);
@@ -109,14 +113,14 @@ function loadCards(p) {
 // measure
 // ---------------------------------------------------------------------
 
-export async function runMeasure(dir) {
+export async function runMeasure(dir, { stubSec = null } = {}) {
   const p = paths(dir);
   const cards = loadCards(p);
   const assetLibManifest = readAssetLibManifest(p);
   const plan = fs.existsSync(p.planJson) ? readJson(p.planJson) : null;
 
   const stemCards = cards.filter((c) => c.recipe.kind !== "asset");
-  const stems = stemCards.length ? await fetchSfxStems(dir, p) : { byId: new Map(), list: [] };
+  const stems = stemCards.length ? await fetchSfxStems(dir, p, stubSec) :{ byId: new Map(), list: [] };
 
   const unmeasured = [];
   for (const card of cards) {
@@ -159,14 +163,14 @@ function readAssetLibManifest(p) {
  * straight through to the per-card "unmeasured" report instead of failing
  * the whole command.
  */
-async function fetchSfxStems(dir, p) {
-  if (!fs.existsSync(p.reelHtml) || !fs.existsSync(p.timingsJson)) {
+async function fetchSfxStems(dir, p, stubSec = null) {
+  if (!fs.existsSync(p.reelHtml) || (!stubSec && !fs.existsSync(p.timingsJson))) {
     return { byId: new Map(), list: [] };
   }
   const server = await serveDir(dir);
   let session;
   try {
-    session = await openReel(server.url, {});
+    session = await openReel(server.url, { stubSec });
     const hasFn = await session.page.evaluate(() => typeof window.__reel.sfxStems === "function");
     if (!hasFn) return { byId: new Map(), list: [] };
     const list = await session.page.evaluate((sr) => window.__reel.sfxStems(sr), SAMPLE_RATE);

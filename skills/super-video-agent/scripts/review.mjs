@@ -6,7 +6,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { reelPaths, writeJson, loadTimings, readJson } from "./lib/reeldir.mjs";
+import { reelPaths, writeJson, loadTimings, loadPlan, readJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
@@ -28,7 +28,10 @@ import {
   measureLoudness,
   decodeMonoPcm,
   longestSilenceAfterFirstSound,
+  SILENCE_GATE_SEC,
+  SILENCE_THRESHOLD_DB,
 } from "./lib/audio-analysis.mjs";
+import { gapsFromPcm } from "./lib/silence-gate.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
@@ -71,7 +74,6 @@ duration, and collects layout issues(). Writes
 
 const AV_DELTA_MS_THRESHOLD = 50;
 const AUDIO_SAMPLE_RATE = 48000;
-const SILENCE_GATE_SEC = 1.0; // a pause inside the narration longer than ~1 s fails
 const SYNC_OFFSET_MIN_MS = -20;
 const SYNC_OFFSET_MAX_MS = 40;
 const DEAD_AIR_STEP_SEC = 0.1;
@@ -302,6 +304,20 @@ function formatFileReport(r) {
   return lines.join("\n");
 }
 
+/**
+ * The narration silence check: the longest silence after the first sound, and
+ * every pause over the gate split into planned (the plan's pauseAfterMs, or a
+ * long meta.gapMs — not a failure) and unplanned (a failure). Same
+ * measurement as voice.mjs's silence gate (scripts/lib/silence-gate.mjs).
+ */
+export function narrationSilenceCheck({ pcm, sampleRate, timingsLines, plan }) {
+  const silence = longestSilenceAfterFirstSound(pcm, sampleRate, { thresholdDb: SILENCE_THRESHOLD_DB });
+  const planLines = (plan && plan.lines) || [];
+  const gapMs = plan && plan.meta && plan.meta.gapMs != null ? plan.meta.gapMs : undefined;
+  const silenceGaps = gapsFromPcm(pcm, sampleRate, timingsLines || [], planLines, { gapMs });
+  return { silence, silenceGaps };
+}
+
 export async function reviewReel({ dir, paths, mp4Flag }) {
   let mp4Path = mp4Flag;
   let renderedNow = false;
@@ -369,7 +385,13 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     // last line's end) so an intended silent tail/end card (see
     // plan.json meta.tailSec) is not counted as a gap to flag.
     const narrationPcm = pcm.subarray(0, Math.min(pcm.length, Math.round(lastLineEnd * AUDIO_SAMPLE_RATE)));
-    const silence = longestSilenceAfterFirstSound(narrationPcm, AUDIO_SAMPLE_RATE, { thresholdDb: -50 });
+    let plan = null;
+    try {
+      plan = loadPlan(dir);
+    } catch {
+      plan = null;
+    }
+    const { silence, silenceGaps } = narrationSilenceCheck({ pcm: narrationPcm, sampleRate: AUDIO_SAMPLE_RATE, timingsLines: timings.lines, plan });
     // A mark inside a narration window may sit on a sound render.mjs ducked
     // (scripts/lib/duck.mjs, references/sound.md "Mix") — flag that here so
     // a borderline offset reads as expected, not a silent regression.
@@ -392,7 +414,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
         (offsetMs != null && offsetMs >= SYNC_OFFSET_MIN_MS && offsetMs <= SYNC_OFFSET_MAX_MS);
       return { at: m.at, kind: m.kind, sync, offsetMs, source, duckedByNarration, pass };
     });
-    const silencePass = silence.longestSilenceSec <= SILENCE_GATE_SEC;
+    const silencePass = silenceGaps.unplanned.length === 0;
     const marksPass = markResults.every((m) => m.pass);
 
     const report = {
@@ -432,6 +454,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           longestSilenceSec: silence.longestSilenceSec,
           silenceGateSec: SILENCE_GATE_SEC,
           silencePass,
+          silenceGaps: { unplanned: silenceGaps.unplanned, planned: silenceGaps.planned },
           marks: markResults,
           onsetSourceNote:
             "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
@@ -457,7 +480,7 @@ function printSummary(report) {
     `A/V duration: video=${report.duration.video.toFixed(3)}s audio=${report.duration.audio.toFixed(3)}s delta=${report.duration.deltaMs.toFixed(1)}ms [${c.avSync.pass ? "PASS" : "FAIL"}]`,
     `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${c.deadAir.pass ? "PASS" : "FAIL"}]`,
     `layout issues: ${c.layout.issueCount} [${c.layout.pass ? "PASS" : "FAIL"}]`,
-    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s) [${c.audio.silencePass ? "PASS" : "FAIL"}]`,
+    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${c.audio.silencePass ? "PASS" : "FAIL"}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     report.note,
   ];

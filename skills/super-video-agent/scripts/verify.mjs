@@ -11,7 +11,7 @@ import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds } from "./lib/br
 import { sha256, buildProbeTimes, deterministicShuffle } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 
-const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>]
+const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check]
 
 Runs three checks against <reel-dir>/reel.html:
   1. Static scan of the scene script for banned nondeterministic/network
@@ -37,7 +37,8 @@ how many pass a \`moving\` option — a fact report, not a gate.
 
 Also warns (does not fail) when plan.json's line cues (design.md §2.5)
 don't match assets/lib/cues.json, i.e. \`assets.mjs fetch\` hasn't run since
-the cues last changed.
+the cues last changed. --no-cue-check turns that warning off (for a session
+that cannot run assets.mjs).
 
 Exits 0 on pass. Exits 1 with a DIAGNOSIS line on the first failure found.
 `;
@@ -66,7 +67,7 @@ export async function main(argv) {
     process.exitCode = 1;
     return;
   }
-  warnOnCueDrift(dir, paths);
+  warnOnCueDrift(dir, paths, { skip: flags["no-cue-check"] === true });
 
   const server = await serveDir(dir);
   try {
@@ -318,7 +319,8 @@ export function describeOffender(kind, t, result) {
  * match what assets/lib/cues.json has fetched — e.g. a cue was added,
  * removed or retargeted since the last `assets.mjs fetch`.
  */
-function warnOnCueDrift(dir, paths) {
+export function warnOnCueDrift(dir, paths, { skip = false } = {}) {
+  if (skip) return;
   let plan;
   try {
     plan = readJson(paths.planJson);
