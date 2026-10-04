@@ -72,13 +72,14 @@ async function withFixture(distribution, fn) {
   }
 }
 
-test("fetchModel: copies a GLB into assets/models/ and prints its licence", async () => {
+test("fetchModel: copies a GLB into assets/models/<id>/ and prints its licence", async () => {
   await withFixture(undefined, async ({ reelDir, assets }) => {
     const logs = [];
     const r = await fetchModel({ id: "model-char-bear", dir: reelDir, log: (l) => logs.push(l) });
     assert.equal(r.fetched, 1);
-    assert.equal(r.file, "assets/models/bear.glb");
-    assert.equal(fs.readFileSync(path.join(assets, "models", "bear.glb"), "utf8"), "glb-bear");
+    assert.equal(r.file, "assets/models/model-char-bear/bear.glb");
+    assert.ok(logs.some((l) => l.includes("assets/models/model-char-bear/bear.glb")));
+    assert.equal(fs.readFileSync(path.join(assets, "models", "model-char-bear", "bear.glb"), "utf8"), "glb-bear");
     assert.ok(logs.some((l) => l.includes("model-char-bear: license own (commercialSafe=true)")));
     assert.ok(logs.some((l) => l.includes("made in-house")));
   });
@@ -88,16 +89,16 @@ test("fetchModel: an image goes to assets/refs/, code to assets/models/", async 
   await withFixture(undefined, async ({ reelDir, assets }) => {
     await fetchModel({ id: "model-owner-face", dir: reelDir });
     await fetchModel({ id: "model-code-phone", dir: reelDir });
-    assert.ok(fs.existsSync(path.join(assets, "refs", "face.png")));
-    assert.ok(fs.existsSync(path.join(assets, "models", "phone.js")));
-    assert.ok(!fs.existsSync(path.join(assets, "models", "face.png")));
+    assert.ok(fs.existsSync(path.join(assets, "refs", "model-owner-face", "face.png")));
+    assert.ok(fs.existsSync(path.join(assets, "models", "model-code-phone", "phone.js")));
+    assert.ok(!hasFileNamed(path.join(assets, "models"), "face.png"));
   });
 });
 
 test("fetchModel: a .gltf brings its .bin, textures and licence file, not its neighbours", async () => {
   await withFixture(undefined, async ({ reelDir, assets }) => {
     const r = await fetchModel({ id: "model-set-tree", dir: reelDir });
-    const got = fs.readdirSync(path.join(assets, "models")).sort();
+    const got = fs.readdirSync(path.join(assets, "models", "model-set-tree")).sort();
     assert.deepEqual(got, ["Bark.png", "License_Standard.txt", "Tree.bin", "Tree.gltf"]);
     assert.equal(r.files.length, 4);
   });
@@ -111,14 +112,14 @@ test("fetchModel: refuses a non-commercialSafe model unless the reel is personal
       /refusing to fetch non-commercialSafe asset/
     );
     assert.ok(logs.some((l) => l.includes("model-char-plush: license tripo-free (commercialSafe=false)")), "licence printed before refusing");
-    assert.ok(!fs.existsSync(path.join(assets, "models", "plush.glb")), "nothing copied");
+    assert.ok(!hasFileNamed(path.join(assets, "models"), "plush.glb"), "nothing copied");
 
     const r = await fetchModel({ id: "model-char-plush", dir: reelDir, allowPersonalScope: true });
     assert.equal(r.fetched, 1);
   });
   await withFixture("personal", async ({ reelDir, assets }) => {
     await fetchModel({ id: "model-char-plush", dir: reelDir });
-    assert.ok(fs.existsSync(path.join(assets, "models", "plush.glb")));
+    assert.ok(fs.existsSync(path.join(assets, "models", "model-char-plush", "plush.glb")));
   });
 });
 
@@ -225,8 +226,8 @@ test("fetchModel: a valid textures/x.png uri is copied into the same subfolder",
     fs.writeFileSync(path.join(libDir, "models/sets/trees/textures/x.png"), "tex");
     const id = addGltf(libDir, "sub", ["textures/x.png"]);
     const r = await fetchModel({ id, dir: reelDir });
-    assert.equal(fs.readFileSync(path.join(assets, "models", "textures", "x.png"), "utf8"), "tex");
-    assert.ok(r.files.includes("assets/models/textures/x.png"));
+    assert.equal(fs.readFileSync(path.join(assets, "models", id, "textures", "x.png"), "utf8"), "tex");
+    assert.ok(r.files.includes(`assets/models/${id}/textures/x.png`));
   });
 });
 
@@ -235,6 +236,117 @@ test("fetchModel: a percent-encoded space in a valid uri is decoded to the real 
     fs.writeFileSync(path.join(libDir, "models/sets/trees/my tex.png"), "tex");
     const id = addGltf(libDir, "space", ["my%20tex.png"]);
     await fetchModel({ id, dir: reelDir });
-    assert.ok(fs.existsSync(path.join(assets, "models", "my tex.png")));
+    assert.ok(fs.existsSync(path.join(assets, "models", id, "my tex.png")));
+  });
+});
+
+/** Makes a file or directory symlink at `link` pointing to `target`. */
+function symlink(target, link) {
+  fs.symlinkSync(target, link);
+}
+
+/** A file outside the library, removed by the caller's cleanup. */
+function makeOutsideSecret() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-outside-"));
+  fs.writeFileSync(path.join(dir, "secret.bin"), "secret");
+  fs.writeFileSync(path.join(dir, "License_Stolen.txt"), "stolen");
+  return dir;
+}
+
+test("fetchModel: a file symlink among the companions is refused and nothing is copied", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    const outside = makeOutsideSecret();
+    try {
+      const treeDir = path.join(libDir, "models/sets/trees");
+      symlink(path.join(outside, "secret.bin"), path.join(treeDir, "link.bin"));
+      const id = addGltf(libDir, "flink", ["link.bin"]);
+      await assert.rejects(() => fetchModel({ id, dir: reelDir }), /outside the library folder/);
+      assert.ok(!hasFileNamed(assets, "link.bin") && !hasFileNamed(assets, "flink.gltf"));
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("fetchModel: a directory symlink among the companions is refused and nothing is copied", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    const outside = makeOutsideSecret();
+    try {
+      symlink(outside, path.join(libDir, "models/sets/trees/linked"));
+      const id = addGltf(libDir, "dlink", ["linked/secret.bin"]);
+      await assert.rejects(() => fetchModel({ id, dir: reelDir }), /outside the library folder/);
+      assert.ok(!hasFileNamed(assets, "secret.bin") && !hasFileNamed(assets, "dlink.gltf"));
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("fetchModel: a license*.txt symlink to a file outside the library is refused", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    const outside = makeOutsideSecret();
+    try {
+      symlink(path.join(outside, "License_Stolen.txt"), path.join(libDir, "models/sets/trees/License_Link.txt"));
+      await assert.rejects(() => fetchModel({ id: "model-set-tree", dir: reelDir }), /outside the library folder/);
+      assert.ok(!hasFileNamed(assets, "License_Link.txt") && !hasFileNamed(assets, "Tree.gltf"));
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+test("fetchModel: a symlink that stays inside the library is still copied", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    symlink(path.join(libDir, "models/characters/bear.glb"), path.join(libDir, "models/characters/bear-alias.glb"));
+    const catalogPath = path.join(libDir, "catalog.json");
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+    catalog.assets.push({ id: "model-alias", role: "character", kind: "model", path: "models/characters/bear-alias.glb", description: "alias", tags: [], format: "glb", rigged: false, clips: [], license: OWN });
+    writeJson(catalogPath, catalog);
+    await fetchModel({ id: "model-alias", dir: reelDir });
+    assert.equal(fs.readFileSync(path.join(assets, "models", "model-alias", "bear-alias.glb"), "utf8"), "glb-bear");
+  });
+});
+
+test("catalogue path ../ is refused by model and by fetch, naming the asset id", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    fs.writeFileSync(path.join(path.dirname(libDir), "sva-secret-x.txt"), "secret");
+    const catalogPath = path.join(libDir, "catalog.json");
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+    const rel = `../sva-secret-x.txt`;
+    catalog.assets.push({ id: "model-escape", role: "prop", kind: "code", path: rel, description: "escape", tags: [], license: OWN });
+    catalog.assets.push({ id: "sfx-escape", role: "sfx", kind: "audio", path: rel, description: "escape", tags: [], durationSec: 1, hasAudio: true, license: OWN });
+    writeJson(catalogPath, catalog);
+    try {
+      await assert.rejects(() => fetchModel({ id: "model-escape", dir: reelDir }), /asset "model-escape" resolves outside the library/);
+      writeJson(reelPaths(reelDir).planJson, {
+        meta: { title: "T", voice: { provider: "none" } },
+        lines: [{ id: "l1", text: "hi", cues: [{ asset: "sfx-escape", at: "start" }] }],
+      });
+      await assert.rejects(() => fetchAssets({ dir: reelDir }), /asset "sfx-escape" resolves outside the library/);
+      assert.ok(!hasFileNamed(assets, "sva-secret-x.txt") && !hasFileNamed(assets, "sfx-escape.txt"));
+    } finally {
+      fs.rmSync(path.join(path.dirname(libDir), "sva-secret-x.txt"), { force: true });
+    }
+  });
+});
+
+test("fetchModel: two models with the same scene.gltf/scene.bin names both survive", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    const catalogPath = path.join(libDir, "catalog.json");
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+    for (const n of ["a", "b"]) {
+      const sub = path.join(libDir, "models/pack-" + n);
+      fs.mkdirSync(sub, { recursive: true });
+      fs.writeFileSync(path.join(sub, "scene.gltf"), JSON.stringify({ asset: { version: "2.0" }, buffers: [{ uri: "scene.bin" }] }));
+      fs.writeFileSync(path.join(sub, "scene.bin"), "bin-" + n);
+      catalog.assets.push({ id: `model-pack-${n}`, role: "prop", kind: "model", path: `models/pack-${n}/scene.gltf`, description: n, tags: [n], format: "gltf", rigged: false, clips: [], license: OWN });
+    }
+    writeJson(catalogPath, catalog);
+    await fetchModel({ id: "model-pack-a", dir: reelDir });
+    await fetchModel({ id: "model-pack-b", dir: reelDir });
+    assert.equal(fs.readFileSync(path.join(assets, "models", "model-pack-a", "scene.bin"), "utf8"), "bin-a");
+    assert.equal(fs.readFileSync(path.join(assets, "models", "model-pack-b", "scene.bin"), "utf8"), "bin-b");
+    assert.ok(fs.existsSync(path.join(assets, "models", "model-pack-a", "scene.gltf")));
+    assert.ok(fs.existsSync(path.join(assets, "models", "model-pack-b", "scene.gltf")));
   });
 });

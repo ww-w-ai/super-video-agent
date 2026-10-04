@@ -195,7 +195,12 @@ export function scaffoldTestbed({ dir, width, height, fps, title }) {
       .replaceAll("{{FPS}}", String(fps));
     fs.writeFileSync(paths.reelHtml, html, "utf8");
   }
-  const models = fs.readdirSync(modelsDir).filter((f) => f.toLowerCase().endsWith(".glb")).sort();
+  // Recursive: `assets.mjs model` puts each model in assets/models/<id>/.
+  const models = fs
+    .readdirSync(modelsDir, { recursive: true })
+    .map((f) => String(f).split(path.sep).join("/"))
+    .filter((f) => f.toLowerCase().endsWith(".glb"))
+    .sort();
   writeJson(path.join(modelsDir, "models.json"), { files: models });
   return { keptHtml, models };
 }

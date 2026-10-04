@@ -468,8 +468,9 @@ avatar or reference picture). A model entry adds `format`, `rigged`, `clips: [{n
 `triangles`, `heightM`, `origin` (film and original path) and an optional `preview` PNG; its
 `license` is read the same way as a clip's. Search them with `assets.mjs search --role character <words>`,
 which prints rigged, clip names and the licence, and copy one into a reel with
-`assets.mjs model <id> <reel-dir>`: models and code land in `assets/models/`, images in
-`assets/refs/`, a glTF with its `.bin` and textures. `model` applies the `commercialSafe` rule
+`assets.mjs model <id> <reel-dir>`: models and code land in `assets/models/<id>/`, images in
+`assets/refs/<id>/`, a glTF with its `.bin` and textures. Each asset gets its own `<id>` folder,
+so two glTF exports that share file names do not overwrite each other. `model` applies the `commercialSafe` rule
 exactly as `fetch` does. A model id in a line's `cues` is refused; cues take clips only.
 
 To add your own clip or effect: put the file under `library/` and add one entry to

@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
-import { openLibrary, locateLibraryDir, assetFilePath, getById, searchAssets, isModelAsset } from "./lib/library.mjs";
+import { openLibrary, locateLibraryDir, assetFilePath, assertInsideLibrary, getById, searchAssets, isModelAsset } from "./lib/library.mjs";
 import { collectPlanCues, defaultPlay } from "./lib/cues.mjs";
 import { ffmpeg, ffprobe } from "./lib/ffmpeg.mjs";
 
@@ -17,10 +17,12 @@ const HELP = `usage: assets.mjs search <query> [--role sfx|reaction|character|pr
 search   Lists library assets whose description/tags match every word in
          <query> (case-insensitive): clips with duration, 3D models and
          images with rigged/clips, plus the license.
-model    Copies a 3D model (character, prop, set), an owner image, or a
-         code-built model module into <reel-dir>/assets/models/ (images:
-         <reel-dir>/assets/refs/) and prints its license. A glTF also
-         brings its .bin and textures. Same license rule as fetch.
+model    Copies a 3D model (character, prop, set) or a code-built model
+         module into <reel-dir>/assets/models/<id>/, an owner image into
+         <reel-dir>/assets/refs/<id>/, and prints its license. A glTF also
+         brings its .bin and textures. Each asset has its own <id> folder,
+         so two models that both export scene.gltf do not overwrite each
+         other. Same license rule as fetch.
 fetch    Copies every asset cued in <reel-dir>/plan.json's lines[].cues
          into <reel-dir>/assets/lib/: audio as-is, video as JPEG frames at
          the plan's fps plus a wav of its own audio when it has one.
@@ -180,7 +182,7 @@ function gltfCompanions(gltfPath) {
 
 /**
  * `assets.mjs model`'s logic: copy one model/image/code asset into the reel.
- * Models and code go to assets/models/, images to assets/refs/. Rejects
+ * Models and code go to assets/models/<id>/, images to assets/refs/<id>/. Rejects
  * (instead of exiting) on an unknown id, a clip asset, a missing file, or a
  * non-commercialSafe asset without the personal-scope override.
  * @returns {Promise<{fetched:number, file?:string, files?:string[]}>}
@@ -211,7 +213,8 @@ export async function fetchModel({ id, dir, allowPersonalScope = false, log = ()
   const srcPath = assetFilePath(library, asset);
   if (!fs.existsSync(srcPath)) throw new Error(`library file missing for "${id}": ${srcPath}`);
   const sub = asset.kind === "image" ? "refs" : "models";
-  const destDir = path.join(paths.assetsDir, sub);
+  if (/[\\/]/.test(asset.id) || asset.id === "." || asset.id === "..") throw new Error(`asset id "${id}" is not a usable folder name`);
+  const destDir = path.join(paths.assetsDir, sub, asset.id);
   ensureDir(destDir);
 
   const srcDir = path.dirname(srcPath);
@@ -219,16 +222,17 @@ export async function fetchModel({ id, dir, allowPersonalScope = false, log = ()
   if (extra.length) for (const f of fs.readdirSync(srcDir)) if (/^license.*\.txt$/i.test(f)) extra.push(f);
   const names = [path.basename(srcPath), ...extra];
   // Validate every source and destination before copying anything, so a bad uri leaves no partial copy.
-  const copies = names.map((name) => ({
-    from: resolveInside(srcDir, name, name),
-    to: resolveInside(destDir, name, name),
-  }));
+  const copies = names.map((name) => {
+    const from = resolveInside(srcDir, name, name);
+    assertInsideLibrary(library, from, `${id}: ${name}`);
+    return { from, to: resolveInside(destDir, name, name) };
+  });
   for (const { from, to } of copies) {
     ensureDir(path.dirname(to));
     fs.copyFileSync(from, to);
   }
 
-  const files = names.map((n) => `assets/${sub}/${n}`);
+  const files = names.map((n) => `assets/${sub}/${asset.id}/${n}`);
   log(`fetched ${asset.id} into ${destDir} (${files.join(", ")})`);
   return { fetched: 1, file: files[0], files };
 }
