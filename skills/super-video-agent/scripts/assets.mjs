@@ -131,13 +131,51 @@ function personalScopeAllowed(plan, allowPersonalScope) {
   return allowPersonalScope || distribution === "personal";
 }
 
-/** Files a .gltf pulls in by relative uri (its .bin and textures). */
+/**
+ * Joins `rel` onto `base` and returns the result only if it stays under `base`.
+ * A .gltf is third-party data, so its uris must not steer a read or a write
+ * outside the asset's own folder or the reel's destination folder.
+ * @param {string} base
+ * @param {string} rel
+ * @param {string} uri the original uri, for the error message
+ */
+function resolveInside(base, rel, uri) {
+  const full = path.resolve(base, rel);
+  if (!full.startsWith(path.resolve(base) + path.sep)) {
+    throw new Error(`glTF uri "${uri}" points outside the asset folder`);
+  }
+  return full;
+}
+
+/**
+ * Decodes one glTF uri into a safe relative path (forward slashes), or throws.
+ * Rejects absolute paths, drive letters, url schemes, NUL and any `..` segment.
+ */
+function safeCompanionPath(uri) {
+  let decoded;
+  try {
+    decoded = decodeURIComponent(uri);
+  } catch {
+    throw new Error(`glTF uri "${uri}" is not valid URI encoding`);
+  }
+  const normalized = decoded.replace(/\\/g, "/");
+  const bad =
+    decoded.includes("\0") ||
+    path.isAbsolute(decoded) ||
+    normalized.startsWith("/") ||
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(normalized) ||
+    normalized.split("/").includes("..");
+  if (bad || normalized === "") throw new Error(`glTF uri "${uri}" is absolute or leaves the asset folder`);
+  return normalized;
+}
+
+/** Files a .gltf pulls in by relative uri (its .bin and textures), as safe relative paths. */
 function gltfCompanions(gltfPath) {
   const json = JSON.parse(fs.readFileSync(gltfPath, "utf8"));
   const uris = [...(json.buffers || []), ...(json.images || [])]
     .map((x) => x.uri)
     .filter((u) => typeof u === "string" && !u.startsWith("data:"));
-  return [...new Set(uris)];
+  return [...new Set(uris.map(safeCompanionPath))];
 }
 
 /**
@@ -180,7 +218,15 @@ export async function fetchModel({ id, dir, allowPersonalScope = false, log = ()
   const extra = srcPath.endsWith(".gltf") ? gltfCompanions(srcPath) : [];
   if (extra.length) for (const f of fs.readdirSync(srcDir)) if (/^license.*\.txt$/i.test(f)) extra.push(f);
   const names = [path.basename(srcPath), ...extra];
-  for (const name of names) fs.copyFileSync(path.join(srcDir, name), path.join(destDir, name));
+  // Validate every source and destination before copying anything, so a bad uri leaves no partial copy.
+  const copies = names.map((name) => ({
+    from: resolveInside(srcDir, name, name),
+    to: resolveInside(destDir, name, name),
+  }));
+  for (const { from, to } of copies) {
+    ensureDir(path.dirname(to));
+    fs.copyFileSync(from, to);
+  }
 
   const files = names.map((n) => `assets/${sub}/${n}`);
   log(`fetched ${asset.id} into ${destDir} (${files.join(", ")})`);

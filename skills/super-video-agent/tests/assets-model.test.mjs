@@ -167,3 +167,74 @@ test("search: --role character finds models only, and the line shows rigged, cli
     assert.match(searchLine(lib.assets.find((a) => a.id === "model-owner-face")), /\[character-ref\/image\] {2}license:own/);
   });
 });
+
+/** Adds a catalog model whose .gltf names `uris` as its buffers; returns its id. */
+function addGltf(libDir, name, uris) {
+  const rel = `models/sets/trees/${name}.gltf`;
+  fs.writeFileSync(path.join(libDir, rel), JSON.stringify({ asset: { version: "2.0" }, buffers: uris.map((uri) => ({ uri })) }));
+  const catalogPath = path.join(libDir, "catalog.json");
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+  const id = `model-set-${name}`;
+  catalog.assets.push({ id, role: "set", kind: "model", path: rel, description: name, tags: [name], format: "gltf", rigged: false, clips: [], license: OWN });
+  writeJson(catalogPath, catalog);
+  return id;
+}
+
+/** True when any file under `root` has the given basename. */
+function hasFileNamed(root, base) {
+  if (!fs.existsSync(root)) return false;
+  return fs.readdirSync(root, { recursive: true }).some((f) => path.basename(String(f)) === base);
+}
+
+test("fetchModel: a gltf uri with ../ is refused and nothing leaves the library", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    fs.writeFileSync(path.join(libDir, "models/sets/secret.bin"), "secret");
+    const id = addGltf(libDir, "up", ["../secret.bin"]);
+    await assert.rejects(() => fetchModel({ id, dir: reelDir }), /glTF uri "\.\.\/secret\.bin"/);
+    assert.ok(!hasFileNamed(assets, "secret.bin"));
+    assert.ok(!hasFileNamed(assets, "up.gltf"), "nothing is copied when any uri is bad");
+  });
+});
+
+test("fetchModel: an absolute gltf uri is refused", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    const outside = path.join(os.tmpdir(), "sva-abs-secret.bin");
+    fs.writeFileSync(outside, "secret");
+    try {
+      const id = addGltf(libDir, "abs", [outside]);
+      await assert.rejects(() => fetchModel({ id, dir: reelDir }), /absolute or leaves the asset folder/);
+      assert.ok(!hasFileNamed(assets, "sva-abs-secret.bin"));
+    } finally {
+      fs.rmSync(outside, { force: true });
+    }
+  });
+});
+
+test("fetchModel: an encoded %2e%2e/ gltf uri is refused", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    fs.writeFileSync(path.join(libDir, "models/sets/secret.bin"), "secret");
+    const id = addGltf(libDir, "enc", ["%2e%2e/secret.bin"]);
+    await assert.rejects(() => fetchModel({ id, dir: reelDir }), /glTF uri "%2e%2e\/secret\.bin"/);
+    assert.ok(!hasFileNamed(assets, "secret.bin"));
+  });
+});
+
+test("fetchModel: a valid textures/x.png uri is copied into the same subfolder", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    fs.mkdirSync(path.join(libDir, "models/sets/trees/textures"), { recursive: true });
+    fs.writeFileSync(path.join(libDir, "models/sets/trees/textures/x.png"), "tex");
+    const id = addGltf(libDir, "sub", ["textures/x.png"]);
+    const r = await fetchModel({ id, dir: reelDir });
+    assert.equal(fs.readFileSync(path.join(assets, "models", "textures", "x.png"), "utf8"), "tex");
+    assert.ok(r.files.includes("assets/models/textures/x.png"));
+  });
+});
+
+test("fetchModel: a percent-encoded space in a valid uri is decoded to the real file name", async () => {
+  await withFixture(undefined, async ({ libDir, reelDir, assets }) => {
+    fs.writeFileSync(path.join(libDir, "models/sets/trees/my tex.png"), "tex");
+    const id = addGltf(libDir, "space", ["my%20tex.png"]);
+    await fetchModel({ id, dir: reelDir });
+    assert.ok(fs.existsSync(path.join(assets, "models", "my tex.png")));
+  });
+});
