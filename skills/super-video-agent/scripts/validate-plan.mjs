@@ -9,6 +9,8 @@ import { readJson, reelPaths } from "./lib/reeldir.mjs";
 import { validate } from "./lib/schema-check.mjs";
 import { stripCaptionBreaks, spokenText } from "./lib/pronounce.mjs";
 import { stripTags } from "./lib/tags.mjs";
+import { captionBreakReport } from "./lib/caption-breaks.mjs";
+import { leadErrors, leadSec } from "./lib/lead.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { withShortsRate, lineSpeed } from "./voice.mjs";
 
@@ -32,13 +34,18 @@ JSON path if not. <reel-dir> may be a dub folder (dub/<code>/).
              last syllable, or the last word in a spaced script), the ending
              counts, adjacent lines with the same ending, and "!" and comma
              counts per line.
-Both reports never change the exit code.
+--breaks     Every caption break of the whole film as "line id: …before | after…"
+             (a "|" marker, a "\\n", phrase punctuation), so one read shows
+             them all. --dub <code> reads dub/<code>/plan.json instead;
+             --max-chars <n> also shows the engine's even split of a long
+             phrase at that chunk size.
+The reports never change the exit code.
 `;
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
   // "--estimate <dir>" parses the dir as the flag's value; take it back.
-  for (const name of ["estimate", "listener"]) {
+  for (const name of ["estimate", "listener", "breaks"]) {
     if (typeof flags[name] === "string") {
       positional.push(flags[name]);
       flags[name] = true;
@@ -62,7 +69,7 @@ export async function main(argv) {
   }
 
   const { valid, errors } = validate(plan, schema);
-  if (valid) errors.push(...cueWordErrors(plan), ...captionBreakErrors(plan));
+  if (valid) errors.push(...cueWordErrors(plan), ...captionBreakErrors(plan), ...leadErrors(plan));
   if (errors.length) {
     process.stderr.write("plan.json is invalid:\n");
     for (const e of errors) process.stderr.write(`  - ${e}\n`);
@@ -81,6 +88,20 @@ export async function main(argv) {
     process.stdout.write(formatEstimate(estimateLength(plan, { rate, rateFrom })));
   }
   if (flags.listener) process.stdout.write(formatListener(listenerReport(plan)));
+  if (flags.breaks) {
+    const code = typeof flags.dub === "string" ? flags.dub : null;
+    let source = plan;
+    if (code) {
+      try {
+        source = readJson(reelPaths(path.join(dir, "dub", code)).planJson);
+      } catch (e) {
+        fail(e.message);
+        return;
+      }
+    }
+    const maxChars = flags["max-chars"] != null ? Number(flags["max-chars"]) : undefined;
+    process.stdout.write(await captionBreakReport(source, { maxChars, label: code ? `caption breaks (${code})` : "caption breaks" }));
+  }
 }
 
 // ---------------------------------------------------------------------
@@ -176,7 +197,7 @@ export function estimateLength(plan, opts = {}) {
   const perLine = lines.map((l) => ({ ...l, sec: l.units / (baseRate * l.speed) }));
   const speechSec = perLine.reduce((a, l) => a + l.sec, 0);
   const pauseSec = plan.lines.slice(0, -1).reduce((a, l) => a + (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000, 0);
-  const headSec = HEAD_SILENCE_SEC;
+  const headSec = HEAD_SILENCE_SEC + leadSec(meta);
   const tailSec = meta.tailSec == null ? TAIL_SILENCE_SEC : meta.tailSec;
   return {
     lang,

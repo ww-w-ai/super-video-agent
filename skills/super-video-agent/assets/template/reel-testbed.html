@@ -46,7 +46,7 @@ renderer.setSize(RW, RH, false);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 
 const loader = new GLTFLoader();
 const G = {};           // file name -> loaded gltf

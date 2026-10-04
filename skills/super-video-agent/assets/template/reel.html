@@ -111,10 +111,24 @@
     });
   }
 
+  // Two clocks in a dub (references/pipeline.md "Dubbing"): `timings`/`tl`
+  // follow the language being drawn and are what drawCaptions reads; `clk`
+  // (Reel.clocks) adds the base language's clock from the film's own
+  // voice/timings.json, which every non-caption layer — a label, a beat, an
+  // animation keyed to a word — reads through clk.base / clk.cueTime /
+  // clk.word, so it lands where it did in the original film. A render with no
+  // dub has one clock and clk.base === tl.
+  var baseTimings = null;
+  var clk = null;
+
   function loadTimings() {
     return loadFirstJSON(files.timings, true).then(function (data) {
       timings = data;
       tl = Reel.timeline(timings);
+      return isCaptionLayer && dubCode ? loadJSON("voice/timings.json", false) : null;
+    }).then(function (base) {
+      baseTimings = base || timings;
+      clk = Reel.clocks(timings, baseTimings);
       // Shot i spans from line i's start (the first shot from 0) to line
       // i+1's start (the last shot to the timeline duration), so shots
       // tile the whole film — including any gapMs silence between lines
@@ -427,10 +441,15 @@
   // highlight) — dubPlan (dub/<code>/plan.json, that language's own lines)
   // carries whatever per-line fields it needs to key off, such as an
   // `emphasis` word list, for the language currently loaded.
+  // Captions follow this language's voice (timings / tl). Anything else drawn
+  // here — a label, a beat, a word-keyed animation, a sound cue — takes its
+  // time from the base clock instead: clk.base.line(i) / clk.word(lineId, "x")
+  // / clk.cueTime(cue, lineId), not tl.
   function drawCaptions(t) {
     var idx = currentLineIndex(t);
     var line = idx >= 0 ? timings.lines[idx] : null;
-    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT });
+    var meta = (dubPlan && dubPlan.meta) || (basePlan && basePlan.meta) || {};
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT, lang: line && line.lang || meta.lang });
   }
 
   // seek(t): pure function of t. Background paint + scene dispatch by the

@@ -548,15 +548,153 @@
   // text — wrap + overflow detection. Reading text never boils.
   // ---------------------------------------------------------------------
 
-  // greedyFillRows(widths, spaceW, w) — packs word indices into rows,
+  // ---- caption break rules (the automatic fallback; a writer's "|" always wins) ----
+  // One rule set, used by every caption path: row wrapping (wrapParts,
+  // captionRows) and word-by-word chunking (captionChunks). A "glue" array
+  // marks the places a caption must not break: glue[i] true = never between
+  // unit i and unit i+1.
+  //   - a number never parts from its unit ("10 kg", "30 %", "3 개")
+  //   - an article/preposition never ends a row (per-language short lists)
+  //   - ko: a dependent noun or particle token stays with the word before it
+  //     ("할 수 밖에 없다" is one piece)
+  //   - nothing breaks inside a short parenthesis or quote span
+  //   - CJK (ja, zh) wraps by characters, but a number+unit, a Latin word and
+  //     a closing/opening mark each stay whole (captionUnits)
+  function wordSet(s) {
+    const o = Object.create(null);
+    s.split(/\s+/).forEach(function (w) { if (w) o[w] = true; });
+    return o;
+  }
+  const CAPTION_FUNCTION_WORDS = {
+    en: wordSet("a an the of to in on at by for with from into onto over under about as than"),
+    fr: wordSet("le la les un une des du de au aux à en dans sur sous avec pour par sans chez ce cet cette ces"),
+    es: wordSet("el la los las un una unos unas de del a al en con por para sin sobre entre"),
+    pt: wordSet("o a os as um uma uns umas de do da dos das em no na nos nas por para com sem sobre ao aos à às"),
+    it: wordSet("il lo la i gli le un uno una di del dello della dei degli delle a al allo alla ai agli alle da dal dalla in nel nella con su sul per tra fra"),
+    de: wordSet("der die das den dem des ein eine einen einem einer eines von zu zum zur mit in im an am auf aus bei nach für über unter vor durch gegen ohne um"),
+  };
+  // Korean tokens that attach to the word before them (dependent nouns,
+  // spaced particles, counters).
+  const CAPTION_KO_DEPENDENT = wordSet("수 것 줄 뿐 때문 따름 만큼 대로 듯 척 밖에 은 는 을 를 에 의 도 로 와 과 부터 까지 처럼 보다 에서 에게 한테 번 개 명 마리 원 분 시간 달 살 권 장 대");
+  const CAPTION_UNIT_WORDS = wordSet(
+    "% percent kg g mg km m cm mm l ml s sec ms min h hr hrs mb gb tb kb kbps fps px usd eur gbp krw " +
+    "second seconds minute minutes hour hours day days week weeks month months year years dollars euros pounds " +
+    "secondes minutes heure heures jour jours semaines mois an ans euros segundos minutos hora horas día días semana semanas mes meses año años " +
+    "dia dias ano anos mês meses secondi minuti ora ore giorno giorni settimana settimane mese anno anni " +
+    "sekunden minuten stunde stunden tag tage woche wochen monat monate jahr jahre prozent " +
+    "개 명 원 번 살 시 분 초 년 월 일 퍼센트 배 마리 권 장 대 층 위 점 만 억 조 " +
+    "分钟 分鐘 分 秒 小时 小時 時間 时 時 天 日 年 月 个 個 本 人 円 元 块 塊 歳 岁 歲 回 次 倍 万 萬 億 亿 度"
+  );
+  const CAPTION_CJK_UNIT_ALT = "分钟|分鐘|小时|小時|時間|秒钟|秒鐘|个|個|年|月|日|号|號|天|周|週|岁|歲|歳|円|元|块|塊|人|回|次|倍|本|台|件|位|万|萬|億|亿|度|時|时|分|秒";
+  const CJK_CHAR_RE = /[぀-ヿㇰ-ㇿ㐀-䶿一-鿿豈-﫿]/;
+  const CJK_TOKEN_RE = new RegExp(
+    "\\d+(?:[.,]\\d+)*(?:%|％|[A-Za-z]+|" + CAPTION_CJK_UNIT_ALT + ")?|[A-Za-z][A-Za-z0-9'’\\-_]*|[\\uAC00-\\uD7A3]+|[\\s\\S]",
+    "g"
+  );
+  // marks that never start a row / never end a row (kinsoku)
+  const CJK_NO_START = "、。，．！？：；…）」』”’】》〉］｝ー々ゝゞゃゅょっぁぃぅぇぉゎャュョッァィゥェォヮ,.!?;:)]";
+  const CJK_NO_END = "（「『“‘【《〈［｛([";
+  const SPAN_OPENER_RE = /^[(\[（「『“‘«‹"]/;
+  const SPAN_CLOSER_RE = /[)\]）」』”’»›"][.,!?…;:]*$/;
+  const SPAN_CAP_WORDS = 6;
+  const SPAN_CAP_UNITS = 14;
+
+  function captionStripEdge(t) {
+    return String(t).replace(/^[("'“‘«\[（「『]+/, "").replace(/[)"'”’»\]）」』.,!?…:;，。！？]+$/, "");
+  }
+
+  // The language a caption is in: an explicit tag's primary subtag, else
+  // guessed from the script (Hangul -> ko, kana -> ja, Han -> zh).
+  function captionLang(lang, texts) {
+    const p = String(lang || "").split(/[-_]/)[0].toLowerCase();
+    if (p) return p;
+    const s = (texts || []).join(" ");
+    if (/[가-힣]/.test(s)) return "ko";
+    if (/[぀-ヿ]/.test(s)) return "ja";
+    if (CJK_CHAR_RE.test(s)) return "zh";
+    return "";
+  }
+
+  // captionGlue(texts, lang, opts) -> boolean[] — glue[i]: no break between
+  // texts[i] and texts[i+1]. opts.spanCap sets the longest parenthesis/quote
+  // span kept whole (a longer one could never fit a row).
+  function captionGlue(texts, lang, opts) {
+    const n = texts.length;
+    const glue = new Array(n).fill(false);
+    const lg = captionLang(lang, texts);
+    const fw = CAPTION_FUNCTION_WORDS[lg];
+    const spanCap = (opts && opts.spanCap) || SPAN_CAP_WORDS;
+    for (let i = 0; i + 1 < n; i++) {
+      const t = String(texts[i]);
+      const nx = String(texts[i + 1]);
+      const pause = CAPTION_PHRASE_END.test(t);
+      if (/\d$/.test(t) && CAPTION_UNIT_WORDS[captionStripEdge(nx).toLowerCase()]) glue[i] = true;
+      else if (pause) continue;
+      else if (fw && fw[captionStripEdge(t).toLowerCase()]) glue[i] = true;
+      else if (lg === "fr" && /^[A-Za-z]{1,2}['’]$/.test(t)) glue[i] = true;
+      else if (lg === "ko" && (CAPTION_KO_DEPENDENT[captionStripEdge(nx)] || (captionStripEdge(t) === "밖에" && /^없/.test(nx)))) glue[i] = true;
+    }
+    let open = -1;
+    for (let i = 0; i < n; i++) {
+      const t = String(texts[i]);
+      if (open < 0) {
+        if (SPAN_OPENER_RE.test(t) && !(t.length > 1 && SPAN_CLOSER_RE.test(t.slice(1)))) open = i;
+      } else if (SPAN_CLOSER_RE.test(t)) {
+        if (i - open <= spanCap) for (let k = open; k < i; k++) glue[k] = true;
+        open = -1;
+      } else if (i - open > spanCap) {
+        open = -1;
+      }
+    }
+    return glue;
+  }
+
+  // captionUnits(part, lang) -> {texts, sp, glue} — the break units of one
+  // caption part. A whitespace word is one unit, except a word holding Han or
+  // kana, which splits into characters (wrapping by character) while a
+  // number+unit, a Latin word and a Hangul run stay whole and closing /
+  // opening marks stay with their neighbour. sp[i]: a space precedes unit i.
+  function captionUnits(part, lang) {
+    const tokens = String(part || "").split(/\s+/).filter(function (t) { return t.length > 0; });
+    const texts = [];
+    const sp = [];
+    const own = [];
+    let anyCjk = false;
+    tokens.forEach(function (tok, ti) {
+      if (!CJK_CHAR_RE.test(tok)) {
+        texts.push(tok);
+        sp.push(ti > 0);
+        own.push(false);
+        return;
+      }
+      anyCjk = true;
+      const pieces = tok.match(CJK_TOKEN_RE) || [tok];
+      pieces.forEach(function (p, pi) {
+        const k = texts.length;
+        texts.push(p);
+        sp.push(pi === 0 && ti > 0);
+        own.push(false);
+        if (pi > 0 && CJK_NO_START.indexOf(p) >= 0) own[k - 1] = true;
+        if (CJK_NO_END.indexOf(p) >= 0) own[k] = true;
+      });
+    });
+    const glue = captionGlue(texts, lang, { spanCap: anyCjk ? SPAN_CAP_UNITS : SPAN_CAP_WORDS });
+    for (let i = 0; i < glue.length - 1; i++) glue[i] = glue[i] || own[i];
+    if (glue.length) glue[glue.length - 1] = false;
+    return { texts: texts, sp: sp, glue: glue };
+  }
+
+  // greedyFillRows(widths, spaceW, w, gaps) — packs word indices into rows,
   // filling each row to w before starting the next (the plain wrap rule).
   // A single word always starts its own row even if it alone exceeds w.
-  function greedyFillRows(widths, spaceW, w) {
+  // gaps[i] (optional) replaces spaceW as the space before word i.
+  function greedyFillRows(widths, spaceW, w, gaps) {
     const rows = [];
     let cur = [];
     let curW = 0;
     for (let i = 0; i < widths.length; i++) {
-      const next = cur.length ? curW + spaceW + widths[i] : widths[i];
+      const gap = gaps ? gaps[i] : spaceW;
+      const next = cur.length ? curW + gap + widths[i] : widths[i];
       if (cur.length && next > w) {
         rows.push(cur);
         cur = [i];
@@ -570,18 +708,13 @@
     return rows;
   }
 
-  // balanceRows(widths, spaceW, maxW) -> {rows, widths} — same row count as
-  // a plain greedy fill at maxW, but rows are as even as possible instead
-  // of each one packed to the limit (which strands a short last word
-  // alone). Binary-searches the narrowest width, no narrower than the
-  // widest single word, that still greedy-fills to that same row count.
-  function balanceRows(widths, spaceW, maxW) {
+  function balanceRowsCore(widths, spaceW, maxW, gaps) {
     if (!widths.length) return { rows: [], widths: [] };
-    const greedy = greedyFillRows(widths, spaceW, maxW);
+    const greedy = greedyFillRows(widths, spaceW, maxW, gaps);
     const n = greedy.length;
     const rowWidth = function (row) {
       return row.reduce(function (sum, i, idx) {
-        return sum + widths[i] + (idx > 0 ? spaceW : 0);
+        return sum + widths[i] + (idx > 0 ? (gaps ? gaps[i] : spaceW) : 0);
       }, 0);
     };
     if (n <= 1) return { rows: greedy, widths: greedy.map(rowWidth) };
@@ -590,25 +723,76 @@
     let hi = maxW;
     for (let iter = 0; iter < 30; iter++) {
       const mid = (lo + hi) / 2;
-      const rows = greedyFillRows(widths, spaceW, mid);
+      const rows = greedyFillRows(widths, spaceW, mid, gaps);
       if (rows.length <= n) hi = mid;
       else lo = mid;
     }
-    const balanced = greedyFillRows(widths, spaceW, hi);
+    const balanced = greedyFillRows(widths, spaceW, hi, gaps);
     return { rows: balanced, widths: balanced.map(rowWidth) };
   }
 
-  // balanceParts(widths, spaceW, maxW, partSizes) -> {rows, widths} —
+  // balanceRows(widths, spaceW, maxW, opts) -> {rows, widths} — same row count
+  // as a plain greedy fill at maxW, but rows are as even as possible instead
+  // of each one packed to the limit (which strands a short last word
+  // alone). Binary-searches the narrowest width, no narrower than the
+  // widest single word, that still greedy-fills to that same row count.
+  // opts.gaps[i]: the space before word i (0 inside a CJK run).
+  // opts.glue[i]: words i and i+1 never split across rows (captionGlue); a
+  // glued group wider than maxW falls back to splitting at its words.
+  function balanceRows(widths, spaceW, maxW, opts) {
+    const o = opts || {};
+    const gaps = o.gaps || null;
+    const glue = o.glue || null;
+    if (!glue || !glue.some(Boolean)) return balanceRowsCore(widths, spaceW, maxW, gaps);
+    const gapOf = function (i) { return gaps ? gaps[i] : spaceW; };
+    const atoms = [];
+    for (let i = 0; i < widths.length; i++) {
+      let j = i;
+      while (j + 1 < widths.length && glue[j]) j++;
+      let w = 0;
+      for (let k = i; k <= j; k++) w += widths[k] + (k > i ? gapOf(k) : 0);
+      if (j > i && w > maxW) {
+        for (let k = i; k <= j; k++) atoms.push({ from: k, to: k, w: widths[k] });
+      } else {
+        atoms.push({ from: i, to: j, w: w });
+      }
+      i = j;
+    }
+    const core = balanceRowsCore(
+      atoms.map(function (a) { return a.w; }),
+      spaceW,
+      maxW,
+      atoms.map(function (a) { return gapOf(a.from); })
+    );
+    const rows = core.rows.map(function (row) {
+      const out = [];
+      row.forEach(function (ai) { for (let k = atoms[ai].from; k <= atoms[ai].to; k++) out.push(k); });
+      return out;
+    });
+    const rowWidths = rows.map(function (row) {
+      return row.reduce(function (sum, i, idx) { return sum + widths[i] + (idx > 0 ? gapOf(i) : 0); }, 0);
+    });
+    return { rows: rows, widths: rowWidths };
+  }
+
+  // balanceParts(widths, spaceW, maxW, partSizes, opts) -> {rows, widths} —
   // balanceRows over consecutive runs of words: partSizes[k] words form part
   // k, and a part never shares a row with the next (a caption's own "\n").
-  // Row entries are indices into the full `widths` array.
-  function balanceParts(widths, spaceW, maxW, partSizes) {
+  // Row entries are indices into the full `widths` array. opts.gaps/opts.glue
+  // are full-length arrays (see balanceRows).
+  function balanceParts(widths, spaceW, maxW, partSizes, opts) {
+    const o = opts || {};
     const rows = [];
     const rowWidths = [];
     let off = 0;
     for (const n of partSizes) {
       if (n > 0) {
-        const r = balanceRows(widths.slice(off, off + n), spaceW, maxW);
+        const glue = o.glue ? o.glue.slice(off, off + n) : null;
+        if (glue) glue[n - 1] = false;
+        const r = balanceRows(widths.slice(off, off + n), spaceW, maxW, {
+          gaps: o.gaps ? o.gaps.slice(off, off + n) : null,
+          glue: glue,
+        });
         r.rows.forEach(function (row, k) {
           rows.push(row.map(function (i) { return i + off; }));
           rowWidths.push(r.widths[k]);
@@ -619,41 +803,58 @@
     return { rows: rows, widths: rowWidths };
   }
 
-  // captionRows(ctx, text, maxW) -> {words, widths, spaceW, rows, rowWidths}
-  // for a film that draws its own caption (pills, per-word colour): the
-  // words with "|" markers removed, each word's width in ctx's current font,
-  // and balanced rows where a "\n" in `text` always starts a new row.
-  function captionRows(ctx, text, maxW) {
-    const parts = String(text || "").split("\n").map(function (part) {
-      return part.split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
-    });
-    const words = [].concat.apply([], parts);
-    const widths = words.map(function (word) { return ctx.measureText(word).width; });
-    const spaceW = ctx.measureText(" ").width;
-    const b = balanceParts(widths, spaceW, maxW, parts.map(function (p) { return p.length; }));
-    return { words: words, widths: widths, spaceW: spaceW, rows: b.rows, rowWidths: b.widths };
+  // The parts of a caption text: a "\n" or a standalone "|" (a writer's own
+  // break) starts a new part. Each part wraps on its own rows.
+  function splitCaptionParts(text) {
+    return String(text || "").split(/\n|(?:^|\s)\|(?=\s|$)/);
   }
 
-  // wrapParts(ctx, text, w) — "\n" in `text` forces a break (a caption the
-  // automatic wrap would split badly); each part then wraps at word
-  // boundaries to fit w, balanced (balanceRows above) rather than packed
-  // to the limit. Returns one entry per part: its wrapped line strings and
-  // how many words landed on each row (textBlock's orphan check reads the
-  // latter; wrapLines below just flattens the former).
-  function wrapParts(ctx, text, w) {
+  // captionRows(ctx, text, maxW, lang) -> {words, widths, gaps, spaceW, rows,
+  // rowWidths} for a film that draws its own caption (pills, per-word colour):
+  // the break units with "|" markers removed (a word, or a character inside a
+  // CJK run), each unit's width in ctx's current font, gaps[i] = the space
+  // before unit i (spaceW between words, 0 inside a CJK run), and balanced
+  // rows where a "\n" in `text` always starts a new row and the break rules
+  // above hold. Join a row's units with gaps[i] to draw it.
+  function captionRows(ctx, text, maxW, lang) {
+    const spaceW = ctx.measureText(" ").width;
+    const words = [];
+    const gaps = [];
+    const glue = [];
+    const sizes = [];
+    splitCaptionParts(text).forEach(function (part) {
+      const u = captionUnits(part, lang);
+      u.texts.forEach(function (t, i) {
+        words.push(t);
+        gaps.push(u.sp[i] ? spaceW : 0);
+        glue.push(u.glue[i]);
+      });
+      sizes.push(u.texts.length);
+    });
+    const widths = words.map(function (word) { return ctx.measureText(word).width; });
+    const b = balanceParts(widths, spaceW, maxW, sizes, { gaps: gaps, glue: glue });
+    return { words: words, widths: widths, gaps: gaps, spaceW: spaceW, rows: b.rows, rowWidths: b.widths };
+  }
+
+  // wrapParts(ctx, text, w, lang) — "\n" in `text` forces a break (a caption
+  // the automatic wrap would split badly); each part then wraps at its break
+  // units to fit w, balanced (balanceRows above) rather than packed to the
+  // limit. Returns one entry per part: its wrapped line strings and how many
+  // units landed on each row (textBlock's orphan check reads the latter;
+  // wrapLines below just flattens the former).
+  function wrapParts(ctx, text, w, lang) {
     const spaceW = ctx.measureText(" ").width;
     const parts = [];
-    for (const part of String(text).split("\n")) {
-      const words = part.split(/\s+/).filter(Boolean);
-      if (!words.length) continue;
-      const widths = words.map(function (word) {
-        return ctx.measureText(word).width;
-      });
-      const balanced = balanceRows(widths, spaceW, w);
+    for (const part of splitCaptionParts(text)) {
+      const u = captionUnits(part, lang);
+      if (!u.texts.length) continue;
+      const widths = u.texts.map(function (t) { return ctx.measureText(t).width; });
+      const gaps = u.sp.map(function (s) { return s ? spaceW : 0; });
+      const balanced = balanceRows(widths, spaceW, w, { gaps: gaps, glue: u.glue });
       const lines = balanced.rows.map(function (row) {
-        return row.map(function (i) {
-          return words[i];
-        }).join(" ");
+        return row.map(function (i, k) {
+          return (k > 0 && u.sp[i] ? " " : "") + u.texts[i];
+        }).join("");
       });
       parts.push({ lines: lines, rowWordCounts: balanced.rows.map(function (row) { return row.length; }) });
     }
@@ -688,18 +889,41 @@
   // captions read a chunk at a time, so an even split reads at a steady
   // pace; a char-length-minimizing split can still strand a short last
   // group (e.g. one long word pushes everything else forward one chunk).
-  function splitEvenlyByCount(idxs, k) {
+  // `glue` (optional, indexed by word index): a cut never lands where
+  // glue[idxs[p-1]] is set; the nearest allowed cut is used instead.
+  function splitEvenlyByCount(idxs, k, glue) {
     const n = idxs.length;
-    const groups = [];
     const base = Math.floor(n / k);
     let remainder = n % k;
-    let at = 0;
-    for (let g = 0; g < k; g++) {
-      const size = base + (remainder > 0 ? 1 : 0);
+    const cuts = [];
+    let want = 0;
+    let prev = 0;
+    for (let g = 1; g < k; g++) {
+      want += base + (remainder > 0 ? 1 : 0);
       if (remainder > 0) remainder -= 1;
-      groups.push(idxs.slice(at, at + size));
-      at += size;
+      const lo = prev + 1;
+      let cut = Math.min(Math.max(want, lo), n - (k - g));
+      if (glue) {
+        // glued words can leave fewer legal cuts than k-1: a cut with no
+        // legal place is dropped (a chunk longer than the even share) rather
+        // than made inside a glued pair
+        cut = -1;
+        for (let d = 0; d <= n && cut < 0; d++) {
+          const cands = d === 0 ? [want] : [want - d, want + d];
+          const ok = cands.filter(function (p) { return p >= lo && p <= n - 1 && !glue[idxs[p - 1]]; });
+          if (ok.length) cut = ok[0];
+        }
+        if (cut < 0) continue;
+      }
+      cuts.push(cut);
+      prev = cut;
     }
+    const groups = [];
+    let at = 0;
+    cuts.concat([n]).forEach(function (c) {
+      groups.push(idxs.slice(at, c));
+      at = c;
+    });
     return groups;
   }
 
@@ -721,6 +945,10 @@
   //      "|"-delimited piece still balances instead of overflowing.
   //   3. a one-word chunk of <=3 characters (a lone connector, e.g. "자,")
   //      merges into its neighbour (next if there is one, else previous).
+  // Fallback rules (captionGlue, opts.lang = BCP 47): a line that fits
+  // maxChars is not cut at a comma; no cut splits a number from its unit,
+  // follows an article/preposition, or falls inside a parenthesis/quote span.
+  // A writer's "|" always wins over all of them.
   function captionChunks(words, maxChars, opts) {
     const n = words.length;
     if (!n) return [];
@@ -728,11 +956,20 @@
     const isForcedBreak = {};
     for (let i = 0; i < forcedBreaks.length; i++) isForcedBreak[forcedBreaks[i]] = true;
 
+    // Automatic fallback rules (captionGlue): a line that fits one chunk is
+    // not cut at a comma, and no cut falls inside a number+unit, after a
+    // short function word, or inside a parenthesis/quote span. A forced
+    // break ("|") overrides all of it.
+    const glue = captionGlue(words.map(function (x) { return String(x.w); }), opts && opts.lang);
+    const allIdx = words.map(function (x, i) { return i; });
+    const fitsOneRow = phraseCharLen(allIdx, words) <= maxChars;
+
     const phrases = [];
     let cur = [];
     for (let i = 0; i < n; i++) {
       cur.push(i);
-      if (CAPTION_PHRASE_END.test(String(words[i].w)) || isForcedBreak[i]) {
+      const punctEnd = !fitsOneRow && !glue[i] && CAPTION_PHRASE_END.test(String(words[i].w));
+      if (punctEnd || isForcedBreak[i]) {
         phrases.push(cur);
         cur = [];
       }
@@ -747,16 +984,19 @@
         continue;
       }
       const k = Math.min(phrase.length, Math.max(1, Math.ceil(len / maxChars)));
-      chunks = chunks.concat(splitEvenlyByCount(phrase, k));
+      chunks = chunks.concat(splitEvenlyByCount(phrase, k, glue));
     }
 
+    // A writer's "|" always wins: a short piece merges only across an
+    // automatic boundary, never across a forced one.
+    const endsForced = function (c) { return !!isForcedBreak[c[c.length - 1]]; };
     for (let i = 0; i < chunks.length; i++) {
       if (chunks[i].length !== 1) continue;
       if (String(words[chunks[i][0]].w).length > 3) continue;
-      if (i + 1 < chunks.length) {
+      if (i + 1 < chunks.length && !endsForced(chunks[i])) {
         chunks[i] = chunks[i].concat(chunks[i + 1]);
         chunks.splice(i + 1, 1);
-      } else if (i > 0) {
+      } else if (i > 0 && !endsForced(chunks[i - 1])) {
         chunks[i - 1] = chunks[i - 1].concat(chunks[i]);
         chunks.splice(i, 1);
       }
@@ -765,8 +1005,10 @@
     // Balancing already made this rare; a chunk it still can't fix (the
     // merge above only catches <=3-char remnants) is reported, not forced.
     if (n >= 3) {
-      for (const c of chunks) {
-        if (c.length === 1) {
+      for (let ci = 0; ci < chunks.length; ci++) {
+        const c = chunks[ci];
+        const forcedAround = endsForced(c) || (ci > 0 && endsForced(chunks[ci - 1]));
+        if (c.length === 1 && !forcedAround) {
           recordIssue({
             type: "caption-orphan",
             text: words.map(function (x) { return x.w; }).join(" ").slice(0, 80),
@@ -809,14 +1051,13 @@
     return String(text || "").split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
   }
 
-  // `text`, with every "|" caption-break marker removed, for the engine's
-  // default Reel.caption() box — the marker is never shown. A `\n` (a plan's
-  // own manual caption line break) is left alone.
+  // `text` for the engine's default Reel.caption() box: every "|" marker
+  // becomes a "\n" (a writer's break starts a new row), so the marker is
+  // never shown and wrapParts never joins the two sides.
   function stripCaptionBreaksForDisplay(text) {
-    return String(text || "")
-      .split("\n")
+    return splitCaptionParts(text)
       .map(function (part) {
-        return part.split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; }).join(" ");
+        return part.split(/\s+/).filter(function (t) { return t.length > 0; }).join(" ");
       })
       .join("\n");
   }
@@ -833,7 +1074,7 @@
     ctx.font = font;
     ctx.fillStyle = color;
     ctx.textBaseline = "top";
-    const parts = wrapParts(ctx, text, w);
+    const parts = wrapParts(ctx, text, w, o.lang);
     const lines = parts.reduce(function (all, part) {
       return all.concat(part.lines);
     }, []);
@@ -919,7 +1160,7 @@
     const x = o.x == null ? safe.x + (safe.w - boxW) / 2 : o.x;
     const y = o.y == null ? safe.y + safe.h - boxH - (o.marginBottom == null ? 0 : o.marginBottom) : o.y;
     const font = o.font == null ? "800 " + fontPx + "px 'Pretendard'" : o.font;
-    const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight }, o);
+    const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight, lang: pictureLang() || undefined }, o);
     return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
   }
 
@@ -993,7 +1234,9 @@
       if (!startWin || !endWin) return null;
       return { start: startWin.start, end: endWin.end };
     }
-    return { line, word, phrase };
+    // lead: seconds of opening before the first story line (plan meta.lead); scene code draws
+    // it from t = 0 like any other span.
+    return { line, word, phrase, lead: (timings && timings.lead) || 0 };
   }
 
   // ---------------------------------------------------------------------
@@ -1047,6 +1290,48 @@
     return base + offsetSec;
   }
 
+  // clocks(captionTimings, baseTimings) — the two clocks of a dub. In
+  // ?layer=captions&dub=<code> the caption layer follows that language's
+  // voice (captionTimings = dub/<code>/timings.placed.json), while every other
+  // layer a film draws there (labels, beats, stickers, animations keyed to a
+  // word, sound cues) reads the base language's clock (baseTimings =
+  // voice/timings.json), unchanged from the original film.
+  //   .caption / .base            timeline() of each clock
+  //   .cueTime(cue, lineId)       a word/start/end cue in base-clock seconds
+  //   .baseLine(lineId)           the base clock's line {id, start, end, ...}
+  //   .word(lineId, text)         {start, end} of the first word containing
+  //                               `text` in the base language, base clock
+  // Line ids are shared by both clocks (dub lines keep their base line's id).
+  // With no baseTimings both clocks are captionTimings.
+  function clocks(captionTimings, baseTimings) {
+    const baseT = baseTimings || captionTimings;
+    const base = timeline(baseT);
+    const baseLines = (baseT && baseT.lines) || [];
+    function baseLine(lineId) {
+      return baseLines.find(function (l) { return l.id === lineId; }) || null;
+    }
+    return {
+      caption: timeline(captionTimings),
+      base: base,
+      baseTimings: baseT,
+      baseLine: baseLine,
+      cueTime: function (cue, lineId) {
+        const line = baseLine(lineId);
+        if (!line) {
+          recordIssue({ type: "cue-line-not-found", asset: cue && cue.asset, lineId: lineId });
+          return 0;
+        }
+        return cueTime(cue, line, baseT);
+      },
+      word: function (lineId, text) {
+        const idx = baseLines.findIndex(function (l) { return l.id === lineId; });
+        if (idx === -1) return null;
+        const wi = firstWordIndexContaining(baseLines[idx].text, text);
+        return wi === -1 ? null : base.word(idx, wi);
+      },
+    };
+  }
+
   // registerClip/clipFrame — preloaded video-clip frames (design.md §2.5
   // "Picture"). `frames` is an ordered array (image or any held value);
   // clipFrame(id, tLocal) is a pure function of its local time within the
@@ -1082,12 +1367,15 @@
     balanceParts,
     captionRows,
     captionChunks,
+    captionGlue,
+    captionUnits,
     captionBreaksFromText,
     caption,
     captionsOn,
     layer,
     dubCode,
     layerFiles,
+    clocks,
     pictureText,
     pictureTextFrom,
     get lang() {

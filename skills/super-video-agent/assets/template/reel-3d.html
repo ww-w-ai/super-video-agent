@@ -158,10 +158,21 @@
     });
   }
 
+  // Two clocks in a dub: `timings`/`tl` follow the language being drawn (the
+  // captions); `clk` (Reel.clocks) adds the base language's clock from the
+  // film's own voice/timings.json for every non-caption layer — labels,
+  // beats, word-keyed animation, sound cues (references/pipeline.md "Dubbing").
+  var baseTimings = null;
+  var clk = null;
+
   function loadTimings() {
     return loadFirstJSON(files.timings, true).then(function (data) {
       timings = data;
       tl = Reel.timeline(timings);
+      return isCaptionLayer && dubCode ? loadJSON("voice/timings.json", false) : null;
+    }).then(function (base) {
+      baseTimings = base || timings;
+      clk = Reel.clocks(timings, baseTimings);
       var lines = timings.lines || [];
       shots = lines.map(function (l, i) {
         var start = i === 0 ? 0 : l.start;

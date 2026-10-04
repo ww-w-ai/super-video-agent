@@ -19,13 +19,24 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo, applyAtempo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
 import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr } from "./lib/duck.mjs";
-import { decodeMonoPcm, rmsWindow } from "./lib/audio-analysis.mjs";
-import { fitAllLines, fitFrozenLines, buildPlacedTimings, computeSlots, trimEdgeSilence } from "./lib/dub-timing.mjs";
-import { levelLineWav } from "./lib/line-level.mjs";
+import { fitFrozenLines, buildPlacedTimings, computeSlots } from "./lib/dub-timing.mjs";
 import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
+import { measureEdgeEnvelope } from "./lib/clip-trim.mjs";
+import {
+  MAX_SPEED_DEFAULT,
+  trimVoiceClips,
+  shiftForTrim,
+  fitOrThrow,
+  placeLineClips,
+  buildNarrationTrack,
+} from "./lib/fit-track.mjs";
+import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
+import { formatLeadReport } from "./lib/lead.mjs";
+
+export { measureEdgeEnvelope };
 import {
   computeGapDeltas,
   buildTimeMap,
@@ -39,7 +50,7 @@ import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan } from "./render.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>]
+const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>]
 
 Lays a language version over a picture-first render (render.mjs
 --no-captions). <reel-dir>/dub/<code>/ holds plan.json (same line ids as
@@ -47,13 +58,22 @@ the base plan, that language's text/say, meta.voice, meta.lang) and voice/
 (made by voice.mjs <reel-dir>/dub/<code>). The base language is dubbed the
 same way — dub/<base-lang>/ may simply copy the base plan.json and voice/.
 
-Each dub line's own take has its edge silence trimmed first (leading/
-trailing only — an internal pause is never touched), then is placed at its
-base line's slot (base line start -> next base line start, the last line ->
-the film's end). A line longer than its slot is sped up (atempo) up to
-1.2x; a line still too long at 1.2x fails, naming the line id and by how
-much, instead of cutting audio or moving the picture — shorten the line in
-that language's script.
+The picture's time is the reference. Each dub line's own take is trimmed to
+its voiced span plus 0.05 s head / 0.3 s tail (edges only — an internal
+pause is never touched), then placed at its base line's slot (base line
+start -> next base line start, the last line -> the film's end). A line
+longer than its slot is sped up (atempo, pitch kept) by at most --max-speed
+(default ${MAX_SPEED_DEFAULT}, 10%); at least 0.5 s of silence is kept after a line when the
+slot has room, and the rest stays voice-free up to 1.0 s (a longer gap slows the line, down
+to 0.95x; a line left under 0.5 s of breath or over 1.0 s of gap is listed with its id). A line still too
+long fails, naming the line id and by how much, instead of cutting audio or
+moving the picture — shorten the line in that language's script and re-make
+it. Afterwards the silence gate lists every pause over 1 s in the placed
+narration with the line ids around it (a pause the picture itself has is
+listed as planned).
+
+--max-speed <x>: the fastest a line may be sped up (default ${MAX_SPEED_DEFAULT}). Widen it only
+when the user asks.
 
 --min-gap <sec>: for every slot except the last whose gap after the
 placed line is under <sec>, slow that slot's picture (setpts) and bed
@@ -90,14 +110,19 @@ export async function main(argv) {
     minGap = Number(flags["min-gap"]);
     if (!Number.isFinite(minGap) || minGap <= 0) fail(`--min-gap needs a positive number of seconds, got "${flags["min-gap"]}"`);
   }
+  let maxSpeed = MAX_SPEED_DEFAULT;
+  if (flags["max-speed"] !== undefined) {
+    maxSpeed = Number(flags["max-speed"]);
+    if (!Number.isFinite(maxSpeed) || maxSpeed < 1) fail(`--max-speed needs a number of 1 or more, got "${flags["max-speed"]}"`);
+  }
   try {
     const replacing = flags["replace-audio"] !== undefined;
     if (replacing && (minGap != null || !["replace-audio", "timings", "bed"].every(k => typeof flags[k] === "string"))) {
       throw new Error("--replace-audio requires --timings and --bed; --min-gap cannot change a frozen picture");
     }
     const result = replacing
-      ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed) })
-      : await dub({ dir, lang, minGap });
+      ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed), maxSpeed })
+      : await dub({ dir, lang, minGap, maxSpeed });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -132,7 +157,7 @@ export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
 }
 
 /** Replace narration in an already-captioned final video. All source files remain immutable. */
-export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPath }) {
+export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPath, maxSpeed = MAX_SPEED_DEFAULT }) {
   if (typeof lang !== "string" || !/^[\w-]+$/.test(lang)) throw new Error("invalid language code");
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
@@ -143,8 +168,8 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
   const voice = readJson(path.join(dubVoiceDir, "timings.json"));
   // Validate before using line IDs in paths or launching media processing.
   const placeholderDurations = new Map((frozen.lines || []).map(l => [l.id, l.end - l.start]));
-  fitFrozenLines(frozen, plan.lines.map(l => ({ ...l, start: 0 })), placeholderDurations);
-  fitFrozenLines(frozen, voice.lines, placeholderDurations);
+  fitFrozenLines(frozen, plan.lines.map(l => ({ ...l, start: 0 })), placeholderDurations, maxSpeed);
+  fitFrozenLines(frozen, voice.lines, placeholderDurations, maxSpeed);
   const meta = await probeVideoInfo(videoPath);
   const videoDuration = await probeDuration(videoPath);
   const bedDuration = await probeDuration(bedPath);
@@ -155,11 +180,11 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
   ensureDir(paths.outDir);
   const workDir = fs.mkdtempSync(path.join(dubDir, ".revoice-work-"));
   try {
-    const trims = await trimDubClips({ dubTimings: voice, dubVoiceDir, workDir });
+    const trims = await trimVoiceClips({ voiceTimings: voice, voiceDir: dubVoiceDir, workDir });
     const durations = new Map([...trims].map(([id, t]) => [id, t.trimmedDurationSec]));
-    const shifted = voice.lines.map(l => ({ ...l, start: l.start + (trims.get(l.id)?.leadTrimSec || 0) }));
-    const fit = { lines: fitFrozenLines(frozen, shifted, durations) };
-    const clips = await placeLineClips({ fit, trims, workDir });
+    const shifted = shiftForTrim(voice.lines, trims);
+    const fit = { lines: fitFrozenLines(frozen, shifted, durations, maxSpeed) };
+    const clips = await placeLineClips({ fit, trims, workDir, maxSpeed });
     await verifyReplacementDurations(fit.lines, clips);
     const audioPath = path.join(workDir, "audio.wav");
     await mixDubAudio({ placedClips: clips, bedPath, narrationWindows: fit.lines,
@@ -185,7 +210,7 @@ async function verifyReplacementDurations(lines, clips) {
   }
 }
 
-export async function dub({ dir, lang, minGap = null }) {
+export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT }) {
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
@@ -213,10 +238,10 @@ export async function dub({ dir, lang, minGap = null }) {
   const workDir = path.join(dubDir, `.dub-work-${lang}`);
   ensureDir(workDir);
   try {
-    // Trim each take's own leading/trailing silence before it is ever
-    // measured for the slot fit below — otherwise a take's edge silence
-    // (not its actual speech) can push it over the 1.2x atempo cap.
-    const trims = await trimDubClips({ dubTimings, dubVoiceDir, workDir });
+    // 1. trim: each take's own edge silence goes before it is measured for
+    // the slot fit — otherwise a take's dead air (not its speech) eats the
+    // speed allowance.
+    const trims = await trimVoiceClips({ voiceTimings: dubTimings, voiceDir: dubVoiceDir, workDir });
     for (const [id, t] of trims) {
       process.stdout.write(`line "${id}" trimmed: lead ${t.leadTrimSec.toFixed(3)}s, tail ${t.tailTrimSec.toFixed(3)}s\n`);
     }
@@ -225,15 +250,14 @@ export async function dub({ dir, lang, minGap = null }) {
     for (const [id, t] of trims) clipDurations.set(id, t.trimmedDurationSec);
 
     // The dub line's own word times are still on the untrimmed clip's
-    // timeline; shifting `start` forward by the removed lead makes
-    // shiftAndScaleWords' "words minus this origin" land on the trimmed
-    // clip's own timeline instead.
-    const dubLines = (dubTimings.lines || []).map((l) => {
-      const t = trims.get(l.id);
-      return t && t.leadTrimSec > 0 ? { ...l, start: l.start + t.leadTrimSec } : l;
-    });
+    // timeline; shiftForTrim moves `start` forward by the removed lead so
+    // shiftAndScaleWords' "words minus this origin" lands on the trimmed
+    // clip's own timeline.
+    const dubLines = shiftForTrim(dubTimings.lines, trims);
 
-    let fit = fitOrThrow(baseTimings, dubLines, clipDurations);
+    // 2. speed (at most maxSpeed) and 3. the voice-free gap: fitAllLines.
+    const fitSlots = (timings) => fitOrThrow(timings.lines, dubLines, clipDurations, timings.duration, maxSpeed);
+    let fit = fitSlots(baseTimings);
 
     // --min-gap: from here on this language's final uses the widened
     // picture, bed and timings; the lines are fitted again to the new slots.
@@ -241,7 +265,7 @@ export async function dub({ dir, lang, minGap = null }) {
       const spaced = await spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit, minGap });
       if (spaced) {
         ({ pictureMp4, pictureBedWav, baseTimings } = spaced);
-        fit = fitOrThrow(baseTimings, dubLines, clipDurations);
+        fit = fitSlots(baseTimings);
       }
     }
 
@@ -255,7 +279,7 @@ export async function dub({ dir, lang, minGap = null }) {
     // Written before trying the reel's own caption layer, so a page that
     // supports ?layer=captions&dub=<lang> (declares "captions" in
     // __reel.layers) has this file ready to load.
-    writeJson(path.join(dubDir, "timings.placed.json"), buildPlacedTimings(fit.lines, baseTimings.duration, dubPlan.meta.lang || null));
+    writeJson(path.join(dubDir, "timings.placed.json"), buildPlacedTimings(fit.lines, baseTimings.duration, dubPlan.meta.lang || null, baseTimings.lead));
 
     const meta = await probeVideoInfo(pictureMp4);
     const fps = nominalFps(meta.fps);
@@ -264,7 +288,16 @@ export async function dub({ dir, lang, minGap = null }) {
     // Re-stamping is lossless (-c copy), so it runs on every picture.
     const gridPictureMp4 = path.join(workDir, "picture-grid.mp4");
     await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
-    const placedClips = await placeLineClips({ fit, trims, workDir });
+    const placedClips = await placeLineClips({ fit, trims, workDir, maxSpeed });
+
+    // Silence gate on the placed narration alone (the bed would hide a voice gap).
+    const narrationOnly = path.join(workDir, "narration-only.wav");
+    await buildNarrationTrack({ clips: placedClips, durationSec: baseTimings.duration, outPath: narrationOnly });
+    const silence = await measureNarrationGaps(narrationOnly, fit.lines, pictureGapPlan(baseTimings.lines, dubPlan.lines));
+    process.stdout.write(formatSilenceReport(silence));
+    if (baseTimings.lead > 0) {
+      process.stdout.write(formatLeadReport({ meta: { ...dubPlan.meta, lead: baseTimings.lead }, lines: dubPlan.lines }));
+    }
 
     const captionsDir = path.join(workDir, "captions");
     ensureDir(captionsDir);
@@ -319,20 +352,6 @@ export async function dub({ dir, lang, minGap = null }) {
   }
 }
 
-/** fitAllLines, throwing one message that names every line that does not fit. */
-function fitOrThrow(baseTimings, dubLines, clipDurations) {
-  const fit = fitAllLines(baseTimings.lines, dubLines, clipDurations, baseTimings.duration);
-  if (fit.ok) return fit;
-  const detail = fit.failures
-    .map((f) =>
-      f.requiredFactor == null
-        ? `${f.id}: ${f.reason}`
-        : `${f.id}: needs ${f.requiredFactor.toFixed(3)}x, max is ${f.maxAtempo}x — shorten this line's script`
-    )
-    .join("; ");
-  throw new Error(`line(s) do not fit their slot: ${detail}`);
-}
-
 /**
  * --min-gap: widens every slot (but the last) whose placed line leaves
  * less than `minGap` of silence, by slowing that slot's picture and bed
@@ -366,83 +385,6 @@ async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit,
 
 function requireFile(p, message) {
   if (!fs.existsSync(p)) throw new Error(message);
-}
-
-const EDGE_ENVELOPE_WINDOW_SEC = 0.01;
-
-/**
- * 10ms RMS-in-dBFS windows across `wavPath`, in order — the envelope
- * trimEdgeSilence (scripts/lib/dub-timing.mjs) reads to find a take's
- * leading/trailing silence.
- * @returns {Promise<{startSec:number, endSec:number, rmsDb:number}[]>}
- */
-export async function measureEdgeEnvelope(wavPath, opts = {}) {
-  const sampleRate = opts.sampleRate ?? 48000;
-  const samples = await decodeMonoPcm(wavPath, sampleRate);
-  const winLen = Math.max(1, Math.round(sampleRate * EDGE_ENVELOPE_WINDOW_SEC));
-  const windows = [];
-  for (let i = 0; i < samples.length; i += winLen) {
-    const rms = rmsWindow(samples, i, winLen);
-    windows.push({
-      startSec: i / sampleRate,
-      endSec: Math.min(samples.length, i + winLen) / sampleRate,
-      rmsDb: rms > 0 ? 20 * Math.log10(rms) : -Infinity,
-    });
-  }
-  return windows;
-}
-
-/**
- * Trims each dub line's own wav (dubVoiceDir/line-<id>.wav) down to its
- * measured speech, keeping trimEdgeSilence's pad on each side, into
- * workDir/trimmed-<id>.wav — the clip fitAllLines measures and
- * placeLineClips places, never the raw take. A line with no wav file (not
- * yet synthesized) is left out, same as before this trimming step existed;
- * fitAllLines reports it as "no measured clip duration".
- * @returns {Promise<Map<string, {leadTrimSec:number, tailTrimSec:number, trimmedDurationSec:number, trimmedPath:string}>>}
- */
-async function trimDubClips({ dubTimings, dubVoiceDir, workDir }) {
-  const trims = new Map();
-  for (const l of dubTimings.lines || []) {
-    const srcPath = path.join(dubVoiceDir, `line-${l.id}.wav`);
-    if (!fs.existsSync(srcPath)) continue;
-    const clipDurationSec = await probeDuration(srcPath);
-    const envelope = await measureEdgeEnvelope(srcPath);
-    const range = trimEdgeSilence(envelope, clipDurationSec);
-    const trimmedPath = path.join(workDir, `trimmed-${l.id}.wav`);
-    if (range.trimmedStartSec <= 0 && range.trimmedEndSec >= clipDurationSec) {
-      fs.copyFileSync(srcPath, trimmedPath);
-    } else {
-      // Output-side -ss/-to (after -i): slower than input-side seeking, but
-      // sample-accurate, which matters for a trim measured in milliseconds.
-      await ffmpeg(["-y", "-i", srcPath, "-ss", String(range.trimmedStartSec), "-to", String(range.trimmedEndSec), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", trimmedPath]);
-    }
-    trims.set(l.id, {
-      leadTrimSec: range.leadTrimSec,
-      tailTrimSec: range.tailTrimSec,
-      trimmedDurationSec: range.trimmedEndSec - range.trimmedStartSec,
-      trimmedPath,
-    });
-  }
-  return trims;
-}
-
-/** Copies (or atempo-speeds) each dub line's own trimmed wav (trimDubClips) to its fitted duration, levels it to one loudness (references/voice.md), unplaced (adelay happens in mixDubAudio). */
-async function placeLineClips({ fit, trims, workDir }) {
-  const placedClips = [];
-  for (const line of fit.lines) {
-    const srcPath = trims.get(line.id).trimmedPath;
-    const placedPath = path.join(workDir, `placed-${line.id}.wav`);
-    if (line.atempoFactor === 1) {
-      fs.copyFileSync(srcPath, placedPath);
-    } else {
-      await applyAtempo(srcPath, placedPath, line.atempoFactor, { min: 1, max: 1.2 });
-    }
-    const leveled = await levelLineWav(placedPath);
-    process.stdout.write(`line "${line.id}" leveled: ${leveled.beforeLufs == null ? "n/a" : leveled.beforeLufs.toFixed(1)} -> ${leveled.afterLufs == null ? "n/a" : leveled.afterLufs.toFixed(1)} LUFS\n`);
-    placedClips.push({ id: line.id, path: placedPath, startSec: line.start });
-  }
-  return placedClips;
 }
 
 /** True when reel.html's own scene code calls Reel.caption() directly (the SCENE block, not the inlined engine). */
