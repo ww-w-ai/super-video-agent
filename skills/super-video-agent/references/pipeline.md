@@ -450,7 +450,8 @@ A line picks clips in `plan.json` via `cues`: `[{asset, at, offsetMs?, gainDb?, 
 Two commands (`scripts/assets.mjs`):
 
 ```
-assets.mjs search <query> [--role sfx|reaction] [--limit N]   # keyword search over description+tags
+assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]   # keyword search over description+tags
+assets.mjs model <id> <reel-dir> [--allow-personal-scope]      # copies a model/image into the reel (see below)
 assets.mjs fetch <reel-dir> [--allow-personal-scope]           # copies every cued asset into
                                                                  # <reel-dir>/assets/lib/
 ```
@@ -460,6 +461,16 @@ own audio, if any), and writes `assets/lib/manifest.json` and `assets/lib/cues.j
 an asset whose `license.commercialSafe` is `false` unless `plan.meta.distribution` is `"personal"`
 or `--allow-personal-scope` is passed — either way it prints every fetched asset's license.
 `verify.mjs` warns (does not fail) when `plan.json`'s cues have drifted from `assets/lib/cues.json`.
+
+The same library also holds 3D models for the cast stage: roles `character`, `prop` and `set`
+(kind `model`, or `code` for a model a script builds), and `character-ref` (kind `image`, an
+avatar or reference picture). A model entry adds `format`, `rigged`, `clips: [{name, sec}]`,
+`triangles`, `heightM`, `origin` (film and original path) and an optional `preview` PNG; its
+`license` is read the same way as a clip's. Search them with `assets.mjs search --role character <words>`,
+which prints rigged, clip names and the licence, and copy one into a reel with
+`assets.mjs model <id> <reel-dir>`: models and code land in `assets/models/`, images in
+`assets/refs/`, a glTF with its `.bin` and textures. `model` applies the `commercialSafe` rule
+exactly as `fetch` does. A model id in a line's `cues` is refused; cues take clips only.
 
 To add your own clip or effect: put the file under `library/` and add one entry to
 `catalog.json` with a new `id`, its `role`, `kind` and `path`, a `description` and `tags` a

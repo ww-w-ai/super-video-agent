@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { locateLibraryDir, loadLibrary, openLibrary, getById, searchAssets } from "../scripts/lib/library.mjs";
+import { locateLibraryDir, loadLibrary, openLibrary, getById, searchAssets, isModelAsset } from "../scripts/lib/library.mjs";
 
 function makeFakeLibrary() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-lib-"));
@@ -110,4 +110,51 @@ test("searchAssets: ranks by total token-occurrence count", () => {
 test("searchAssets: an NFC query finds an NFD label (macOS file names)", () => {
   const lib = { assets: [{ id: "nfd", role: "sfx", description: "효과음 카툰 팝".normalize("NFD"), tags: [] }] };
   assert.deepEqual(searchAssets(lib, "팝".normalize("NFC")).map((a) => a.id), ["nfd"]);
+});
+
+const LICENSE = { kind: "own", commercialSafe: true };
+
+function writeCatalog(assets) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-modellib-"));
+  fs.writeFileSync(path.join(dir, "catalog.json"), JSON.stringify({ version: 1, assets }));
+  return dir;
+}
+
+test("loadLibrary: accepts model, code and image assets with their roles", () => {
+  const dir = writeCatalog([
+    { id: "m-char", role: "character", kind: "model", path: "models/characters/a.glb", description: "bear", tags: ["bear"], license: LICENSE },
+    { id: "m-prop", role: "prop", kind: "model", path: "models/props/b.glb", description: "mug", license: LICENSE },
+    { id: "m-set", role: "set", kind: "model", path: "models/sets/c.glb", description: "studio", license: LICENSE },
+    { id: "m-code", role: "prop", kind: "code", path: "models/code/d.js", description: "phone", license: LICENSE },
+    { id: "m-img", role: "character-ref", kind: "image", path: "models/owner/e.png", description: "face", license: LICENSE },
+  ]);
+  const lib = loadLibrary(dir);
+  assert.deepEqual(lib.assets.map((a) => a.id), ["m-char", "m-prop", "m-set", "m-code", "m-img"]);
+  assert.deepEqual(searchAssets(lib, "bear", { role: "character" }).map((a) => a.id), ["m-char"]);
+  assert.equal(searchAssets(lib, "", { role: "set" }).length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("loadLibrary: role and kind must pair up — sfx stays audio/video, models stay model/code/image", () => {
+  const dir = writeCatalog([
+    { id: "sfx-model", role: "sfx", kind: "model", path: "x.glb", license: LICENSE },
+    { id: "char-audio", role: "character", kind: "audio", path: "x.wav", license: LICENSE },
+    { id: "char-video", role: "character", kind: "video", path: "x.mp4", license: LICENSE },
+    { id: "ref-model", role: "character-ref", kind: "model", path: "x.glb", license: LICENSE },
+    { id: "unknown-role", role: "background", kind: "model", path: "x.glb", license: LICENSE },
+    { id: "sfx-ok", role: "sfx", kind: "audio", path: "x.wav", license: LICENSE },
+    { id: "no-license", role: "prop", kind: "model", path: "x.glb" },
+    { id: "bad-safe", role: "prop", kind: "model", path: "x.glb", license: { kind: "own", commercialSafe: "yes" } },
+  ]);
+  assert.deepEqual(loadLibrary(dir).assets.map((a) => a.id), ["sfx-ok"]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("isModelAsset: true for model, image and code kinds only", () => {
+  assert.equal(isModelAsset({ kind: "model" }), true);
+  assert.equal(isModelAsset({ kind: "image" }), true);
+  assert.equal(isModelAsset({ kind: "code" }), true);
+  assert.equal(isModelAsset({ kind: "audio" }), false);
+  assert.equal(isModelAsset({ kind: "video" }), false);
+  assert.equal(isModelAsset(undefined), false);
 });

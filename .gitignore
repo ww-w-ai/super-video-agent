@@ -11,3 +11,4 @@ intent/
 __pycache__/
 *.pyc
 library/
+.backup/

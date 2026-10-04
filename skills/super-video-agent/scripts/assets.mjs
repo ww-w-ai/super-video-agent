@@ -1,20 +1,26 @@
 #!/usr/bin/env node
 // Asset library CLI (design.md §2.5): search a local library of recorded
-// sound effects and reaction clips, and fetch the ones a plan.json cues
-// into a reel folder for render.mjs to draw and mix.
+// sound effects, reaction clips and 3D models, fetch the clips a plan.json cues
+// into a reel folder for render.mjs to draw and mix, and copy models in.
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
-import { openLibrary, locateLibraryDir, assetFilePath, getById, searchAssets } from "./lib/library.mjs";
+import { openLibrary, locateLibraryDir, assetFilePath, getById, searchAssets, isModelAsset } from "./lib/library.mjs";
 import { collectPlanCues, defaultPlay } from "./lib/cues.mjs";
 import { ffmpeg, ffprobe } from "./lib/ffmpeg.mjs";
 
-const HELP = `usage: assets.mjs search <query> [--role sfx|reaction] [--limit N]
+const HELP = `usage: assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]
        assets.mjs fetch <reel-dir> [--allow-personal-scope]
+       assets.mjs model <id> <reel-dir> [--allow-personal-scope]
 
 search   Lists library assets whose description/tags match every word in
-         <query> (case-insensitive), with duration and license.
+         <query> (case-insensitive): clips with duration, 3D models and
+         images with rigged/clips, plus the license.
+model    Copies a 3D model (character, prop, set), an owner image, or a
+         code-built model module into <reel-dir>/assets/models/ (images:
+         <reel-dir>/assets/refs/) and prints its license. A glTF also
+         brings its .bin and textures. Same license rule as fetch.
 fetch    Copies every asset cued in <reel-dir>/plan.json's lines[].cues
          into <reel-dir>/assets/lib/: audio as-is, video as JPEG frames at
          the plan's fps plus a wav of its own audio when it has one.
@@ -54,8 +60,10 @@ export async function main(argv) {
       await runSearch(rest, flags);
     } else if (cmd === "fetch") {
       await runFetch(rest, flags);
+    } else if (cmd === "model") {
+      await runModel(rest, flags);
     } else {
-      fail(`unknown command "${cmd}", expected "search" or "fetch"`);
+      fail(`unknown command "${cmd}", expected "search", "fetch" or "model"`);
     }
   } catch (e) {
     fail(e.message);
@@ -75,12 +83,18 @@ async function runSearch(rest, flags) {
     process.stdout.write("no matches\n");
     return;
   }
-  for (const a of results) {
-    process.stdout.write(
-      `${a.id}  [${a.role}]  ${a.durationSec.toFixed(2)}s  ` +
-        `license:${a.license.kind}(commercialSafe=${a.license.commercialSafe})  ${a.description}\n`
-    );
+  for (const a of results) process.stdout.write(searchLine(a) + "\n");
+}
+
+/** One `search` result line: clips show duration, models show rigged/clips. */
+export function searchLine(a) {
+  const lic = `license:${a.license.kind}(commercialSafe=${a.license.commercialSafe})`;
+  if (isModelAsset(a)) {
+    const clips = Array.isArray(a.clips) && a.clips.length ? a.clips.map((c) => c.name).join(",") : "none";
+    const shape = a.kind === "model" ? `rigged=${!!a.rigged} clips=${clips}  ` : "";
+    return `${a.id}  [${a.role}/${a.kind}]  ${shape}${lic}  ${a.description}`;
   }
+  return `${a.id}  [${a.role}]  ${a.durationSec.toFixed(2)}s  ${lic}  ${a.description}`;
 }
 
 async function runFetch(rest, flags) {
@@ -96,6 +110,81 @@ async function runFetch(rest, flags) {
   if (result.fetched > 0) {
     process.stdout.write(`fetched ${result.fetched} asset(s) into ${result.libDir}\n`);
   }
+}
+
+async function runModel(rest, flags) {
+  if (!rest[0] || !rest[1]) {
+    fail("model requires <id> and <reel-dir>");
+    return;
+  }
+  await fetchModel({
+    id: rest[0],
+    dir: abs(rest[1]),
+    allowPersonalScope: !!flags["allow-personal-scope"],
+    log: (line) => process.stdout.write(line + "\n"),
+  });
+}
+
+/** True when the reel's plan.json or --allow-personal-scope lets a non-commercialSafe asset through. */
+function personalScopeAllowed(plan, allowPersonalScope) {
+  const distribution = (plan.meta && plan.meta.distribution) || "public";
+  return allowPersonalScope || distribution === "personal";
+}
+
+/** Files a .gltf pulls in by relative uri (its .bin and textures). */
+function gltfCompanions(gltfPath) {
+  const json = JSON.parse(fs.readFileSync(gltfPath, "utf8"));
+  const uris = [...(json.buffers || []), ...(json.images || [])]
+    .map((x) => x.uri)
+    .filter((u) => typeof u === "string" && !u.startsWith("data:"));
+  return [...new Set(uris)];
+}
+
+/**
+ * `assets.mjs model`'s logic: copy one model/image/code asset into the reel.
+ * Models and code go to assets/models/, images to assets/refs/. Rejects
+ * (instead of exiting) on an unknown id, a clip asset, a missing file, or a
+ * non-commercialSafe asset without the personal-scope override.
+ * @returns {Promise<{fetched:number, file?:string, files?:string[]}>}
+ */
+export async function fetchModel({ id, dir, allowPersonalScope = false, log = () => {} }) {
+  const library = openLibrary();
+  if (!library) {
+    log(noLibraryMessage(locateLibraryDir()));
+    return { fetched: 0 };
+  }
+  const asset = getById(library, id);
+  if (!asset) throw new Error(`unknown asset id "${id}"`);
+  if (!isModelAsset(asset)) {
+    throw new Error(`asset "${id}" is a clip (kind ${asset.kind}), not a model; cue it in plan.json and use "assets.mjs fetch"`);
+  }
+
+  const paths = reelPaths(dir);
+  const plan = fs.existsSync(paths.planJson) ? readJson(paths.planJson) : {};
+  log(`${asset.id}: license ${asset.license.kind} (commercialSafe=${asset.license.commercialSafe})`);
+  if (asset.license.note) log(`${asset.id}: ${asset.license.note}`);
+  if (asset.license.commercialSafe === false && !personalScopeAllowed(plan, allowPersonalScope)) {
+    throw new Error(
+      `refusing to fetch non-commercialSafe asset without --allow-personal-scope ` +
+        `or meta.distribution "personal": ${asset.id}`
+    );
+  }
+
+  const srcPath = assetFilePath(library, asset);
+  if (!fs.existsSync(srcPath)) throw new Error(`library file missing for "${id}": ${srcPath}`);
+  const sub = asset.kind === "image" ? "refs" : "models";
+  const destDir = path.join(paths.assetsDir, sub);
+  ensureDir(destDir);
+
+  const srcDir = path.dirname(srcPath);
+  const extra = srcPath.endsWith(".gltf") ? gltfCompanions(srcPath) : [];
+  if (extra.length) for (const f of fs.readdirSync(srcDir)) if (/^license.*\.txt$/i.test(f)) extra.push(f);
+  const names = [path.basename(srcPath), ...extra];
+  for (const name of names) fs.copyFileSync(path.join(srcDir, name), path.join(destDir, name));
+
+  const files = names.map((n) => `assets/${sub}/${n}`);
+  log(`fetched ${asset.id} into ${destDir} (${files.join(", ")})`);
+  return { fetched: 1, file: files[0], files };
 }
 
 /**
@@ -120,8 +209,7 @@ export async function fetchAssets({ dir, allowPersonalScope = false, log = () =>
     return { fetched: 0 };
   }
 
-  const distribution = (plan.meta && plan.meta.distribution) || "public";
-  const allowed = allowPersonalScope || distribution === "personal";
+  const allowed = personalScopeAllowed(plan, allowPersonalScope);
 
   // Resolve every cued asset up front (fail fast, with the offending id)
   // and print each one's license before doing any copying.
@@ -131,6 +219,9 @@ export async function fetchAssets({ dir, allowPersonalScope = false, log = () =>
     const asset = getById(library, cue.asset);
     if (!asset) {
       throw new Error(`unknown asset id "${cue.asset}" (cued in line "${cue.lineId}")`);
+    }
+    if (isModelAsset(asset)) {
+      throw new Error(`asset "${cue.asset}" is a ${asset.kind}, not a cue clip; use "assets.mjs model ${cue.asset} <reel-dir>"`);
     }
     byId.set(cue.asset, asset);
   }
