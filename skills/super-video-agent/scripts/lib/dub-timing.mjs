@@ -4,7 +4,20 @@
 // slot runs to the film's end), never cutting audio and never moving the
 // picture. No I/O, no ffmpeg.
 
-const DEFAULT_MAX_ATEMPO = 1.2;
+// The picture's slot is the reference. Order for every line: sped up by at most
+// 10% (pitch kept) when longer than its slot, then at least MIN_BREATH_SEC of
+// silence after it when the slot has room; a line that leaves more than
+// MAX_BREATH_SEC is slowed down to MIN_ATEMPO. A line that needs more speed is
+// reported for rewording, not sped further. `--max-speed` widens this.
+const DEFAULT_MAX_ATEMPO = 1.1;
+
+// Silence kept after a line when its slot leaves room (SKILL.md: about 0.5 s
+// after each line). A slot without room is reported, never cut silently.
+export const MIN_BREATH_SEC = 0.5;
+// Longest silence after a line: the silence gate's limit.
+export const MAX_BREATH_SEC = 1.0;
+// Slowest a line may be played to close a gap over MAX_BREATH_SEC.
+export const MIN_ATEMPO = 0.95;
 
 /**
  * Base-clock slots: slot i spans from base line i's start to base line
@@ -22,25 +35,48 @@ export function computeSlots(baseLines, filmDuration) {
 }
 
 /**
- * Whether a dub line's own clip fits its slot: unchanged if it already
- * fits, sped up (atempo) up to `maxAtempo` if it is longer, or refused if
- * even `maxAtempo` is not enough (the script needs shortening, not the
- * render — audio is never cut and the picture never moves).
+ * Whether a dub line's own clip fits its slot. Order: unchanged if it fits
+ * with `minBreathSec` of silence after it; sped up (atempo) up to `maxAtempo`
+ * if longer; refused if even `maxAtempo` does not fit the slot itself (the
+ * script needs shortening, not the render — audio is never cut and the
+ * picture never moves). A line that leaves more than `maxBreathSec` of
+ * silence is slowed down (atempo, pitch kept) to at most `minAtempo` to close the rest.
  * @param {number} clipDurationSec measured duration of the dub line's own wav
  * @param {number} slotDurationSec
  * @param {number} [maxAtempo]
- * @returns {{ok:true, atempoFactor:number, actualDurationSec:number} | {ok:false, requiredFactor:number, maxAtempo:number}}
+ * @param {{minBreathSec?:number, maxBreathSec?:number, minAtempo?:number}} [opts]
+ *   minBreathSec: speed up (within maxAtempo) to leave it; if even maxAtempo cannot, the line still fits the slot and `breathShort` is set.
+ *   maxBreathSec: longest silence after a line; if slowing to minAtempo still leaves more, `longGap` is set.
+ * @returns {{ok:true, atempoFactor:number, actualDurationSec:number, breathSec:number, breathShort:boolean, longGap:boolean} | {ok:false, requiredFactor:number, maxAtempo:number}}
  */
-export function fitLineToSlot(clipDurationSec, slotDurationSec, maxAtempo = DEFAULT_MAX_ATEMPO) {
-  if (clipDurationSec <= slotDurationSec) {
-    return { ok: true, atempoFactor: 1, actualDurationSec: clipDurationSec };
+export function fitLineToSlot(clipDurationSec, slotDurationSec, maxAtempo = DEFAULT_MAX_ATEMPO, opts = {}) {
+  const { minBreathSec = 0, maxBreathSec = Infinity, minAtempo = 1 } = opts;
+  const limits = { minBreathSec, maxBreathSec };
+  const room = slotDurationSec - minBreathSec;
+  if (clipDurationSec <= room) {
+    const gap = slotDurationSec - clipDurationSec;
+    const slowedTo = gap > maxBreathSec ? Math.max(minAtempo, clipDurationSec / (slotDurationSec - maxBreathSec)) : 1;
+    return fitResult(clipDurationSec, slotDurationSec, slowedTo, limits);
   }
-  const requiredFactor = clipDurationSec / slotDurationSec;
-  if (requiredFactor > maxAtempo + 1e-9) {
-    return { ok: false, requiredFactor, maxAtempo };
+  const breathFactor = room > 0 ? clipDurationSec / room : Infinity;
+  if (breathFactor <= maxAtempo + 1e-9) {
+    return fitResult(clipDurationSec, slotDurationSec, Math.min(breathFactor, maxAtempo), limits);
   }
-  const atempoFactor = Math.min(requiredFactor, maxAtempo);
-  return { ok: true, atempoFactor, actualDurationSec: clipDurationSec / atempoFactor };
+  // No full breath is possible: fit the slot itself, as fast as allowed to leave the most breath.
+  if (clipDurationSec / slotDurationSec > maxAtempo + 1e-9) {
+    return { ok: false, requiredFactor: clipDurationSec / slotDurationSec, maxAtempo };
+  }
+  return fitResult(clipDurationSec, slotDurationSec, maxAtempo, limits);
+}
+
+function fitResult(clipDurationSec, slotDurationSec, atempoFactor, { minBreathSec, maxBreathSec }) {
+  const actualDurationSec = clipDurationSec / atempoFactor;
+  const breathSec = slotDurationSec - actualDurationSec;
+  return {
+    ok: true, atempoFactor, actualDurationSec, breathSec,
+    breathShort: breathSec < minBreathSec - 1e-9,
+    longGap: breathSec > maxBreathSec + 1e-9,
+  };
 }
 
 /**
@@ -71,15 +107,18 @@ export function shiftAndScaleWords(words, dubLineStart, atempoFactor, slotStart)
  * @param {Map<string,number>} clipDurations id -> measured duration (sec) of dub/voice/line-<id>.wav
  * @param {number} filmDuration
  * @param {number} [maxAtempo]
- * @returns {{ok:true, lines:{id:string,text:string,start:number,end:number,atempoFactor:number,words:object[]}[]} | {ok:false, failures:{id:string,requiredFactor:number|null,maxAtempo:number,reason?:string}[]}}
+ * @param {{minBreathSec?:number, maxBreathSec?:number, minAtempo?:number}} [breath] see fitLineToSlot; lines left with
+ *   less breath go to `breathWarnings`, lines left with a longer gap (not the last line) to `longGaps`
+ * @returns {{ok:true, lines:{id:string,text:string,start:number,end:number,atempoFactor:number,words:object[]}[], breathWarnings:{id:string,breathSec:number,minBreathSec:number}[], longGaps:{id:string,gapSec:number,maxBreathSec:number}[]} | {ok:false, failures:{id:string,requiredFactor:number|null,maxAtempo:number,reason?:string}[]}}
  */
-export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, maxAtempo = DEFAULT_MAX_ATEMPO) {
+export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, maxAtempo = DEFAULT_MAX_ATEMPO, breath = {}) {
+  const { minBreathSec = MIN_BREATH_SEC, maxBreathSec = MAX_BREATH_SEC, minAtempo = MIN_ATEMPO } = breath;
   const slots = computeSlots(baseLines, filmDuration);
   const dubById = new Map(dubLines.map((l) => [l.id, l]));
 
   const failures = [];
   const fits = [];
-  for (const slot of slots) {
+  for (const [slotIndex, slot] of slots.entries()) {
     const dubLine = dubById.get(slot.id);
     if (!dubLine) {
       failures.push({ id: slot.id, requiredFactor: null, maxAtempo, reason: "no matching dub line id" });
@@ -91,7 +130,9 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
       continue;
     }
     const slotDur = slot.end - slot.start;
-    const fit = fitLineToSlot(clipDur, slotDur, maxAtempo);
+    // The last slot's tail runs to the film's end, not to a next line: no gap limit there.
+    const isLast = slotIndex === slots.length - 1;
+    const fit = fitLineToSlot(clipDur, slotDur, maxAtempo, { minBreathSec, maxBreathSec: isLast ? Infinity : maxBreathSec, minAtempo });
     if (!fit.ok) {
       failures.push({ id: slot.id, requiredFactor: fit.requiredFactor, maxAtempo: fit.maxAtempo });
       continue;
@@ -99,6 +140,12 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
     fits.push({ slot, dubLine, fit });
   }
   if (failures.length) return { ok: false, failures };
+  const breathWarnings = fits
+    .filter(({ fit }) => fit.breathShort)
+    .map(({ slot, fit }) => ({ id: slot.id, breathSec: fit.breathSec, minBreathSec }));
+  const longGaps = fits
+    .filter(({ fit }) => fit.longGap)
+    .map(({ slot, fit }) => ({ id: slot.id, gapSec: fit.breathSec, maxBreathSec }));
 
   const lines = fits.map(({ slot, dubLine, fit }) => ({
     id: slot.id,
@@ -108,7 +155,7 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
     atempoFactor: fit.atempoFactor,
     words: shiftAndScaleWords(dubLine.words, dubLine.start, fit.atempoFactor, slot.start),
   }));
-  return { ok: true, lines };
+  return { ok: true, lines, breathWarnings, longGaps };
 }
 
 /**
@@ -122,14 +169,15 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
  * @param {number} filmDuration
  * @param {string|null} [lang]
  */
-export function buildPlacedTimings(fittedLines, filmDuration, lang = null) {
-  return { duration: filmDuration, lines: fittedLines, lang, provider: "dub" };
+export function buildPlacedTimings(fittedLines, filmDuration, lang = null, lead = 0) {
+  // The dub inherits the picture's lead: one timing for every language.
+  return { duration: filmDuration, ...(lead > 0 ? { lead } : {}), lines: fittedLines, lang, provider: "dub" };
 }
 
 export const MAX_ATEMPO_DEFAULT = DEFAULT_MAX_ATEMPO;
 
 /** Fit replacement narration inside frozen caption windows, without moving the picture clock. */
-export function fitFrozenLines(frozen, dubLines, clipDurations) {
+export function fitFrozenLines(frozen, dubLines, clipDurations, maxAtempo = DEFAULT_MAX_ATEMPO) {
   if (!Number.isFinite(frozen.duration) || frozen.duration <= 0 || !Array.isArray(frozen.lines) || !frozen.lines.length) {
     throw new Error("frozen timings need a positive duration and nonempty lines");
   }
@@ -148,7 +196,8 @@ export function fitFrozenLines(frozen, dubLines, clipDurations) {
     }
     const duration = clipDurations.get(slot.id);
     if (!Number.isFinite(duration) || duration <= 0) throw new Error(`line ${slot.id}: missing or invalid clip duration`);
-    const fit = fitLineToSlot(duration, slot.end - slot.start);
+    const fit = fitLineToSlot(duration, slot.end - slot.start, maxAtempo);
+    // Frozen caption windows keep their own pauses: no breath rule.
     if (!fit.ok) throw new Error(`line ${slot.id}: needs ${fit.requiredFactor.toFixed(3)}x; edit pauses locally before regenerating`);
     return {
       id: slot.id, text: slot.text, start: slot.start, end: slot.start + fit.actualDurationSec,
@@ -173,18 +222,19 @@ const DEFAULT_TRIM_PAD_SEC = 0.04;
  * @param {{startSec:number, endSec:number, rmsDb:number}[]} windows in
  *   order, spanning [0, clipDurationSec]
  * @param {number} clipDurationSec
- * @param {{thresholdDb?:number, padSec?:number}} [opts]
+ * @param {{thresholdDb?:number, padSec?:number, headPadSec?:number, tailPadSec?:number}} [opts] head/tail pads override padSec per side
  * @returns {{leadTrimSec:number, tailTrimSec:number, trimmedStartSec:number, trimmedEndSec:number}}
  */
 export function trimEdgeSilence(windows, clipDurationSec, opts = {}) {
   const thresholdDb = opts.thresholdDb ?? DEFAULT_TRIM_THRESHOLD_DB;
-  const padSec = opts.padSec ?? DEFAULT_TRIM_PAD_SEC;
+  const headPadSec = opts.headPadSec ?? opts.padSec ?? DEFAULT_TRIM_PAD_SEC;
+  const tailPadSec = opts.tailPadSec ?? opts.padSec ?? DEFAULT_TRIM_PAD_SEC;
   const speech = (windows || []).filter((w) => w.rmsDb > thresholdDb);
   if (!speech.length) {
     return { leadTrimSec: 0, tailTrimSec: 0, trimmedStartSec: 0, trimmedEndSec: clipDurationSec };
   }
-  const trimmedStartSec = Math.max(0, speech[0].startSec - padSec);
-  const trimmedEndSec = Math.min(clipDurationSec, speech[speech.length - 1].endSec + padSec);
+  const trimmedStartSec = Math.max(0, speech[0].startSec - headPadSec);
+  const trimmedEndSec = Math.min(clipDurationSec, speech[speech.length - 1].endSec + tailPadSec);
   return {
     leadTrimSec: trimmedStartSec,
     tailTrimSec: Math.max(0, clipDurationSec - trimmedEndSec),

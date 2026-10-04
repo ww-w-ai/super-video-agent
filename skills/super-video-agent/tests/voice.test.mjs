@@ -316,7 +316,7 @@ test("voice: a line's pauseAfterMs overrides meta.gapMs for the silence after it
   const paths = reelPaths(dir);
   const provider = makeRecordingProvider();
   const lines = [
-    { id: "l1", text: "첫 줄인데", pauseAfterMs: 150 },
+    { id: "l1", text: "첫 줄인데", pauseAfterMs: 900 },
     { id: "l2", text: "이어지는 줄" },
     { id: "l3", text: "새 장면" },
   ];
@@ -334,9 +334,23 @@ test("voice: a line's pauseAfterMs overrides meta.gapMs for the silence after it
   });
 
   const [a, b, c] = timings.lines;
-  assert.ok(Math.abs(b.start - a.end - 0.15) < 0.01, `gap after l1 = ${b.start - a.end}`);
+  assert.ok(Math.abs(b.start - a.end - 0.9) < 0.01, `gap after l1 = ${b.start - a.end}`);
   assert.ok(Math.abs(c.start - b.end - 0.6) < 0.01, `gap after l2 = ${c.start - b.end}`);
 
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("voice: a pause under 0.5 s is raised to the minimum breath after a line", async () => {
+  const dir = tmpReelDir();
+  const paths = reelPaths(dir);
+  const provider = makeRecordingProvider();
+  const { timings } = await synthesizeAll({
+    dir, paths, provider, providerName: "none", voiceCfg: {}, lang: "ko-KR", gapMs: 200, sttEnabled: false,
+    lines: [{ id: "l1", text: "첫 줄인데", pauseAfterMs: 150 }, { id: "l2", text: "이어지는 줄" }, { id: "l3", text: "새 장면" }],
+  });
+  const [a, b, c] = timings.lines;
+  assert.ok(Math.abs(b.start - a.end - 0.5) < 0.01, `gap after l1 = ${b.start - a.end}`);
+  assert.ok(Math.abs(c.start - b.end - 0.5) < 0.01, `gap after l2 = ${c.start - b.end}`);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

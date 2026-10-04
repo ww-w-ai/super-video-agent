@@ -277,3 +277,57 @@ test("main --pick: an unknown take fails clearly instead of silently doing nothi
   assert.equal(exitCode, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("main --takes: an installed clip, timings.json and narration.wav stay byte-identical", async () => {
+  const dir = tmpReelDir();
+  writePlan(dir, basePlan([{ id: "l1", text: "짧은 문장" }]));
+  const paths = reelPaths(dir);
+  await main([dir, "--provider", "none", "--lines", "l1", "--no-stt"]);
+  const clip = path.join(paths.voiceDir, "line-l1.wav");
+  const files = [clip, paths.timingsJson, paths.narrationWav];
+  const before = files.map((f) => fs.readFileSync(f));
+
+  await main([dir, "--provider", "none", "--lines", "l1", "--takes", "2", "--no-stt"]);
+
+  files.forEach((f, i) => assert.ok(before[i].equals(fs.readFileSync(f)), `${f} changed`));
+  assert.ok(fs.existsSync(path.join(paths.voiceDir, "takes", "l1-2.wav")));
+  assert.equal(fs.existsSync(path.join(paths.voiceDir, "takes", "l1")), false);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("main --pick: replaces the installed clip and keeps the previous one under takes/<id>/", async () => {
+  const dir = tmpReelDir();
+  writePlan(dir, basePlan([{ id: "l1", text: "짧은 문장" }]));
+  const paths = reelPaths(dir);
+  await main([dir, "--provider", "none", "--lines", "l1", "--no-stt"]);
+  const clip = path.join(paths.voiceDir, "line-l1.wav");
+  const previous = fs.readFileSync(clip);
+  await main([dir, "--provider", "none", "--lines", "l1", "--takes", "2", "--no-stt"]);
+
+  await main([dir, "--provider", "none", "--pick", "l1=2", "--no-stt", "--retime"]);
+
+  const keptDir = path.join(paths.voiceDir, "takes", "l1");
+  const kept = fs.readdirSync(keptDir).filter((f) => /^installed-.*\.wav$/.test(f));
+  assert.equal(kept.length, 1);
+  assert.ok(fs.readFileSync(path.join(keptDir, kept[0])).equals(previous));
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("synthesizeTakes: a line with no installed clip gets take 1; one that has a clip is left alone", async () => {
+  const dir = tmpReelDir();
+  const paths = reelPaths(dir);
+  const plan = basePlan([{ id: "l1", text: "첫 줄" }]);
+  const args = { dir, paths, plan, lineIds: ["l1"], spec: { mode: "count", n: 2 }, providerName: "none", voiceCfg: {}, pronounce: undefined, lang: "ko-KR", gapMs: 250, sttEnabled: false, keepTiming: true };
+
+  await synthesizeTakes({ ...args, provider: makeVaryingProvider() });
+  const clip = path.join(paths.voiceDir, "line-l1.wav");
+  assert.ok(fs.existsSync(clip));
+  const installed = fs.readFileSync(clip);
+
+  await synthesizeTakes({ ...args, provider: makeVaryingProvider() });
+  assert.ok(fs.readFileSync(clip).equals(installed));
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

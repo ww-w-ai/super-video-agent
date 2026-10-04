@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "../lib/wav.mjs";
-import { spokenRange, cutSpans, withQuietTail } from "../lib/line-split.mjs";
+import { spokenRange, cutSpans, withQuietTail, withSentenceEnd, groupByChars } from "../lib/line-split.mjs";
 import { wordsFromCharAlignment } from "../lib/timing.mjs";
 import { tagSpans } from "../lib/tags.mjs";
 
@@ -65,15 +65,6 @@ const BATCH_MAX_CHARS = 2500;
 const CLOSING_PAUSE = " [pause]";
 // Tags that make no sound; every other tag ([laughs], [sighs]) is part of its line's audio.
 const SILENT_TAG = /^\[(?:short |long )?paus(?:e|es)\]$/i;
-
-/**
- * A line in a joined request needs a sentence end, or the engine reads it into the next line
- * with no pause between them. A line that already ends in one is sent as it is.
- */
-function withSentenceEnd(text) {
-  const bare = text.replace(/(?:\s*\[[^\]\n]*\])+\s*$/, "").trim();
-  return /[.!?…。！？]["'”’」』)]*$/.test(bare) ? text : `${text}.`;
-}
 
 function settings(voice, voiceCfg) {
   const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -175,23 +166,6 @@ async function speakAndCut(items, cfg) {
   });
 }
 
-/** Groups of items whose joined text stays under BATCH_MAX_CHARS. */
-function batches(items) {
-  const out = [];
-  let cur = [], size = 0;
-  for (const it of items) {
-    if (cur.length && size + it.text.length + 1 > BATCH_MAX_CHARS) {
-      out.push(cur);
-      cur = [];
-      size = 0;
-    }
-    cur.push(it);
-    size += it.text.length + 1;
-  }
-  if (cur.length) out.push(cur);
-  return out;
-}
-
 /**
  * Every line in one request (several when the script is long), cut per line: the voice keeps
  * one read across the film, and one closing [pause] covers all of it. A single line is sent as
@@ -202,7 +176,7 @@ function batches(items) {
 export async function synthBatch(items, ctx) {
   const cfg = settings(null, ctx && ctx.voiceCfg);
   const results = [];
-  for (const group of batches(items)) results.push(...(await speakAndCut(group, cfg)));
+  for (const group of groupByChars(items, BATCH_MAX_CHARS)) results.push(...(await speakAndCut(group, cfg)));
   return results;
 }
 

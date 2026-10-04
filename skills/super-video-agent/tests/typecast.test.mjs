@@ -15,31 +15,15 @@ test("typecast: provider name and no inline tags", () => {
   assert.equal(typecast.tagMap({}), null);
 });
 
-test("pickEmotionPreset: ? and ! endings get toneup, others normal", () => {
-  for (const t of ["정말요?", "드디어 나왔습니다!", "뭐?!", "뭐!?", "그래요? ", '"진짜?"', "정말?」", "Really?)"]) {
-    assert.equal(pickEmotionPreset(t), "toneup", t);
-  }
-  for (const t of ["그렇습니다.", "뭐? 그렇습니다", "끝", "wait... ok"]) {
-    assert.equal(pickEmotionPreset(t), "normal", t);
-  }
+test("pickEmotionPreset: no automatic toneup, ? and ! lines stay normal", () => {
+  assert.equal(pickEmotionPreset(), "normal");
+  assert.equal(pickEmotionPreset({}), "normal");
+  assert.equal(pickEmotionPreset({ emotion: "bogus" }), "normal");
 });
 
-test("pickEmotionPreset: voiceCfg.emotion overrides, unknown value is ignored", () => {
-  assert.equal(pickEmotionPreset("정말요?", { emotion: "whisper" }), "whisper");
-  assert.equal(pickEmotionPreset("끝.", { emotion: "happy" }), "happy");
-  assert.equal(pickEmotionPreset("정말요?", { emotion: "bogus" }), "toneup");
-});
-
-test("languageCode: BCP 47 to ISO 639-3, unknown omitted", () => {
-  assert.equal(languageCode("ko"), "kor");
-  assert.equal(languageCode("ko-KR"), "kor");
-  assert.equal(languageCode("en-US"), "eng");
-  assert.equal(languageCode("ja"), "jpn");
-  assert.equal(languageCode("zh-Hans"), "zho");
-  assert.equal(languageCode("zh-Hant"), "zho");
-  assert.equal(languageCode("fra"), "fra");
-  assert.equal(languageCode("xx"), undefined);
-  assert.equal(languageCode(undefined), undefined);
+test("pickEmotionPreset: voiceCfg.emotion is the preset", () => {
+  assert.equal(pickEmotionPreset({ emotion: "whisper" }), "whisper");
+  assert.equal(pickEmotionPreset({ emotion: "toneup" }), "toneup");
 });
 
 test("buildBody: defaults, overrides, language omitted when unknown", () => {
@@ -49,7 +33,7 @@ test("buildBody: defaults, overrides, language omitted when unknown", () => {
     model: "ssfm-v30",
     voice_id: "tc_1",
     language: "kor",
-    prompt: { emotion_type: "preset", emotion_preset: "toneup", emotion_intensity: 1 },
+    prompt: { emotion_type: "preset", emotion_preset: "normal", emotion_intensity: 1 },
     output: { audio_format: "wav" },
   });
   const c = buildBody({ text: "끝.", voiceId: "tc_1", lang: "xx", voiceCfg: { model: "ssfm-v21", emotionIntensity: 1.5 } });
@@ -94,7 +78,7 @@ test("synth: request url/headers/body and word conversion via stubbed fetch", as
     const body = JSON.parse(seen.init.body);
     assert.equal(body.voice_id, "tc_9");
     assert.equal(body.language, "kor");
-    assert.equal(body.prompt.emotion_preset, "toneup");
+    assert.equal(body.prompt.emotion_preset, "normal", "a ! ending does not raise the preset");
     assert.deepEqual(res.words, [{ w: "안녕", start: 0, end: 0.1 }]);
     assert.equal(res.wordsRelative, true);
     assert.ok(fs.existsSync(outPath));

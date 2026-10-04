@@ -321,3 +321,60 @@ test("dub: dub/<code>/plan.json lines may carry their own voice; the dub is voic
   assert.ok(out.includes("speakers: none/voice-c (l1, l3) | none/voice-d (l2)"), out);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// --- per-line emotion -------------------------------------------------------------
+
+test("resolveLineVoice: typecast line with its own emotion gets a key of its own; same-as-voice and tag providers do not", () => {
+  const meta = { voice: { provider: "typecast", voiceId: "tc_1" } };
+  const film = resolveLineVoice(meta, { id: "a" }, "typecast");
+  const same = resolveLineVoice(meta, { id: "b", emotion: "normal" }, "typecast");
+  const own = resolveLineVoice(meta, { id: "c", emotion: "happy" }, "typecast");
+  assert.equal(same.key, film.key);
+  assert.equal(own.voiceCfg.emotion, "happy");
+  assert.notEqual(own.key, film.key);
+  assert.notEqual(own.key, resolveLineVoice(meta, { id: "d", emotion: "happy" }, "typecast").key, "two lines never share a request");
+  const tag = resolveLineVoice({ voice: { provider: "elevenlabs" } }, { id: "e", emotion: "happy" }, "elevenlabs");
+  assert.equal(tag.voiceCfg.emotion, undefined);
+});
+
+test("synthBatches: a typecast line with its own emotion is split out of the batch and made alone with that preset", async () => {
+  const calls = [];
+  const provider = {
+    async synthBatch(items, ctx) {
+      calls.push({ ids: items.map((i) => i.id), emotion: ctx.voiceCfg.emotion });
+      return items.map((i) => ({ id: i.id, wavPath: i.outPath }));
+    },
+  };
+  const meta = { voice: { provider: "typecast", voiceId: "tc_1" } };
+  const lines = [{ id: "l1", text: "one" }, { id: "l2", text: "two", emotion: "sad" }, { id: "l3", text: "three" }];
+  const lv = new Map(lines.map((l) => [l.id, { ...resolveLineVoice(meta, l, "typecast"), provider }]));
+  const results = await synthBatches({ lines, lineVoice: (l) => lv.get(l.id), pronounce: undefined, lang: "ko-KR", dir: "/tmp", voiceDir: "/tmp/voice" });
+  assert.deepEqual(calls, [
+    { ids: ["l1", "l3"], emotion: undefined },
+    { ids: ["l2"], emotion: "sad" },
+  ]);
+  assert.deepEqual([...results.keys()].sort(), ["l1", "l2", "l3"]);
+});
+
+test("synthBatches: a tag provider keeps the emotion tag inline in the one batch", async () => {
+  const calls = [];
+  const provider = {
+    tagMap: () => ({}),
+    async synthBatch(items, ctx) {
+      calls.push(items.map((i) => ({ id: i.id, text: i.text })));
+      return items.map((i) => ({ id: i.id, wavPath: i.outPath }));
+    },
+  };
+  const meta = { voice: { provider: "elevenlabs" } };
+  const lines = [{ id: "l1", text: "one" }, { id: "l2", text: "two", say: "{excited} two" }];
+  const lv = new Map(lines.map((l) => [l.id, { ...resolveLineVoice(meta, l, "elevenlabs"), provider }]));
+  await synthBatches({ lines, lineVoice: (l) => lv.get(l.id), pronounce: undefined, lang: "en-US", dir: "/tmp", voiceDir: "/tmp/voice" });
+  assert.equal(calls.length, 1, "one request for both lines");
+  assert.match(calls[0][1].text, /\[excited\]/);
+});
+
+test("plan schema: line emotion takes a Typecast preset only", () => {
+  const plan = (emotion) => ({ meta: { title: "t" }, lines: [{ id: "l1", text: "x", emotion }] });
+  assert.equal(validate(plan("happy"), schema).valid, true);
+  assert.equal(validate(plan("furious"), schema).valid, false);
+});

@@ -3,8 +3,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ffmpeg } from "../lib/ffmpeg.mjs";
+import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
+import { writeWavPCM16 } from "../lib/wav.mjs";
+import { planCuts, cutClips, withSentenceEnd, groupByChars } from "../lib/line-split.mjs";
 
 export const name = "typecast";
+
+const SAMPLE_RATE = 48000;
+// Typecast's documented text limit per request is 2,000 characters [verify against the current
+// API reference]; a longer script goes in several requests, each cut the same way.
+const BATCH_MAX_CHARS = 2000;
 
 const DEFAULT_MODEL = "ssfm-v30";
 const ENDPOINT = "https://api.typecast.ai/v1/text-to-speech/with-timestamps?granularity=word";
@@ -41,15 +49,13 @@ export function languageCode(lang) {
 }
 
 /**
- * Owner rule: a line whose spoken text ends with "?" or "!" (also "?!", "!?", trailing quotes
- * or spaces) gets "toneup"; every other line "normal". voiceCfg.emotion overrides for the voice.
- * @param {string} text spoken text, tags already stripped
+ * The request's emotion preset: the voice's own (voiceCfg.emotion) when it names a preset, else
+ * "normal". `?` and `!` never change it; the model reads them from the text.
  * @param {{emotion?:string}} [voiceCfg]
  */
-export function pickEmotionPreset(text, voiceCfg) {
+export function pickEmotionPreset(voiceCfg) {
   const forced = voiceCfg && voiceCfg.emotion;
-  if (forced && EMOTION_PRESETS.includes(forced)) return forced;
-  return /[?!][\s"'`‘’“”」』)\]]*$/.test(String(text)) ? "toneup" : "normal";
+  return EMOTION_PRESETS.includes(forced) ? forced : "normal";
 }
 
 /**
@@ -65,7 +71,7 @@ export function buildBody({ text, voiceId, lang, voiceCfg }) {
   const intensity = typeof cfg.emotionIntensity === "number" ? cfg.emotionIntensity : 1;
   body.prompt = {
     emotion_type: "preset",
-    emotion_preset: pickEmotionPreset(text, cfg),
+    emotion_preset: pickEmotionPreset(cfg),
     emotion_intensity: intensity,
   };
   body.output = { audio_format: "wav" };
@@ -95,10 +101,7 @@ export function wordsFromTypecast(words, lineStart = 0) {
   return out.length ? out : undefined;
 }
 
-/**
- * @param {{text:string, voice?:string, lang?:string, voiceCfg?:object, outPath:string}} args
- */
-export async function synth({ text, voice, lang, voiceCfg, outPath }) {
+function credentials(voice) {
   const apiKey = process.env.TYPECAST_API_KEY;
   if (!apiKey) {
     throw new Error("TYPECAST_API_KEY is not set. Export it, or pick another provider with --provider.");
@@ -107,16 +110,77 @@ export async function synth({ text, voice, lang, voiceCfg, outPath }) {
   if (!voiceId) {
     throw new Error("no Typecast voice id: set plan.json meta.voice.voiceId or TYPECAST_VOICE_ID.");
   }
+  return { apiKey, voiceId };
+}
+
+async function requestSpeech(apiKey, body) {
   const res = await fetch(ENDPOINT, {
     method: "POST",
     headers: { "X-API-KEY": apiKey, "content-type": "application/json" },
-    body: JSON.stringify(buildBody({ text, voiceId, lang, voiceCfg })),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`Typecast TTS failed: ${res.status} ${res.statusText} ${body}`);
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Typecast TTS failed: ${res.status} ${res.statusText} ${detail}`);
   }
-  const json = await res.json();
+  return res.json();
+}
+
+/**
+ * Every line of one voice in one request (several past BATCH_MAX_CHARS), cut into one clip per
+ * line by Typecast's word times, or at the silences when the words do not map onto the lines.
+ * One emotion preset covers the request (the voice's own, default normal); `?` and `!` stay in
+ * the text so the model reads the intonation. A line with its own emotion is never in this
+ * request: voice.mjs sends it alone (resolveLineVoice).
+ * @param {{id:string, text:string, outPath:string}[]} items
+ * @param {{lang?:string, voiceCfg?:object}} ctx
+ */
+export async function synthBatch(items, ctx) {
+  const { lang, voiceCfg } = ctx || {};
+  if (items.length === 1) {
+    const [it] = items;
+    return [{ id: it.id, ...(await synth({ text: it.text, voice: voiceCfg && voiceCfg.voiceId, lang, voiceCfg, outPath: it.outPath })) }];
+  }
+  const { apiKey, voiceId } = credentials(voiceCfg && voiceCfg.voiceId);
+  const results = [];
+  for (const group of groupByChars(items, BATCH_MAX_CHARS)) {
+    results.push(...(await speakAndCut(group, { apiKey, voiceId, lang, voiceCfg })));
+  }
+  return results;
+}
+
+async function speakAndCut(items, { apiKey, voiceId, lang, voiceCfg }) {
+  if (items.length === 1) {
+    const [it] = items;
+    return [{ id: it.id, ...(await synth({ text: it.text, voice: voiceId, lang, voiceCfg, outPath: it.outPath })) }];
+  }
+  const sent = items.map((it) => withSentenceEnd(it.text));
+  const json = await requestSpeech(apiKey, buildBody({ text: sent.join(" "), voiceId, lang, voiceCfg }));
+  const scratch = items[0].outPath.replace(/\.wav$/, ".raw.wav");
+  fs.mkdirSync(path.dirname(scratch), { recursive: true });
+  fs.writeFileSync(scratch, Buffer.from(json.audio, "base64"));
+  let samples;
+  try {
+    samples = await decodeMonoPcm(scratch, SAMPLE_RATE);
+  } finally {
+    fs.rmSync(scratch, { force: true });
+  }
+  const plan = planCuts({ samples, sr: SAMPLE_RATE, texts: sent, words: json.words });
+  if (!plan) {
+    process.stderr.write("note: typecast words and silences do not split into the lines; sending one request per line\n");
+    const out = [];
+    for (const it of items) out.push({ id: it.id, ...(await synth({ text: it.text, voice: voiceId, lang, voiceCfg, outPath: it.outPath })) });
+    return out;
+  }
+  return cutClips(items, samples, SAMPLE_RATE, plan, (k, from) => plan.lineWords && wordsFromTypecast(plan.lineWords[k], -from), writeWavPCM16);
+}
+
+/**
+ * @param {{text:string, voice?:string, lang?:string, voiceCfg?:object, outPath:string}} args
+ */
+export async function synth({ text, voice, lang, voiceCfg, outPath }) {
+  const { apiKey, voiceId } = credentials(voice);
+  const json = await requestSpeech(apiKey, buildBody({ text, voiceId, lang, voiceCfg }));
   const buf = Buffer.from(json.audio, "base64");
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   const rawPath = outPath.replace(/\.wav$/, ".raw.wav");

@@ -38,6 +38,15 @@ function resolveRef(root, ref) {
 
 function validateNode(value, node, path, errors, root) {
   const schema = node.$ref ? resolveRef(root, node.$ref) : node;
+  if (schema.oneOf) {
+    const attempts = schema.oneOf.map((sub) => {
+      const subErrors = [];
+      validateNode(value, sub, path, subErrors, root);
+      return subErrors;
+    });
+    if (!attempts.some((e) => e.length === 0)) errors.push(`${path}: matches none of the allowed forms (${attempts.map((e) => e[0]).join("; ")})`);
+    return;
+  }
   if (schema.type) {
     if (!checkType(value, schema.type, path, errors)) return;
   }

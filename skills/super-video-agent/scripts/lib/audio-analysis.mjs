@@ -60,6 +60,20 @@ export function rmsWindow(samples, startIdx, windowLen) {
   return Math.sqrt(sum / n);
 }
 
+/** The level at or under which a 10 ms window counts as silence (review.mjs's audio gate and voice.mjs's silence gate share it). */
+export const SILENCE_THRESHOLD_DB = -50;
+/** A pause between voiced audio longer than this fails unless the plan asks for it. */
+export const SILENCE_GATE_SEC = 1.0;
+
+/** Per-10 ms-window "above threshold" flags, and the window length in samples. */
+function rmsWindows(samples, sampleRate, thresholdDb) {
+  const thresholdLin = Math.pow(10, thresholdDb / 20);
+  const winLen = Math.max(1, Math.round(sampleRate * 0.01));
+  const loud = [];
+  for (let i = 0; i < samples.length; i += winLen) loud.push(rmsWindow(samples, i, winLen) > thresholdLin);
+  return { loud, winLen };
+}
+
 /**
  * Longest run of near-silence (RMS <= thresholdDb) after the first sound in
  * `samples`, scanned in 10ms windows (review.mjs's audio gate: "longest
@@ -68,31 +82,49 @@ export function rmsWindow(samples, startIdx, windowLen) {
  */
 export function longestSilenceAfterFirstSound(samples, sampleRate, opts) {
   const o = opts || {};
-  const thresholdLin = Math.pow(10, (o.thresholdDb == null ? -50 : o.thresholdDb) / 20);
-  const winLen = Math.max(1, Math.round(sampleRate * 0.01));
-  const rmsSeries = [];
-  let firstSoundIdx = null;
-  for (let i = 0; i < samples.length; i += winLen) {
-    const r = rmsWindow(samples, i, winLen);
-    rmsSeries.push(r);
-    if (firstSoundIdx === null && r > thresholdLin) firstSoundIdx = i;
-  }
-  if (firstSoundIdx === null) return { longestSilenceSec: 0, firstSoundSec: null };
-  const startWin = Math.floor(firstSoundIdx / winLen);
+  const { loud, winLen } = rmsWindows(samples, sampleRate, o.thresholdDb == null ? SILENCE_THRESHOLD_DB : o.thresholdDb);
+  const first = loud.indexOf(true);
+  if (first === -1) return { longestSilenceSec: 0, firstSoundSec: null };
   let longestRun = 0;
   let curRun = 0;
-  for (let w = startWin; w < rmsSeries.length; w++) {
-    if (rmsSeries[w] <= thresholdLin) curRun++;
+  for (let w = first; w < loud.length; w++) {
+    if (!loud[w]) curRun++;
     else {
       if (curRun > longestRun) longestRun = curRun;
       curRun = 0;
     }
   }
   if (curRun > longestRun) longestRun = curRun;
-  return {
-    longestSilenceSec: (longestRun * winLen) / sampleRate,
-    firstSoundSec: firstSoundIdx / sampleRate,
-  };
+  return { longestSilenceSec: (longestRun * winLen) / sampleRate, firstSoundSec: (first * winLen) / sampleRate };
+}
+
+/**
+ * Every silence between voiced audio (after the first sound, before the last)
+ * of at least `minSec`, on the same 10 ms windows and threshold as
+ * longestSilenceAfterFirstSound. Leading and trailing silence are not gaps.
+ * @returns {{startSec:number, endSec:number, durationSec:number}[]}
+ */
+export function silenceGaps(samples, sampleRate, opts) {
+  const o = opts || {};
+  const minSec = o.minSec == null ? SILENCE_GATE_SEC : o.minSec;
+  const { loud, winLen } = rmsWindows(samples, sampleRate, o.thresholdDb == null ? SILENCE_THRESHOLD_DB : o.thresholdDb);
+  const winSec = winLen / sampleRate;
+  const gaps = [];
+  let runStart = -1;
+  let seenSound = false;
+  for (let w = 0; w < loud.length; w++) {
+    if (!loud[w]) {
+      if (seenSound && runStart === -1) runStart = w;
+      continue;
+    }
+    if (runStart !== -1) {
+      const durationSec = (w - runStart) * winSec;
+      if (durationSec >= minSec - 1e-9) gaps.push({ startSec: runStart * winSec, endSec: w * winSec, durationSec });
+      runStart = -1;
+    }
+    seenSound = true;
+  }
+  return gaps;
 }
 
 /**

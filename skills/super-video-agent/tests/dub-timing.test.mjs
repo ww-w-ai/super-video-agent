@@ -20,21 +20,70 @@ test("computeSlots: slot i runs from base line i's start to line i+1's start; th
 
 test("fitLineToSlot: a clip that already fits is unchanged", () => {
   const fit = fitLineToSlot(0.8, 1.0);
-  assert.deepEqual(fit, { ok: true, atempoFactor: 1, actualDurationSec: 0.8 });
+  assert.equal(fit.ok, true);
+  assert.equal(fit.atempoFactor, 1);
+  assert.equal(fit.actualDurationSec, 0.8);
 });
 
-test("fitLineToSlot: a clip up to 1.2x its slot is sped up to fit exactly", () => {
-  const fit = fitLineToSlot(1.2, 1.0); // requires exactly 1.2x
+test("fitLineToSlot: with room it keeps the minimum breath, speeding the line up (within max) to leave it", () => {
+  const roomy = fitLineToSlot(0.6, 1.2, 1.1, { minBreathSec: 0.5 });
+  assert.equal(roomy.atempoFactor, 1);
+  assert.ok(roomy.breathSec >= 0.5 && !roomy.breathShort);
+  const sped = fitLineToSlot(0.75, 1.2, 1.1, { minBreathSec: 0.5 }); // 0.75 s leaves 0.45 s; 1.071x leaves exactly 0.5 s
+  assert.ok(Math.abs(sped.atempoFactor - 0.75 / 0.7) < 1e-9);
+  assert.ok(Math.abs(sped.breathSec - 0.5) < 1e-9 && !sped.breathShort);
+});
+
+test("fitLineToSlot: a tight slot fits at max speed and is reported short of breath, never cut silently", () => {
+  const fit = fitLineToSlot(1.0, 1.0, 1.1, { minBreathSec: 0.5 });
   assert.equal(fit.ok, true);
-  assert.ok(Math.abs(fit.atempoFactor - 1.2) < 1e-9);
+  assert.ok(Math.abs(fit.atempoFactor - 1.1) < 1e-9);
+  assert.equal(fit.breathShort, true);
+  assert.ok(fit.breathSec < 0.5);
+});
+
+test("fitLineToSlot: 1.08x fits at the 1.1x default, 1.12x is refused", () => {
+  assert.equal(fitLineToSlot(1.08, 1.0).ok, true);
+  const refused = fitLineToSlot(1.12, 1.0);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.maxAtempo, 1.1);
+});
+
+test("fitLineToSlot: a gap over the maximum is closed by slowing the line, down to 0.95x", () => {
+  const opts = { minBreathSec: 0.5, maxBreathSec: 1.0, minAtempo: 0.95 };
+  const slowed = fitLineToSlot(1.95, 3.0, 1.1, opts); // gap 1.05 s -> 0.975x leaves exactly 1.0 s
+  assert.ok(Math.abs(slowed.atempoFactor - 0.975) < 1e-9);
+  assert.ok(Math.abs(slowed.breathSec - 1.0) < 1e-9 && !slowed.longGap);
+  const floor = fitLineToSlot(1.5, 3.0, 1.1, opts); // would need 0.75x: stops at 0.95x, gap stays over 1.0 s
+  assert.ok(Math.abs(floor.atempoFactor - 0.95) < 1e-9);
+  assert.equal(floor.longGap, true);
+  assert.ok(floor.breathSec > 1.0);
+  assert.equal(fitLineToSlot(0.8, 1.4, 1.1, opts).atempoFactor, 1); // 0.6 s of gap: untouched
+});
+
+test("fitLineToSlot: a clip up to 1.05x its slot is sped up to fit exactly", () => {
+  const fit = fitLineToSlot(1.05, 1.0); // requires exactly 1.05x
+  assert.equal(fit.ok, true);
+  assert.ok(Math.abs(fit.atempoFactor - 1.05) < 1e-9);
   assert.ok(Math.abs(fit.actualDurationSec - 1.0) < 1e-9);
 });
 
-test("fitLineToSlot: a clip needing more than 1.2x is refused, naming the required factor", () => {
-  const fit = fitLineToSlot(1.5, 1.0); // requires 1.5x
+test("fitLineToSlot: the speed stays within 0.95-1.1, and a clip needing 1.12x is refused naming the required factor", () => {
+  for (const clip of [0.6, 0.97, 1.0, 1.05, 1.1]) {
+    const fit = fitLineToSlot(clip, 1.0);
+    assert.equal(fit.ok, true);
+    assert.ok(fit.atempoFactor >= 0.95 && fit.atempoFactor <= 1.1 + 1e-9, `factor ${fit.atempoFactor} for ${clip}`);
+  }
+  const fit = fitLineToSlot(1.12, 1.0);
   assert.equal(fit.ok, false);
-  assert.ok(Math.abs(fit.requiredFactor - 1.5) < 1e-9);
-  assert.equal(fit.maxAtempo, 1.2);
+  assert.ok(Math.abs(fit.requiredFactor - 1.12) < 1e-9);
+  assert.equal(fit.maxAtempo, 1.1);
+});
+
+test("fitLineToSlot: widening maxAtempo to 1.2 accepts a clip needing 1.2x", () => {
+  const fit = fitLineToSlot(1.2, 1.0, 1.2);
+  assert.equal(fit.ok, true);
+  assert.ok(Math.abs(fit.atempoFactor - 1.2) < 1e-9);
 });
 
 test("fitLineToSlot: a custom maxAtempo is honoured", () => {
@@ -79,29 +128,45 @@ test("fitAllLines: places every line on the base clock when all fit", () => {
     { id: "l1", text: "Hello there", start: 0, end: 0.7, words: [{ w: "Hello", start: 0, end: 0.3 }, { w: "there", start: 0.3, end: 0.7 }] },
     { id: "l2", text: "General Kenobi", start: 0.9, end: 1.5, words: [] },
   ];
-  const clipDurations = new Map([["l1", 0.7], ["l2", 0.6]]);
+  const clipDurations = new Map([["l1", 0.5], ["l2", 0.6]]);
   const result = fitAllLines(BASE_LINES, dubLines, clipDurations, FILM_DURATION);
   assert.equal(result.ok, true);
   assert.equal(result.lines.length, 2);
-  assert.equal(result.lines[0].start, 0); // l1's slot: [0, 1.0)
-  assert.ok(Math.abs(result.lines[0].end - 0.7) < 1e-9);
+  assert.deepEqual(result.breathWarnings, []);
+  assert.equal(result.lines[0].start, 0); // l1's slot: [0, 1.0): 0.5 s line, 0.5 s breath
+  assert.ok(Math.abs(result.lines[0].end - 0.5) < 1e-9);
   assert.equal(result.lines[1].start, 1.0); // l2's slot: [1.0, 2.5)
   assert.ok(Math.abs(result.lines[1].end - 1.6) < 1e-9);
 });
 
-test("fitAllLines: a line longer than its slot but within 1.2x is sped up, not cut", () => {
+test("fitAllLines: a line longer than its slot but within 1.1x is sped up, not cut, and reported short of breath", () => {
   const dubLines = [
-    { id: "l1", text: "x", start: 0, end: 1.1, words: [] }, // slot is [0,1.0) -> 1.1s needs 1.1x
+    { id: "l1", text: "x", start: 0, end: 1.04, words: [] }, // slot is [0,1.0) -> 1.04s needs 1.04x just to fit
     { id: "l2", text: "y", start: 0, end: 0.5, words: [] },
   ];
-  const clipDurations = new Map([["l1", 1.1], ["l2", 0.5]]);
+  const clipDurations = new Map([["l1", 1.04], ["l2", 0.5]]);
   const result = fitAllLines(BASE_LINES, dubLines, clipDurations, FILM_DURATION);
   assert.equal(result.ok, true);
-  assert.ok(Math.abs(result.lines[0].atempoFactor - 1.1) < 1e-9);
-  assert.ok(Math.abs(result.lines[0].end - 1.0) < 1e-9); // fit exactly to the slot
+  assert.ok(Math.abs(result.lines[0].atempoFactor - 1.1) < 1e-9); // as fast as allowed, to leave the most breath
+  assert.ok(result.lines[0].end < 1.0);
+  assert.deepEqual(result.breathWarnings.map((w) => w.id), ["l1"]);
 });
 
-test("fitAllLines: fails closed (no line placed) when any line needs more than 1.2x, naming it", () => {
+test("fitAllLines: a gap over 1.0 s after a line (not the last) is slowed to 0.95x and reported; the last line's tail is not limited", () => {
+  const dubLines = [
+    { id: "l1", text: "x", start: 0, end: 0.4, words: [] },
+    { id: "l2", text: "y", start: 0, end: 0.4, words: [] },
+  ];
+  const clipDurations = new Map([["l1", 0.4], ["l2", 0.4]]);
+  const base = [{ id: "l1", start: 0, end: 0.9 }, { id: "l2", start: 2.0, end: 2.5 }]; // l1 slot 2.0 s, l2 slot to 6.0 s
+  const result = fitAllLines(base, dubLines, clipDurations, 6.0);
+  assert.equal(result.ok, true);
+  assert.ok(Math.abs(result.lines[0].atempoFactor - 0.95) < 1e-9);
+  assert.deepEqual(result.longGaps.map((g) => g.id), ["l1"]);
+  assert.equal(result.lines[1].atempoFactor, 1);
+});
+
+test("fitAllLines: fails closed (no line placed) when any line needs more than 1.1x, naming it", () => {
   const dubLines = [
     { id: "l1", text: "x", start: 0, end: 1.5, words: [] }, // slot [0,1.0) -> needs 1.5x
     { id: "l2", text: "y", start: 0, end: 0.5, words: [] },
