@@ -294,14 +294,17 @@ async function measureLufsIfLongEnough(samples, durationSec) {
 export async function runJudge(dir, opts = {}) {
   const p = paths(dir);
   const cards = loadCards(p);
+  const manual = manualScores(p.scoresPath);
+  const toJudge = cards.filter((c) => !manual.has(c.id));
+  if (manual.size) process.stdout.write(`kept ${manual.size} hand score(s) (manual: true), not judged: ${[...manual.keys()].join(", ")}\n`);
 
   const typesafeKey = process.env.TYPESAFE_API_KEY;
   const openrouterKey = process.env.OPENROUTER_API_KEY;
 
   if (!opts.judge && !typesafeKey && !openrouterKey) {
-    const sheet = buildJudgeSheet(cards);
+    const sheet = buildJudgeSheet(toJudge);
     fs.writeFileSync(p.sheetPath, sheet, "utf8");
-    writeJson(p.scoresPath, buildScoresTemplate(cards));
+    writeJson(p.scoresPath, withManual(cards, manual, buildScoresTemplate(toJudge)));
     process.stdout.write(
       `no TYPESAFE_API_KEY or OPENROUTER_API_KEY — wrote ${p.sheetPath} to score by hand, ` +
         `and a ${p.scoresPath} template to fill in\n`
@@ -313,17 +316,43 @@ export async function runJudge(dir, opts = {}) {
     opts.judge ||
     (typesafeKey ? (card) => judgeWithJev(card, typesafeKey) : (card) => judgeWithOpenRouter(card, openrouterKey));
   const backend = opts.judge ? "custom" : typesafeKey ? "jev" : "openrouter-jev";
-  const scores = [];
-  for (const card of cards) {
-    scores.push(await judgeCard(card, judge, opts.repeat));
+  const judged = [];
+  for (const card of toJudge) {
+    judged.push(await judgeCard(card, judge, opts.repeat));
   }
+  const scores = withManual(cards, manual, judged);
   writeJson(p.scoresPath, scores);
-  process.stdout.write(`judged ${scores.length} card(s) with ${backend} -> ${p.scoresPath}\n`);
+  process.stdout.write(`judged ${judged.length} card(s) with ${backend} -> ${p.scoresPath}\n`);
   const near = scores.filter((s) => s.nearLine);
   if (near.length) {
     process.stdout.write(`near the line (runs on both sides of ${FIT_THRESHOLD}): ${near.map((s) => s.id).join(", ")}\n`);
   }
   return scores;
+}
+
+/**
+ * Hand scores in an existing sound-scores.json: entries marked
+ * `manual: true` with a numeric fit, by card id. They win over the judge:
+ * `judge` skips those cards and writes the entries back unchanged.
+ * @param {string} scoresPath
+ * @returns {Map<string, object>}
+ */
+export function manualScores(scoresPath) {
+  if (!fs.existsSync(scoresPath)) return new Map();
+  let entries;
+  try {
+    entries = readJson(scoresPath);
+  } catch {
+    return new Map();
+  }
+  if (!Array.isArray(entries)) return new Map();
+  return new Map(entries.filter((s) => s && s.manual === true && typeof s.fit === "number").map((s) => [s.id, s]));
+}
+
+/** Scores in card order: the hand score where there is one, else the new entry. */
+export function withManual(cards, manual, entries) {
+  const byId = new Map(entries.map((s) => [s.id, s]));
+  return cards.map((c) => manual.get(c.id) || byId.get(c.id)).filter(Boolean);
 }
 
 async function judgeCard(card, judge, repeat) {

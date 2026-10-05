@@ -151,6 +151,11 @@ case now — it writes `<reel>/sound-judge.md`, a self-contained scoring sheet, 
 model to score 1-10 by hand (pass at 8), plus a `sound-scores.json` template to fill in. Cards
 that fail get a new sound made for this film instead — it only costs time.
 
+A hand score wins over the judge: an entry in `sound-scores.json` with `"manual": true` and a
+numeric `fit` (e.g. after someone listened) is left as it is — `judge` skips that card, keeps the
+entry when it rewrites the file, and leaves it off the scoring sheet. Remove `manual` to have the
+card judged again.
+
 A model judge does not give the same score twice: an unchanged sound can land on either side of
 the pass mark from one run to the next. `judge --repeat <n>` scores each card `n` more times;
 without it, a card whose score is within 0.5 of the pass mark gets 2 more runs. The report shows
