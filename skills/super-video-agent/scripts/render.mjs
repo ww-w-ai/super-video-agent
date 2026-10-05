@@ -98,8 +98,12 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               picture-<code>.timings.json; dub.mjs --lang <code> uses them.
 --stub <sec>  for a reel with no voice/timings.json: the page is served one
               silent line of <sec> seconds (id "stub"); nothing is written to
-              voice/. Use with --no-captions; out/picture.timings.json then
-              holds that stub clock.
+              voice/. With --no-captions, out/picture.timings.json then
+              holds that stub clock. With captions on (optional, e.g. when a
+              preview with the film's caption layer helps), the stub lines
+              are empty, so no caption is drawn; there is no narration, so
+              no A/V gate, and the page's own sound is the audio of
+              out/<final|preview>-stub-<stamp>.mp4 (+ out/<final|preview>-stub.mp4).
 --segments N  with --stub: N equal silent lines (ids stub-1..stub-N) instead
               of one, so the picture has N segments and --only stub-2 renders
               one of them.
@@ -161,8 +165,8 @@ export async function main(argv) {
     }
     lang = flags.lang;
   }
-  if (!noCaptions && !fs.existsSync(paths.narrationWav)) {
-    fail(`no voice/narration.wav in ${dir} — run voice.mjs first${flags.stub !== undefined ? " (a --stub render needs --no-captions)" : ""}`);
+  if (!noCaptions && flags.stub === undefined && !fs.existsSync(paths.narrationWav)) {
+    fail(`no voice/narration.wav in ${dir} — run voice.mjs first`);
     return;
   }
   let stubSec;
@@ -396,6 +400,9 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
   if (noCaptions) {
     return await finishPictureRender({ dir, paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, stubSegments, lang });
   }
+  if (stubSec) {
+    return await finishStubRender({ paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, quality });
+  }
 
   await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
 
@@ -471,6 +478,36 @@ async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames,
     segments,
     decisions,
   };
+}
+
+/**
+ * Finishes a --stub render with captions on: no narration exists, so there
+ * is no A/V gate; the frame count is checked and the page's own sound
+ * (renderSfx + library cues, mixed as the picture bed is) becomes the audio.
+ * Writes out/<quality>-stub-<stamp>.mp4 + out/<quality>-stub.mp4, so it is
+ * never mistaken for a voiced final or preview.
+ */
+async function finishStubRender({ paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, quality }) {
+  const frameCount = await probeFrameCount(videoOnlyPath);
+  if (frameCount !== expectedFrames) {
+    throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
+  }
+  const sfxPath = await maybeRenderSfx(pool, paths);
+  const cueInputs = await resolveSoundCues(pool, paths.root);
+  const durationSec = String(await probeDuration(videoOnlyPath));
+  const bedPath = path.join(paths.outDir, "_stub-bed.wav");
+  await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: bedPath });
+  if (sfxPath) fs.rmSync(sfxPath, { force: true });
+  const stampedPath = path.join(paths.outDir, `${quality}-stub-${timestamp()}.mp4`);
+  await ffmpeg([
+    "-y", "-i", videoOnlyPath, "-i", bedPath,
+    "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
+    "-movflags", "+faststart", "-t", durationSec, stampedPath,
+  ]);
+  fs.rmSync(bedPath, { force: true });
+  fs.rmSync(videoOnlyPath, { force: true });
+  const outPath = pointLatest(paths.outDir, `${quality}-stub.mp4`, stampedPath);
+  return { outPath, stampedPath, frames: expectedFrames, seconds: expectedFrames / fps, segments, decisions };
 }
 
 /** Local time as YYYYMMDD-HHMMSS, so every render gets its own file name. */

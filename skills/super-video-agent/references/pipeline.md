@@ -63,7 +63,10 @@ several speakers (`references/voice.md` "Several speakers in one film").
 A picture-only probe made before any voice
 (a hard shot, a look test) has no `voice/timings.json`: `still.mjs`, `verify.mjs` and
 `render.mjs` accept `--stub <sec>` and use one silent line of that length instead. Nothing is
-written to disk.
+written to disk. `render.mjs --stub` runs with or without captions: with captions on, the stub's
+lines are empty so no caption is drawn, the page's own sound is the audio, and the file is
+`out/<final|preview>-stub.mp4`. Use that when a preview with the film's caption layer helps;
+otherwise `--no-captions` as usual.
 
 ## Optional helpers (`scripts/engine/reel-engine.js` → `globalThis.Reel`)
 
