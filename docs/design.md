@@ -89,11 +89,11 @@ Voice providers share one interface (`scripts/voice/<name>.mjs`):
 ### 2.5 Asset library (sound effects and reaction clips)
 
 Recorded sound effects and short reaction clips ("짤") come from a local library the user keeps
-in `library/` inside the skill folder. `library/` is git-ignored: nothing from a library is
-published, because most such files carry third-party rights.
+outside the skill folder, so nothing from a library is published: most such files carry
+third-party rights.
 
-- **Library** = a folder with `catalog.json` and the files. Found automatically at
-  `<skill>/library/`; `SVA_ASSET_LIB` overrides the location. Without a library,
+- **Library** = a folder with `catalog.json` and the files. The location is `SVA_ASSET_LIB` when
+  set, else `~/.super-video-agent/library`. The folder is never created on its own. Without a library,
   everything works as before (synthesized effects only).
   `catalog.json`: `{version: 1, assets: [{id, role: "sfx"|"reaction", kind: "audio"|"video",
   path, description, tags[], durationSec, width?, height?, hasAudio, license: {kind,

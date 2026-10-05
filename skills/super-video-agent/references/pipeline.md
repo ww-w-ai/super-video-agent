@@ -254,7 +254,7 @@ Captions change per language by themselves. A string drawn into the picture does
 wall, a quoted post. Mark each one with `Reel.pictureText(key, fallback)` in `reel.html`:
 
 ```js
-ctx.fillText(Reel.pictureText("brand", "덥덥덥 AI 뉴스"), x, y);
+ctx.fillText(Reel.pictureText("brand", "Morning Brief"), x, y);
 ```
 
 The fallback is the base language's text. A base render always draws the fallback. Put each
@@ -278,9 +278,11 @@ hashes equal the base segment's is copied from it, so only shots that draw a cha
 The probe sees three frames: a string that shows only between them is not noticed, so name such a
 shot with `--only <id>`.
 
-Every render records which picture strings each segment's frames read (`picture` in the
-segment's `.json`). A language render copies a base segment without probing it when its frames
-read no key that language sets and never read `Reel.lang`; only the other segments are probed.
+Every render records, with each segment (`picture` in the segment's `.json`), every picture
+string its page read up to the end of that segment — while loading, warming up, probing and
+drawing earlier segments too, since a page may read a string once and keep it. A language render
+copies a base segment without probing it when none of those reads is a key that language sets and
+none read `Reel.lang`; the other segments are probed as usual.
 This trusts the base picture's cache: after changing the page, render the base picture again
 first, or pass `--probe-all` to probe every segment as before.
 

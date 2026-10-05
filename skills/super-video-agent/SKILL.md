@@ -173,7 +173,7 @@ every dub — write `drawCaptions(t)` in `reel.html` (the scaffold's reference i
 declare `"captions"` in `__reel.layers`; otherwise `dub.mjs` falls back to the engine's default
 caption box and says so. Judge each language's line by the silence after it, against that
 line's own scene rather than the base language: not so full that it runs into the next line
-(at least about 0.5 s), not so empty that the scene sits in silence (at most about a quarter of
+(at least 0.4 s), not so empty that the scene sits in silence (at most about a quarter of
 the scene), anywhere in between is fine (`dub.mjs --table` lists each line). When `dub.mjs`
 warns about a line — crammed, sparse, or atempo — inspect the timing first. Use local
 pause or tempo edits when they solve the issue (`guides/audio-editing.md`). Rewrite and

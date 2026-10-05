@@ -93,12 +93,11 @@ window.__reel = {
 
 ### 2.5 에셋 라이브러리 (효과음과 리액션 클립)
 
-녹음된 효과음과 짧은 리액션 클립("짤")은 사용자가 스킬 폴더 안 `library/`에 보관하는 로컬
-라이브러리에서 가져온다. `library/`는 git에서 제외되어 있다: 라이브러리의 파일은 대부분 제3자 권리가
-걸려 있기 때문에 공개되지 않는다.
+녹음된 효과음과 짧은 리액션 클립("짤")은 사용자가 스킬 폴더 밖에 보관하는 로컬 라이브러리에서
+가져온다. 그래서 라이브러리의 파일은 공개되지 않는다: 대부분 제3자 권리가 걸려 있다.
 
-- **라이브러리** = `catalog.json`과 파일들이 들어 있는 폴더. `<skill>/library/`에서 자동으로 찾고,
-  `SVA_ASSET_LIB`가 위치를 대신한다. 라이브러리가 없으면 이전과 똑같이 동작한다(합성 효과음만 사용).
+- **라이브러리** = `catalog.json`과 파일들이 들어 있는 폴더. `SVA_ASSET_LIB`가 있으면 그 위치를,
+  없으면 `~/.super-video-agent/library`를 쓴다. 폴더를 저절로 만들지 않는다. 라이브러리가 없으면 이전과 똑같이 동작한다(합성 효과음만 사용).
   `catalog.json`: `{version: 1, assets: [{id, role: "sfx"|"reaction", kind: "audio"|"video",
   path, description, tags[], durationSec, width?, height?, hasAudio, license: {kind,
   commercialSafe}}]}`. `path`는 라이브러리 폴더 기준 상대 경로다.
