@@ -258,24 +258,24 @@ test("render: a first render by parts, then the join; one page open per run; fra
 
     const stored = JSON.parse(fs.readFileSync(path.join(whole, "out", "segments", "final-nocap", "stub-2.json"), "utf8"));
     assert.deepEqual(stored.picture, { keys: ["brand"], lang: false, all: false });
-    const quiet = JSON.parse(fs.readFileSync(path.join(whole, "out", "segments", "final-nocap", "stub-1.json"), "utf8"));
-    assert.deepEqual(quiet.picture, { keys: [], lang: false, all: false });
+    const opening = JSON.parse(fs.readFileSync(path.join(whole, "out", "segments", "final-nocap", "stub-1.json"), "utf8"));
+    assert.deepEqual(opening.picture, { keys: ["brand"], lang: false, all: false }); // every read the page made in the session, warm-up included
   } finally {
     fs.rmSync(parts, { recursive: true, force: true });
     fs.rmSync(whole, { recursive: true, force: true });
   }
 });
 
-test("render --lang: only the segment that reads a changed string is probed and rendered", { timeout: 300000 }, async () => {
+test("render --lang: a segment reading a changed string is rendered; strings no page read skip the probe", { timeout: 300000 }, async () => {
   const dir = newReel();
   try {
     renderRun(dir, []);
     fs.mkdirSync(path.join(dir, "dub", "en"), { recursive: true });
     fs.writeFileSync(path.join(dir, "dub", "en", "plan.json"), JSON.stringify({ meta: { lang: "en", overlay: { picture: { brand: "Brand name" } } }, lines: [] }));
     const out = renderRun(dir, ["--lang", "en"]);
-    assert.match(out, /COPY {2}stub-1 .*not probed/);
+    assert.match(out, /COPY {2}stub-1 .*probe hashes equal/);
     assert.match(out, /RENDER {2}stub-2 /);
-    assert.match(out, /COPY {2}stub-3 .*not probed/);
+    assert.match(out, /COPY {2}stub-3 .*probe hashes equal/);
     const basePic = await frameHashes(path.join(dir, "out", "picture.mp4"));
     const enPic = await frameHashes(path.join(dir, "out", "picture-en.mp4"));
     assert.equal(enPic.length, 90);
@@ -286,6 +286,41 @@ test("render --lang: only the segment that reads a changed string is probed and 
     const probed = renderRun(dir, ["--lang", "en", "--probe-all"]);
     assert.doesNotMatch(probed, /not probed/);
     assert.equal((probed.match(/^REUSE /gm) || []).length, 3);
+
+    fs.mkdirSync(path.join(dir, "dub", "de"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "dub", "de", "plan.json"), JSON.stringify({ meta: { lang: "de", overlay: { picture: { unused: "nie gelesen" } } }, lines: [] }));
+    const unread = renderRun(dir, ["--lang", "de"]);
+    assert.equal((unread.match(/^COPY {2}stub-\d .*not probed/gm) || []).length, 3);
+    assert.deepEqual(await frameHashes(path.join(dir, "out", "picture-de.mp4")), basePic);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The same page, but it reads "brand" once and caches it: whichever seek
+// reads first (warm-up, a probe, an earlier segment), later frames draw the
+// cached string without reading it again.
+const CACHING_PAGE = PAGE.replace("var timings = null;", "var timings = null; var cached = null;").replace(
+  'if (t >= 1 && t < 2) extra = pictureText("brand", "base").length * 20;',
+  'if (t >= 1 && t < 2) { if (cached === null) cached = pictureText("brand", "base"); extra = cached.length * 20; }'
+);
+
+test("render --lang on a page that caches its picture string: the segment that draws it is rendered, not copied", { timeout: 300000 }, async () => {
+  assert.notEqual(CACHING_PAGE, PAGE);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-speed-cache-"));
+  fs.writeFileSync(path.join(dir, "reel.html"), CACHING_PAGE);
+  try {
+    renderRun(dir, []);
+    const stored = JSON.parse(fs.readFileSync(path.join(dir, "out", "segments", "final-nocap", "stub-2.json"), "utf8"));
+    assert.ok(stored.picture.keys.includes("brand"), `stub-2 recorded ${JSON.stringify(stored.picture)}`);
+    fs.mkdirSync(path.join(dir, "dub", "en"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "dub", "en", "plan.json"), JSON.stringify({ meta: { lang: "en", overlay: { picture: { brand: "Brand name" } } }, lines: [] }));
+    const out = renderRun(dir, ["--lang", "en"]);
+    assert.match(out, /RENDER {2}stub-2 /);
+    const basePic = await frameHashes(path.join(dir, "out", "picture.mp4"));
+    const enPic = await frameHashes(path.join(dir, "out", "picture-en.mp4"));
+    assert.equal(enPic.length, 90);
+    assert.notDeepEqual(enPic.slice(30, 60), basePic.slice(30, 60));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

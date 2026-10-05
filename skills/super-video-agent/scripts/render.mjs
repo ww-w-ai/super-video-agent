@@ -14,7 +14,7 @@ import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, takePictureReads } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
 import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid } from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
@@ -90,8 +90,10 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               probe hashes equal the base segment's in out/segments/ is
               copied from it, not rendered. A base segment whose frames read
               no picture string this language sets (and never Reel.lang) is
-              copied without probing: every render records the strings each
-              segment's frames read. --probe-all probes every segment instead
+              copied without probing: every render records, per segment, the
+              strings its page read up to the end of that segment (load,
+              warm-up, probes and earlier segments included, so a string read
+              once and cached still counts). --probe-all probes every segment instead
               (e.g. after changing the page without re-rendering the base
               picture). Writes out/picture-<code>-<stamp>.mp4
               + out/picture-<code>.mp4, picture-<code>.bed.wav and
@@ -719,9 +721,8 @@ async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, wo
         await withTransportRetry(
           async () => {
             if (!session) session = await pool.acquire();
-            await takePictureReads(session.page); // count only this segment's frames
             await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
-            reads = mergePictureReads(session.loadPictureReads, await takePictureReads(session.page));
+            reads = await sessionPictureReads(session);
           },
           {
             maxRetries: 2,
@@ -747,19 +748,7 @@ async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, wo
   await Promise.all(Array.from({ length: n }, worker));
 }
 
-/**
- * Picture-string reads of a segment: what its frames read plus what the page
- * read while loading (that applies to every frame). Stored with the segment
- * so a language picture can skip probing it (decideLangUnprobed).
- * @param {{keys: string[], lang: boolean, all: boolean}|null} a
- * @param {{keys: string[], lang: boolean, all: boolean}|null} b
- */
-export function mergePictureReads(a, b) {
-  if (!a && !b) return null;
-  const x = a || { keys: [], lang: false, all: false };
-  const y = b || { keys: [], lang: false, all: false };
-  return { keys: [...new Set([...x.keys, ...y.keys])].sort(), lang: !!(x.lang || y.lang), all: !!(x.all || y.all) };
-}
+export { mergePictureReads };
 
 async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter }) {
   const { proc, done } = spawnImagePipeEncoder({ fps, outPath, crf, preset, scaleFilter });

@@ -144,8 +144,11 @@ export async function openReel(url, opts = {}) {
     await page.addInitScript(installPictureState, opts.picture);
   }
   await waitUntilReady({ page, browser, url, errors, ms: opts.readyTimeoutMs || readyTimeoutMs() });
-  // Reads made while the page loaded apply to every frame; seek-time reads are counted per segment.
-  const loadPictureReads = opts.picture ? await takePictureReads(page) : null;
+  // Every picture-string read this page makes, from load on, is kept for the
+  // whole session (sessionPictureReads): a page may read a string once and
+  // cache it, so a read during load, warm-up, a probe or an earlier segment
+  // can be what a later segment's frames draw.
+  const pictureReads = opts.picture ? await takePictureReads(page) : null;
   const meta = await page.evaluate(() => {
     const r = window.__reel;
     return {
@@ -175,14 +178,12 @@ export async function openReel(url, opts = {}) {
     errors,
     warmUp: [],
     warmed: new Set(),
-    loadPictureReads,
+    pictureReads,
     close: () => browser.close(),
   };
   if (opts.warm !== false) {
     await warmShotsOf(session, opts.warmShots ? opts.warmShots : meta.shots.map((s) => s.id));
   }
-  // Seek-time picture reads start counting after the warm-up.
-  if (opts.picture) await takePictureReads(page);
   return session;
 }
 
@@ -237,6 +238,33 @@ function installPictureState(p) {
     },
     strings,
   };
+}
+
+/**
+ * Every picture-string read the session's page has made since it opened
+ * (load, warm-up, probes, earlier segments, this one). A segment records
+ * this whole set: a page that read a string once and cached it draws that
+ * string without reading it again. Null for a session opened without
+ * `picture`.
+ * @param {{page: object, pictureReads: {keys: string[], lang: boolean, all: boolean}|null}} session
+ */
+export async function sessionPictureReads(session) {
+  if (!session.pictureReads) return null;
+  session.pictureReads = mergePictureReads(session.pictureReads, await takePictureReads(session.page));
+  return session.pictureReads;
+}
+
+/**
+ * Union of two picture-read records: keys merged, either flag wins; null
+ * when both are absent.
+ * @param {{keys: string[], lang: boolean, all: boolean}|null} a
+ * @param {{keys: string[], lang: boolean, all: boolean}|null} b
+ */
+export function mergePictureReads(a, b) {
+  if (!a && !b) return null;
+  const x = a || { keys: [], lang: false, all: false };
+  const y = b || { keys: [], lang: false, all: false };
+  return { keys: [...new Set([...x.keys, ...y.keys])].sort(), lang: !!(x.lang || y.lang), all: !!(x.all || y.all) };
 }
 
 /**
