@@ -304,11 +304,11 @@ The picture's time is the reference. `dub.mjs` fits each line in four steps, in 
    flag is the user's call.
 3. **Breath.** When the slot has room, at least 0.5 s of silence (`MIN_BREATH_SEC`) stays after
    the line; a line that would leave less is sped up within `--max-speed` to make it. A line
-   that keeps under 0.5 s even then is listed with its id, never cut silently.
+   that keeps less even then shows up in the gap report below ("Judging a dub line").
 4. **Gap.** Whatever remains of the slot stays voice-free, up to 1.0 s (`MAX_BREATH_SEC`, the
    silence gate's limit). A line that leaves more is slowed (atempo, pitch kept) down to 0.95x to
-   close the rest; a gap still over 1.0 s is listed with its id (the last line's tail is not
-   limited). The picture is never stretched and audio is never cut.
+   close the rest. What gap is left is judged per scene ("Judging a dub line"). The last line's tail is not
+   limited. The picture is never stretched and audio is never cut.
 
 A line that still does not fit within 10% fails the run, naming the line and the factor it needs
 (for example `needs 1.120x, max is 1.1x`), so the script is reworded and re-made for that
@@ -403,17 +403,23 @@ always runs on the base clock. A string that must change per language is a pictu
 
 ### Judging a dub line: the silence after it
 
-Judge each dub line by the silence after it, not by how much of its slot it fills. A line that
-fills its slot runs straight into the next one, and a run of such lines sounds rushed even when
-every fill looks healthy. About 0.5 s after each line, or the base line's own pause if that is
-longer, is a starting point, not a limit — a language, a voice or a scene may want more.
+Judge each dub line by the silence after it, and judge that silence against the line's own scene,
+whatever the language — not against the base language's gap. Not so full that the line runs
+straight into the next one, not so empty that the scene sits in silence: anywhere inside the
+scene's allowed range is fine.
 
-`dub.mjs` reports every line's fill (clip length after atempo / slot length) and `gapAfter`, the
-silence between the placed line and the next line's start, next to the base line's own gap. It
-prints a `WARN` list for a gap under about 0.4 s (the message suggests `--min-gap`),
-a fill below ~0.75 (the scene sits in silence) and a line that needed atempo (up to 5%). It still writes the
-film either way. The last line has no gap and no low-fill warning: its slot runs on under the end
-card to the film's end.
+The range, per slot (`scripts/lib/dub-fill.mjs`): at least 0.4 s (about the 0.5 s breath the
+fitter keeps when it has room), at most a quarter of the slot, and never less than 1.0 s as the
+top of the range. A quarter is where a viewer notices the voice has stopped; the 1.0 s floor keeps
+a short scene from flagging an ordinary pause. The range is global: the plan has no per-scene
+timing field to override it, and the base line's own gap is shown for reference only.
+
+`dub.mjs` prints a `WARN` list for a line under the range (crammed — the message suggests
+`--min-gap`), over it (sparse), and for a line that needed atempo or runs past its slot.
+`dub.mjs --table` prints every line's fill (clip length after atempo / slot length), `gapAfter`
+(the silence between the placed line and the next line's start), the allowed range and the state.
+It still writes the film either way. The last line has no gap and no gap warning: its slot runs on
+under the end card to the film's end.
 
 On a warning, rewrite that line's wording (shorter for a tight gap, longer for a scene left in
 silence) and re-make only that line (`voice.mjs <dir>/dub/<code> --lines <id>`), up to 3 rounds,

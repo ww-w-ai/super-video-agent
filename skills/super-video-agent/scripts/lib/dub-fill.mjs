@@ -1,22 +1,41 @@
 // How each dub line sits in its base slot (dub.mjs): the silence after the
-// line (gapAfter) is what the ear judges — a line that fills its slot but
-// leaves almost no pause before the next one sounds rushed. Fill is the
-// guide: a low fill leaves the scene sitting in silence, and a line that
-// needed atempo was already sped up to fit. All of these mean the wording
-// doesn't match the picture's pace in that language. Report only: dub.mjs
-// still writes the film either way (references/pipeline.md "Picture
-// first"). The last line's slot runs to the film's end under the end card,
-// so it gets no gap and no low-fill warning. No I/O.
+// line (gapAfter) is what the ear judges, and it is judged against a range
+// set by that line's own scene (slot), whatever the language — never
+// against the base language's gap. Under the range the line is crammed: no
+// breath before the next one. Over it the line is sparse: the scene sits in
+// silence. A line that needed atempo, or runs past its slot, was already
+// squeezed to fit. All of these mean the wording doesn't match the
+// picture's pace in that language. Report only: dub.mjs still writes the
+// film either way (references/pipeline.md "Picture first"). The last
+// line's slot runs to the film's end under the end card, so it gets no gap
+// and no gap warning. No I/O.
 
-export const LOW_FILL_THRESHOLD = 0.75;
 export const FULL_FILL_THRESHOLD = 1.0;
-export const SHORT_GAP_SEC = 0.4;
+/** Shortest gap that still leaves a breath (SKILL.md "Picture first": about 0.5 s). */
+export const GAP_MIN_SEC = 0.4;
+/**
+ * Longest gap, as a share of the slot: a quarter of the scene in silence is
+ * where a viewer notices the voice has stopped — the same line the earlier
+ * low-fill warning drew at 75 % fill.
+ */
+export const GAP_MAX_SHARE = 0.25;
+/** In a short slot the share is tiny; the range never closes below this. */
+export const GAP_MAX_FLOOR_SEC = 1.0;
+
+/**
+ * The allowed silence after a line in a slot of `slotDur` seconds.
+ * @param {number} slotDur
+ * @returns {{min:number, max:number}}
+ */
+export function gapRange(slotDur) {
+  return { min: GAP_MIN_SEC, max: Math.max(GAP_MAX_SHARE * slotDur, GAP_MAX_FLOOR_SEC) };
+}
 
 /**
  * @param {{id:string, start:number, end:number, atempoFactor?:number}[]} fittedLines fitAllLines' `.lines`
  * @param {{id:string, start:number, end:number}[]} slots computeSlots' output, same ids as fittedLines
- * @param {{id:string, start:number, end:number}[]} [baseLines] picture.timings.json lines — gives each base line's own gap
- * @returns {{id:string, fill:number|null, atempoFactor:number, gapAfter:number|null, baseGap:number|null, last:boolean, fillWarn:boolean, gapWarn:boolean, warn:boolean}[]}
+ * @param {{id:string, start:number, end:number}[]} [baseLines] picture.timings.json lines — gives each base line's own gap (shown for reference only)
+ * @returns {{id:string, fill:number|null, atempoFactor:number, gapAfter:number|null, gapMin:number|null, gapMax:number|null, gapState:"ok"|"crammed"|"sparse"|null, baseGap:number|null, last:boolean, fillWarn:boolean, gapWarn:boolean, warn:boolean}[]}
  */
 export function reportLineFill(fittedLines, slots, baseLines = []) {
   const slotList = slots || [];
@@ -30,13 +49,34 @@ export function reportLineFill(fittedLines, slots, baseLines = []) {
     const fill = slotDur != null && slotDur > 0 ? (line.end - line.start) / slotDur : null;
     const atempoFactor = line.atempoFactor ?? 1;
     const gapAfter = slot && !last ? slot.end - line.end : null;
+    const range = gapAfter != null ? gapRange(slotDur) : null;
+    const gapState = range == null ? null : gapAfter < range.min ? "crammed" : gapAfter > range.max ? "sparse" : "ok";
     const baseGap = baseGapById.get(line.id) ?? null;
-    const lowFill = !last && fill != null && fill < LOW_FILL_THRESHOLD;
     const overFill = fill != null && fill > FULL_FILL_THRESHOLD;
-    const fillWarn = lowFill || overFill || atempoFactor !== 1;
-    const gapWarn = gapAfter != null && gapAfter < SHORT_GAP_SEC;
-    return { id: line.id, fill, atempoFactor, gapAfter, baseGap, last, fillWarn, gapWarn, warn: fillWarn || gapWarn };
+    const fillWarn = overFill || atempoFactor !== 1;
+    const gapWarn = gapState === "crammed" || gapState === "sparse";
+    return {
+      id: line.id, fill, atempoFactor, gapAfter,
+      gapMin: range ? range.min : null, gapMax: range ? range.max : null, gapState,
+      baseGap, last, fillWarn, gapWarn, warn: fillWarn || gapWarn,
+    };
   });
+}
+
+/**
+ * Every line's fill and gap after, one row each (dub.mjs --table).
+ * @param {ReturnType<typeof reportLineFill>} report
+ */
+export function formatFillTable(report) {
+  const rows = (report || []).map((r) => {
+    const fill = r.fill == null ? "n/a" : `${(r.fill * 100).toFixed(0)}%`;
+    const gap = r.gapAfter == null ? "-" : `${r.gapAfter.toFixed(2)}s`;
+    const range = r.gapMin == null ? "-" : `${r.gapMin.toFixed(2)}-${r.gapMax.toFixed(2)}s`;
+    const state = r.last ? "last" : r.gapState || "-";
+    const atempo = r.atempoFactor !== 1 ? ` atempo ${r.atempoFactor.toFixed(2)}x` : "";
+    return `  ${r.id}  ${fill}  ${gap}  ${range}  ${state}${atempo}`;
+  });
+  return `fill and gap after (id  fill  gapAfter  allowed  state):\n${rows.join("\n")}\n`;
 }
 
 /** id -> the base line's own pause before the next base line (none for the last). */
@@ -54,7 +94,14 @@ function baseLineGaps(baseLines) {
 export function formatFillWarnings(report) {
   const rows = report || [];
   const fillRows = rows.filter((r) => r.fillWarn ?? r.warn);
-  const gapRows = rows.filter((r) => r.gapWarn);
+  const crammed = rows.filter((r) => r.gapWarn && r.gapState !== "sparse");
+  const sparse = rows.filter((r) => r.gapWarn && r.gapState === "sparse");
+  const gapLine = (r) => {
+    const notes = [];
+    if (r.gapMin != null) notes.push(`allowed ${r.gapMin.toFixed(2)}-${r.gapMax.toFixed(2)}s`);
+    if (r.baseGap != null) notes.push(`base line's own gap ${r.baseGap.toFixed(2)}s`);
+    return `  ${r.id}: gap after ${r.gapAfter.toFixed(2)}s${notes.length ? ` (${notes.join("; ")})` : ""}`;
+  };
   let out = "";
   if (fillRows.length) {
     const lines = fillRows
@@ -65,19 +112,18 @@ export function formatFillWarnings(report) {
       })
       .join("\n");
     out +=
-      `WARN: line(s) whose slot fill is off (the scene sits in silence, or the line was sped up to fit):\n${lines}\n` +
+      `WARN: line(s) squeezed to fit their slot (sped up, or running past it):\n${lines}\n` +
       `hint: rewrite these lines' wording and re-make them with voice.mjs --lines\n`;
   }
-  if (gapRows.length) {
-    const lines = gapRows
-      .map((r) => {
-        const baseStr = r.baseGap == null ? "" : ` (base line's own gap ${r.baseGap.toFixed(2)}s)`;
-        return `  ${r.id}: gap after ${r.gapAfter.toFixed(2)}s${baseStr}`;
-      })
-      .join("\n");
+  if (crammed.length) {
     out +=
-      `WARN: line(s) with little silence before the next line (sounds rushed):\n${lines}\n` +
+      `WARN: line(s) crammed into their scene — too little silence before the next line (sounds rushed):\n${crammed.map(gapLine).join("\n")}\n` +
       `hint: shorten the wording, or widen these slots with dub.mjs --min-gap <sec> (about 0.5)\n`;
+  }
+  if (sparse.length) {
+    out +=
+      `WARN: line(s) too sparse for their scene — the scene sits in silence after the line:\n${sparse.map(gapLine).join("\n")}\n` +
+      `hint: say more in these lines (or slow them a little) and re-make them with voice.mjs --lines\n`;
   }
   return out;
 }

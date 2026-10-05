@@ -23,7 +23,7 @@ import { ffmpeg, probeDuration, probeVideoInfo, snapToFrameGrid, nominalFps } fr
 import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr } from "./lib/duck.mjs";
 import { fitFrozenLines, buildPlacedTimings, computeSlots } from "./lib/dub-timing.mjs";
-import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
+import { reportLineFill, formatFillWarnings, formatFillTable, GAP_MIN_SEC, GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "./lib/dub-fill.mjs";
 import { measureEdgeEnvelope } from "./lib/clip-trim.mjs";
 import {
   MAX_SPEED_DEFAULT,
@@ -50,7 +50,7 @@ import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan } from "./render.
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>]
+const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>] [--table]
 
 Lays a language version over a picture-first render (render.mjs
 --no-captions). <reel-dir>/dub/<code>/ holds plan.json (same line ids as
@@ -65,12 +65,17 @@ start -> next base line start, the last line -> the film's end). A line
 longer than its slot is sped up (atempo, pitch kept) by at most --max-speed
 (default ${MAX_SPEED_DEFAULT}, 10%); at least 0.5 s of silence is kept after a line when the
 slot has room, and the rest stays voice-free up to 1.0 s (a longer gap slows the line, down
-to 0.95x; a line left under 0.5 s of breath or over 1.0 s of gap is listed with its id). A line still too
+to 0.95x). A line still too
 long fails, naming the line id and by how much, instead of cutting audio or
 moving the picture — shorten the line in that language's script and re-make
-it. Afterwards the silence gate lists every pause over 1 s in the placed
+it. Then each line's silence after it is judged against its own scene's
+allowed range, the same in every language: at least ${GAP_MIN_SEC} s, at most
+${GAP_MAX_SHARE * 100}% of the slot (never under ${GAP_MAX_FLOOR_SEC} s). Under it the line is listed as
+crammed, over it as sparse; a line sped up or past its slot is listed too. Afterwards the silence gate lists every pause over 1 s in the placed
 narration with the line ids around it (a pause the picture itself has is
 listed as planned).
+
+--table: also print every line's fill, gap after, allowed range and state.
 
 --max-speed <x>: the fastest a line may be sped up (default ${MAX_SPEED_DEFAULT}). Widen it only
 when the user asks.
@@ -99,6 +104,7 @@ and timing sidecar; preserves the source video and frozen timings.
 
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
+  if (typeof flags.table === "string") positional.unshift(flags.table);
   if (flags.help || flags.h || positional.length === 0 || typeof flags.lang !== "string") {
     printHelpAndExit(HELP, flags.help || flags.h ? 0 : 1);
     return;
@@ -122,7 +128,7 @@ export async function main(argv) {
     }
     const result = replacing
       ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed), maxSpeed })
-      : await dub({ dir, lang, minGap, maxSpeed });
+      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -210,7 +216,7 @@ async function verifyReplacementDurations(lines, clips) {
   }
 }
 
-export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT }) {
+export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false }) {
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
@@ -274,6 +280,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     // film is still written either way (references/pipeline.md "Picture first").
     const fillReport = reportLineFill(fit.lines, computeSlots(baseTimings.lines, baseTimings.duration), baseTimings.lines);
     const fillWarning = formatFillWarnings(fillReport);
+    if (table) process.stdout.write(formatFillTable(fillReport));
     if (fillWarning) process.stdout.write(fillWarning);
 
     // Written before trying the reel's own caption layer, so a page that

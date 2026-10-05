@@ -6,7 +6,7 @@
 //   4. gap    the rest of the slot stays voice-free, up to MAX_BREATH_SEC (1.0 s); a longer gap
 //             slows the line (atempo down to MIN_ATEMPO, 0.95); the picture never stretches
 // A line that still does not fit is reported for rewording, never sped further.
-// A line left with under 0.5 s of breath, or a gap over 1.0 s, is reported with its id.
+// How much silence each placed line leaves is judged per scene by dub-fill.mjs (reportLineFill).
 // Shared by fit-track.mjs and dub.mjs.
 import fs from "node:fs";
 import path from "node:path";
@@ -45,23 +45,11 @@ export function shiftForTrim(voiceLines, trims) {
   });
 }
 
-/** fitAllLines, throwing one message that names every line that does not fit; prints each line left with a short breath or a long gap. */
+/** fitAllLines, throwing one message that names every line that does not fit. Gaps are judged afterwards per scene (dub-fill.mjs reportLineFill). */
 export function fitOrThrow(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed = MAX_SPEED_DEFAULT) {
   const fit = fitAllLines(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed);
   if (!fit.ok) throw new Error(`line(s) do not fit their slot: ${describeFailures(fit.failures)}`);
-  for (const message of describeBreath(fit)) process.stdout.write(`${message}\n`);
   return fit;
-}
-
-/** One message per line that keeps under the minimum breath after it, or leaves a gap over the maximum. */
-export function describeBreath(fit) {
-  const short = (fit.breathWarnings || []).map(
-    (w) => `line "${w.id}": only ${w.breathSec.toFixed(2)}s of silence after it, under the ${w.minBreathSec}s minimum — lines run tight; shorten this line's script or the next slot's need and re-make it`
-  );
-  const long = (fit.longGaps || []).map(
-    (g) => `line "${g.id}": ${g.gapSec.toFixed(2)}s of silence after it, over the ${g.maxBreathSec}s maximum even at the slowest speed — lengthen this line's script and re-make it`
-  );
-  return [...short, ...long];
 }
 
 /** "id: needs 1.080x, max is 1.05x — reword this line" for each failing line. */

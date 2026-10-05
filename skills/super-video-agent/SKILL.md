@@ -171,11 +171,11 @@ translated per language version; IDs and handles usually stay as they are.
 A film with its own caption look (word-by-word highlight, emphasis colours) keeps that look in
 every dub — write `drawCaptions(t)` in `reel.html` (the scaffold's reference implementation) and
 declare `"captions"` in `__reel.layers`; otherwise `dub.mjs` falls back to the engine's default
-caption box and says so. Judge each language's line by the silence after it, not by how much of
-its slot it fills: a line that fills its slot leaves no breath before the next one and sounds
-rushed. About 0.5 s after each line, or the base line's own pause if that is longer, is a
-starting point, not a limit. When `dub.mjs` warns about a line — a short gap after it, a fill
-low enough that the scene sits in silence, or atempo — inspect the timing first. Use local
+caption box and says so. Judge each language's line by the silence after it, against that
+line's own scene rather than the base language: not so full that it runs into the next line
+(at least about 0.5 s), not so empty that the scene sits in silence (at most about a quarter of
+the scene), anywhere in between is fine (`dub.mjs --table` lists each line). When `dub.mjs`
+warns about a line — crammed, sparse, or atempo — inspect the timing first. Use local
 pause or tempo edits when they solve the issue (`guides/audio-editing.md`). Rewrite and
 regenerate only when local editing cannot solve it, up to 3 rounds. When the wording
 cannot get shorter, `dub.mjs --min-gap <sec>` slows only the tight slots' picture and bed so each

@@ -2,7 +2,7 @@
 // No ffmpeg, no I/O.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { reportLineFill, formatFillWarnings, LOW_FILL_THRESHOLD } from "../scripts/lib/dub-fill.mjs";
+import { reportLineFill, formatFillWarnings, formatFillTable, gapRange, GAP_MIN_SEC, GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "../scripts/lib/dub-fill.mjs";
 
 const SLOTS = [
   { id: "l1", start: 0, end: 1.0 },
@@ -48,14 +48,45 @@ test("reportLineFill (T20): the base line's own gap is reported, and only a gap 
   assert.equal(short.gapWarn, true);
 });
 
-test("reportLineFill (T10, T20): the last line gets no gap and no low-fill warning", () => {
+test("reportLineFill (T10, T20): the last line gets no gap and no gap warning", () => {
   const [r] = reportLineFill([{ id: "l3", start: 2.0, end: 2.5, atempoFactor: 1 }], SLOTS); // 50 % of an end-card slot
   assert.equal(r.last, true);
   assert.ok(Math.abs(r.fill - 0.5) < 1e-9);
   assert.equal(r.gapAfter, null);
+  assert.equal(r.gapState, null);
   assert.equal(r.warn, false);
-  const [notLast] = reportLineFill([{ id: "l2", start: 1.0, end: 1.5, atempoFactor: 1 }], SLOTS);
-  assert.equal(notLast.fillWarn, true, "the same 50 % fill on a middle line still warns");
+});
+
+test("gapRange: min 0.4 s; max a quarter of the slot, never under 1 s", () => {
+  assert.equal(GAP_MIN_SEC, 0.4);
+  assert.equal(GAP_MAX_SHARE, 0.25);
+  assert.equal(GAP_MAX_FLOOR_SEC, 1.0);
+  assert.deepEqual(gapRange(2), { min: 0.4, max: 1.0 });
+  assert.deepEqual(gapRange(8), { min: 0.4, max: 2.0 });
+});
+
+test("reportLineFill (D10): the scene sets the range — both ends, regardless of the base language's gap", () => {
+  const slots = [
+    { id: "a", start: 0, end: 8.0 }, // allowed 0.4-2.0 s
+    { id: "b", start: 8.0, end: 10.0 }, // allowed 0.4-1.0 s
+    { id: "c", start: 10.0, end: 12.0 },
+  ];
+  const base = [
+    { id: "a", start: 0, end: 7.9 }, // base gap 0.1 — does not lower the floor
+    { id: "b", start: 8.0, end: 8.5 }, // base gap 1.5 — does not raise the ceiling
+    { id: "c", start: 10.0, end: 11.0 },
+  ];
+  const at = (id, end) => reportLineFill([{ id, start: slots.find((s) => s.id === id).start, end, atempoFactor: 1 }], slots, base)[0];
+  assert.equal(at("a", 7.7).gapState, "crammed"); // 0.3 < 0.4
+  assert.equal(at("a", 7.6).gapState, "ok"); // 0.4, the low end
+  assert.equal(at("a", 6.0).gapState, "ok"); // 2.0, the high end
+  assert.equal(at("a", 5.9).gapState, "sparse"); // 2.1 > 2.0
+  assert.equal(at("b", 9.0).gapState, "ok"); // 1.0 in a 2 s scene
+  const sparse = at("b", 8.9); // 1.1 > 1.0, although the base line itself left 1.5
+  assert.equal(sparse.gapState, "sparse");
+  assert.equal(sparse.gapWarn, true);
+  assert.equal(sparse.fillWarn, false);
+  assert.ok(Math.abs(sparse.baseGap - 1.5) < 1e-9);
 });
 
 test("reportLineFill (T10): the last line still warns when it needed atempo", () => {
@@ -63,12 +94,12 @@ test("reportLineFill (T10): the last line still warns when it needed atempo", ()
   assert.equal(r.warn, true);
 });
 
-test("reportLineFill: fill below the low threshold is warned", () => {
-  const lines = [{ id: "l2", start: 1.0, end: 1.6, atempoFactor: 1 }]; // 0.6/1.0 = 0.6 < 0.75
+test("reportLineFill: a low fill is judged by its gap — 0.6 s after a line in a 1 s scene is within range", () => {
+  const lines = [{ id: "l2", start: 1.0, end: 1.4, atempoFactor: 1 }]; // gap 0.6, allowed 0.4-1.0
   const [r] = reportLineFill(lines, SLOTS);
-  assert.ok(Math.abs(r.fill - 0.6) < 1e-9);
-  assert.ok(r.fill < LOW_FILL_THRESHOLD);
-  assert.equal(r.warn, true);
+  assert.ok(Math.abs(r.fill - 0.4) < 1e-9);
+  assert.equal(r.gapState, "ok");
+  assert.equal(r.warn, false);
 });
 
 test("reportLineFill: a line that needed atempo is warned even at full fill", () => {
@@ -113,6 +144,39 @@ test("formatFillWarnings (T20): a short gap is listed with the base gap and sugg
   const out = formatFillWarnings(report);
   assert.match(out, /l1: gap after 0\.10s \(base line's own gap 0\.70s\)/);
   assert.doesNotMatch(out, /l2:/);
-  assert.doesNotMatch(out, /slot fill is off/, "a gap-only warning does not claim the fill is off");
+  assert.doesNotMatch(out, /squeezed/, "a gap-only warning does not claim the line was squeezed");
+  assert.match(out, /crammed/);
   assert.match(out, /--min-gap/);
+});
+
+test("formatFillWarnings (D10): crammed and sparse lines are listed apart, with the scene's range", () => {
+  const slots = [
+    { id: "a", start: 0, end: 2.0 },
+    { id: "b", start: 2.0, end: 4.0 },
+    { id: "c", start: 4.0, end: 6.0 },
+  ];
+  const report = reportLineFill(
+    [
+      { id: "a", start: 0, end: 1.8, atempoFactor: 1 }, // gap 0.2 -> crammed
+      { id: "b", start: 2.0, end: 2.5, atempoFactor: 1 }, // gap 1.5 -> sparse
+      { id: "c", start: 4.0, end: 5.0, atempoFactor: 1 },
+    ],
+    slots
+  );
+  const out = formatFillWarnings(report);
+  assert.match(out, /crammed[^\n]*\n {2}a: gap after 0\.20s \(allowed 0\.40-1\.00s\)\n/);
+  assert.match(out, /too sparse[^\n]*\n {2}b: gap after 1\.50s \(allowed 0\.40-1\.00s\)\n/);
+  assert.doesNotMatch(out, / c:/);
+});
+
+test("formatFillTable (--table): one row per line with fill, gap, range and state", () => {
+  const slots = [
+    { id: "a", start: 0, end: 2.0 },
+    { id: "b", start: 2.0, end: 4.0 },
+  ];
+  const report = reportLineFill([{ id: "a", start: 0, end: 1.5, atempoFactor: 1 }, { id: "b", start: 2.0, end: 3.0, atempoFactor: 1.05 }], slots);
+  const out = formatFillTable(report);
+  assert.match(out, /^fill and gap after/);
+  assert.match(out, /\n {2}a {2}75% {2}0\.50s {2}0\.40-1\.00s {2}ok\n/);
+  assert.match(out, /\n {2}b {2}50% {2}- {2}- {2}last atempo 1\.05x\n/);
 });
