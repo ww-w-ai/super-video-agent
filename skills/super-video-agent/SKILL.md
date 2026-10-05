@@ -144,7 +144,8 @@ A stage ends only when its files are written, and its notes count as files: a st
 writes what it found (in `FILM.md` or the probe's own notes) before it ends, because the next
 stage reads the notes, not the session. Wait for any job it started — synthesis, render — to
 finish before the session ends; a job left running dies with the session. When one session has
-to do everything, keep the same order and the same hand-off files.
+to do everything, keep the same order and the same hand-off files. When a script runs the stages
+with nobody watching, read `references/unattended.md`.
 
 In the film stage `reel.html` is the only source of the film. Make every later edit in it, and
 keep no draft or generator script that could be copied back over those edits.
@@ -289,4 +290,5 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/script-review.md` | The review passes a script goes through before the voice is made |
 | `references/voice.md` | Voice providers, cloning, pronunciation |
 | [Audio editing guide](guides/audio-editing.md) | Local pause and tempo edits, timing updates, and replacing narration in a finished video |
+| `references/unattended.md` | Running the stages from a script with nobody watching: one short session per job, renders in the script, resuming |
 | `references/qa.md` | What the review numbers mean and what they cannot see |
