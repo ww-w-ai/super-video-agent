@@ -4,16 +4,21 @@
 // the common "no library on this machine" case — every caller (assets.mjs,
 // verify.mjs) treats a missing library as "everything works as before".
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.join(here, "..", "..");
+/** The library's place under the user's home folder when SVA_ASSET_LIB is not set (every OS). */
+export const DEFAULT_LIBRARY_SUBDIR = path.join(".super-video-agent", "library");
 
-/** `SVA_ASSET_LIB` if set, else `<skill>/library` next to scripts/. */
-export function locateLibraryDir(env = process.env) {
+/**
+ * Where the asset library is: `SVA_ASSET_LIB` when the user set it, else
+ * `<home>/.super-video-agent/library`. Only locates; never creates it.
+ * @param {Record<string, string|undefined>} [env]
+ * @param {string} [home]
+ */
+export function locateLibraryDir(env = process.env, home = os.homedir()) {
   if (env.SVA_ASSET_LIB) return path.resolve(env.SVA_ASSET_LIB);
-  return path.join(REPO_ROOT, "library");
+  return path.join(home, DEFAULT_LIBRARY_SUBDIR);
 }
 
 /** Valid role/kind pairs: sound effects and clips, then 3D models, owner image refs, code-built models. */

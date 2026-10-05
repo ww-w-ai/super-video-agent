@@ -483,8 +483,8 @@ use those same files.
 
 ### Sound library (optional)
 
-Put your own effect files and a `catalog.json` in `library/` next to `scripts/`, or point
-`SVA_ASSET_LIB` to a folder elsewhere (format: [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md), "Asset library").
+Put your own effect files and a `catalog.json` in `~/.super-video-agent/library`, or point
+`SVA_ASSET_LIB` to a folder elsewhere; when it is set, it wins (format: [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md), "Asset library").
 Without a library, the effects the skill makes in code still play.
 
 ## Credits

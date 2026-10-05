@@ -213,9 +213,9 @@ test("fetchAssets: no library found -> fetched:0, no throw", async () => {
   }
 });
 
-test("noLibraryMessage: says the library is not bundled and how to point SVA_ASSET_LIB at one", () => {
+test("noLibraryMessage: says where it looked and how to set SVA_ASSET_LIB", () => {
   const bundled = noLibraryMessage("/x/library", {});
-  assert.match(bundled, /^no library found at \/x\/library — the asset library is not bundled with the skill\./);
+  assert.match(bundled, /^no library found at \/x\/library — SVA_ASSET_LIB is not set, so the default folder ~\/\.super-video-agent\/library was used/);
   assert.match(bundled, /SVA_ASSET_LIB=<folder with catalog\.json>/);
   const pointed = noLibraryMessage("/y", { SVA_ASSET_LIB: "/y" });
   assert.match(pointed, /SVA_ASSET_LIB names no folder with catalog\.json/);

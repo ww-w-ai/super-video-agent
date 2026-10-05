@@ -48,8 +48,19 @@ function makeFakeLibrary() {
 test("locateLibraryDir: SVA_ASSET_LIB overrides the default", () => {
   const overridden = locateLibraryDir({ SVA_ASSET_LIB: "/tmp/somewhere" });
   assert.equal(overridden, "/tmp/somewhere");
-  const fallback = locateLibraryDir({});
-  assert.ok(fallback.endsWith(path.join("super-video-agent", "library")) || fallback.endsWith("library"));
+  assert.equal(locateLibraryDir({}, "/home/u"), path.join("/home/u", ".super-video-agent", "library"));
+  assert.equal(locateLibraryDir({}), path.join(os.homedir(), ".super-video-agent", "library"));
+});
+
+test("loadLibrary: an absent default folder is reported as no library and is not created", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "sva-home-"));
+  try {
+    const dir = locateLibraryDir({}, home);
+    assert.equal(loadLibrary(dir), null);
+    assert.equal(fs.existsSync(dir), false);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("loadLibrary: missing catalog.json returns null, never throws", () => {

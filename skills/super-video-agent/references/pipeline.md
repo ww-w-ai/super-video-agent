@@ -442,18 +442,20 @@ falls back to `voice/timings.json`. The scan runs to the language's own length, 
 
 ## Asset library
 
-Recorded sound effects and reaction clips ("짤") live outside the repo, in `library/` next to
-`scripts/` (auto-found; `SVA_ASSET_LIB` overrides the location). `library/` is git-ignored:
-nothing in it ships, because most such files carry third-party rights, so an installed copy of
-the skill has none. Without a library, everything works as before — synthesized effects only
-(`sound.md`) — and `assets.mjs search`/`fetch` say the library is not bundled and that
-`SVA_ASSET_LIB=<folder with catalog.json>` points them at one.
+Recorded sound effects and reaction clips ("짤") live outside the skill, in one folder per user:
+`SVA_ASSET_LIB` when it is set, else `~/.super-video-agent/library` (the same folder under the
+home folder on every OS). Nothing in it ships with the skill, because most such files carry
+third-party rights, and it is kept outside the skill folder so an update never touches it.
+Without a library, everything works as before — synthesized effects only (`sound.md`) — and
+`assets.mjs search`/`fetch`/`model` say where they looked and that
+`SVA_ASSET_LIB=<folder with catalog.json>` points them at another folder. The folder is never
+created for you.
 
 A library is a folder with `catalog.json` and the files it describes:
 
 ```
 { version: 1, assets: [
-  { id, role: "sfx" | "reaction", kind: "audio" | "video", path,   // relative to library/
+  { id, role: "sfx" | "reaction", kind: "audio" | "video", path,   // relative to the library folder
     description, tags: [...], durationSec, width?, height?, hasAudio,
     license: { kind, commercialSafe } }
 ] }
@@ -490,7 +492,7 @@ which prints rigged, clip names and the licence, and copy one into a reel with
 so two glTF exports that share file names do not overwrite each other. `model` applies the `commercialSafe` rule
 exactly as `fetch` does. A model id in a line's `cues` is refused; cues take clips only.
 
-To add your own clip or effect: put the file under `library/` and add one entry to
+To add your own clip or effect: put the file in the library folder and add one entry to
 `catalog.json` with a new `id`, its `role`, `kind` and `path`, a `description` and `tags` a
 search will hit, its measured `durationSec` (and `width`/`height`, `hasAudio` for video), and
 `license: {kind: "user", commercialSafe: true}` for material you made yourself.

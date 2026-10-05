@@ -32,9 +32,11 @@ fetch    Copies every asset cued in <reel-dir>/plan.json's lines[].cues
          every fetched asset's license is printed.
 
 The library is not bundled with the skill (its files carry third-party
-rights). Without one (no SVA_ASSET_LIB and no <skill>/library/), both
-commands print "no library found at <path>", how to point SVA_ASSET_LIB
-at a folder with catalog.json, and exit 0.
+rights). It is looked for in SVA_ASSET_LIB when set, else in
+~/.super-video-agent/library (the same folder under the home folder on
+every OS). Without one there, every command prints "no library found at
+<path>", where it looked and how to set it, and exits 0; the folder is
+never created.
 `;
 
 /**
@@ -43,10 +45,13 @@ at a folder with catalog.json, and exit 0.
  * @param {Record<string, string|undefined>} [env]
  */
 export function noLibraryMessage(dir, env = process.env) {
-  const where = env.SVA_ASSET_LIB ? "SVA_ASSET_LIB names no folder with catalog.json" : "the asset library is not bundled with the skill";
+  const where = env.SVA_ASSET_LIB
+    ? "SVA_ASSET_LIB names no folder with catalog.json"
+    : "SVA_ASSET_LIB is not set, so the default folder ~/.super-video-agent/library was used, and it has no catalog.json";
   return (
-    `no library found at ${dir} — ${where}. To use one, set SVA_ASSET_LIB=<folder with catalog.json> ` +
-    `(references/pipeline.md "Asset library"); without it, synthesized sounds still work.`
+    `no library found at ${dir} — ${where}. To use one, put a folder with catalog.json there or set ` +
+    `SVA_ASSET_LIB=<folder with catalog.json> (references/pipeline.md "Asset library"); ` +
+    `without it, synthesized sounds still work.`
   );
 }
 

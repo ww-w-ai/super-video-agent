@@ -466,8 +466,8 @@ ElevenLabs → Typecast 순서로 고르고, 무엇을 썼는지 알려 줍니�
 
 ### 효과음 라이브러리 (선택)
 
-가진 효과음 파일과 `catalog.json`을 `scripts/` 옆 `library/`에 두거나, 다른 폴더에 두고
-`SVA_ASSET_LIB`로 알려 줍니다(형식: [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md)의 "Asset library"). 라이브러리가 없어도
+가진 효과음 파일과 `catalog.json`을 `~/.super-video-agent/library`에 두거나, 다른 폴더에 두고
+`SVA_ASSET_LIB`로 알려 줍니다. `SVA_ASSET_LIB`를 정하면 그쪽이 먼저입니다(형식: [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md)의 "Asset library"). 라이브러리가 없어도
 스킬이 코드로 만드는 효과음은 그대로 납니다.
 
 ## 크레딧
