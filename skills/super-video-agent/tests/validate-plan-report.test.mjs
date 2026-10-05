@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { validate } from "../scripts/lib/schema-check.mjs";
 import { readJson } from "../scripts/lib/reeldir.mjs";
-import { spokenUnits, estimateLength, loadRateSource, listenerReport, lineEnding } from "../scripts/validate-plan.mjs";
+import { spokenUnits, estimateLength, loadRateSource, listenerReport, lineEnding, formatEstimate, parseLeadFlag } from "../scripts/validate-plan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const script = path.join(here, "..", "scripts", "validate-plan.mjs");
@@ -175,6 +175,37 @@ test("CLI: --estimate <dir> and --listener print reports and exit 0", () => {
   assert.match(r.stdout, /^ok\n/);
   assert.match(r.stdout, /estimated length/);
   assert.match(r.stdout, /listener \(report only\)/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("estimate --lead: the lead is added to the head and moves every start; --starts lists them", () => {
+  const plan = {
+    meta: { title: "t", lang: "ko-KR", ratio: "16:9", gapMs: 500, tailSec: 1 },
+    lines: [{ id: "a", text: "가나다라마바" }, { id: "b", text: "가나다" }],
+  };
+  const plain = estimateLength(plan, { rate: 6 });
+  const led = estimateLength(plan, { rate: 6, leadSec: 3 });
+  assert.equal(led.leadSec, 3);
+  assert.ok(Math.abs(led.totalSec - plain.totalSec - 3) < 1e-9);
+  assert.ok(Math.abs(led.lines[0].start - plain.lines[0].start - 3) < 1e-9);
+  assert.ok(Math.abs(led.lines[1].start - (led.lines[0].start + 1 + 0.5)) < 1e-9);
+  assert.equal(estimateLength({ ...plan, meta: { ...plan.meta, lead: 2 } }, { rate: 6, leadSec: 0 }).leadSec, 0);
+  const text = formatEstimate(led, { starts: true });
+  assert.match(text, /lead 3\.0 s included/);
+  assert.match(text, /per line \(id {2}units {2}sec {2}start\):\n {4}a {2}6 {2}1\.0 {2}\d+\.\d\n/);
+  assert.doesNotMatch(formatEstimate(led), /start\)/);
+  assert.equal(parseLeadFlag(undefined), null);
+  assert.equal(parseLeadFlag("2.5"), 2.5);
+  assert.throws(() => parseLeadFlag("-1"), /--lead takes seconds/);
+  assert.throws(() => parseLeadFlag(true), /--lead takes seconds/);
+});
+
+test("CLI: --estimate --lead 3 --starts prints start times", () => {
+  const dir = reelWith({ meta: { title: "t", lang: "en-US" }, lines: [{ id: "a", text: "Hello there!" }, { id: "b", text: "Bye." }] });
+  const r = spawnSync(process.execPath, [script, dir, "--estimate", "--lead", "3", "--starts", "--rate", "4"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /lead 3\.0 s included/);
+  assert.match(r.stdout, /id {2}units {2}sec {2}start/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

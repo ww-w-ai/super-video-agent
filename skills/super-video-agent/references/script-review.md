@@ -116,8 +116,12 @@ Once the script is locked, estimate the film's length before the voice is made, 
 estimate in `FILM.md`. A script that runs long is cheap to cut now and expensive after synthesis.
 
 ```
-validate-plan.mjs <dir> --estimate [--rate <units/s>] [--rate-from <timings.json>]
+validate-plan.mjs <dir> --estimate [--rate <units/s>] [--rate-from <timings.json>] [--lead <sec>] [--starts]
 ```
+
+`--lead <sec>` counts an opening of that length before the first line (to try a lead before
+setting `meta.lead`; it replaces the plan's own), and `--starts` adds each line's estimated start
+time, e.g. to see where a beat would land.
 
 It prints the spoken units (syllables or words, by language), the total of the pauses, the head
 and tail, and the estimated length. The rate is a default for the language unless you give one:

@@ -14,7 +14,7 @@ import { leadErrors, leadSec } from "./lib/lead.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { withShortsRate, lineSpeed } from "./voice.mjs";
 
-const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>]] [--listener]
+const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>] [--lead <sec>] [--starts]] [--listener]
 
 Validates <reel-dir>/plan.json against scripts/plan.schema.json.
 Exits 0 and prints "ok" if valid; exits 1 and prints each failing
@@ -30,6 +30,9 @@ JSON path if not. <reel-dir> may be a dub folder (dub/<code>/).
              beside that timings file (or one folder up), else the text
              stored in the timings; with neither it says it cannot measure.
              Otherwise a per-language starting value is used.
+             --lead <sec> counts that much opening before the first line
+             (instead of the plan's meta.lead; 0 = none). --starts adds
+             each line's estimated start time to the per-line table.
 --listener   What a listener hears line after line: each line's ending (the
              last syllable, or the last word in a spaced script), the ending
              counts, adjacent lines with the same ending, and "!" and comma
@@ -45,7 +48,7 @@ The reports never change the exit code.
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
   // "--estimate <dir>" parses the dir as the flag's value; take it back.
-  for (const name of ["estimate", "listener", "breaks"]) {
+  for (const name of ["estimate", "listener", "breaks", "starts"]) {
     if (typeof flags[name] === "string") {
       positional.push(flags[name]);
       flags[name] = true;
@@ -85,7 +88,14 @@ export async function main(argv) {
       fail(`--rate must be a number > 0, got "${flags.rate}"`);
       return;
     }
-    process.stdout.write(formatEstimate(estimateLength(plan, { rate, rateFrom })));
+    let lead;
+    try {
+      lead = parseLeadFlag(flags.lead);
+    } catch (e) {
+      fail(e.message);
+      return;
+    }
+    process.stdout.write(formatEstimate(estimateLength(plan, { rate, rateFrom, leadSec: lead }), { starts: !!flags.starts }));
   }
   if (flags.listener) process.stdout.write(formatListener(listenerReport(plan)));
   if (flags.breaks) {
@@ -194,10 +204,18 @@ export function estimateLength(plan, opts = {}) {
     rateSource = rateSource ? `${rateSource}; default for "${primary}"` : `default for "${primary}"`;
   }
 
-  const perLine = lines.map((l) => ({ ...l, sec: l.units / (baseRate * l.speed) }));
+  const lead = opts.leadSec != null ? opts.leadSec : leadSec(meta);
+  const headSec = HEAD_SILENCE_SEC + lead;
+  const pauses = plan.lines.map((l, i) => (i === plan.lines.length - 1 ? 0 : (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000));
+  let at = headSec;
+  const perLine = lines.map((l, i) => {
+    const sec = l.units / (baseRate * l.speed);
+    const line = { ...l, sec, start: at };
+    at += sec + pauses[i];
+    return line;
+  });
   const speechSec = perLine.reduce((a, l) => a + l.sec, 0);
-  const pauseSec = plan.lines.slice(0, -1).reduce((a, l) => a + (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000, 0);
-  const headSec = HEAD_SILENCE_SEC + leadSec(meta);
+  const pauseSec = pauses.reduce((a, p) => a + p, 0);
   const tailSec = meta.tailSec == null ? TAIL_SILENCE_SEC : meta.tailSec;
   return {
     lang,
@@ -209,6 +227,7 @@ export function estimateLength(plan, opts = {}) {
     speechSec,
     pauseSec,
     gaps: Math.max(0, plan.lines.length - 1),
+    leadSec: lead,
     headSec,
     tailSec,
     totalSec: headSec + speechSec + pauseSec + tailSec,
@@ -258,16 +277,37 @@ function measuredBaseRate({ timings, plan: sourcePlan }, filmSpeed) {
   return { rate: units / sec, source: sourcePlan ? "measured from that film's plan.json" : "measured from the text in that timings file" };
 }
 
-export function formatEstimate(e) {
+/**
+ * @param {object} e estimateLength() result
+ * @param {{starts?: boolean}} [opts] starts: add each line's estimated start time
+ */
+export function formatEstimate(e, opts = {}) {
   const out = ["estimate (report only):"];
   const note = e.rateSource.startsWith("default") ? `${e.rateSource} — a starting value; --rate-from <timings.json> measures this voice` : e.rateSource;
   out.push(`  lang ${e.lang}, speed ${e.filmSpeed}, rate ${e.heardRate.toFixed(2)} units/s heard (${e.baseRate.toFixed(2)} at 1.0; ${note})`);
   out.push(`  spoken units ${e.units} -> speech ${e.speechSec.toFixed(1)} s`);
-  out.push(`  pauses ${e.pauseSec.toFixed(1)} s (${e.gaps} gaps), head ${e.headSec.toFixed(1)} s, tail ${e.tailSec.toFixed(1)} s`);
+  const lead = e.leadSec ? ` (lead ${e.leadSec.toFixed(1)} s included)` : "";
+  out.push(`  pauses ${e.pauseSec.toFixed(1)} s (${e.gaps} gaps), head ${e.headSec.toFixed(1)} s${lead}, tail ${e.tailSec.toFixed(1)} s`);
   out.push(`  estimated length ${e.totalSec.toFixed(1)} s`);
-  out.push("  per line (id  units  sec):");
-  for (const l of e.lines) out.push(`    ${l.id}  ${l.units}  ${l.sec.toFixed(1)}`);
+  if (opts.starts) {
+    out.push("  per line (id  units  sec  start):");
+    for (const l of e.lines) out.push(`    ${l.id}  ${l.units}  ${l.sec.toFixed(1)}  ${l.start.toFixed(1)}`);
+  } else {
+    out.push("  per line (id  units  sec):");
+    for (const l of e.lines) out.push(`    ${l.id}  ${l.units}  ${l.sec.toFixed(1)}`);
+  }
   return out.join("\n") + "\n";
+}
+
+/**
+ * Reads `--lead <sec>` for --estimate: null when absent, else seconds >= 0.
+ * @param {string|boolean|undefined} value
+ */
+export function parseLeadFlag(value) {
+  if (value === undefined) return null;
+  const n = Number(value);
+  if (value === true || value === "" || !Number.isFinite(n) || n < 0) throw new Error(`--lead takes seconds >= 0, e.g. --lead 3 (got "${value}")`);
+  return n;
 }
 
 // ---------------------------------------------------------------------
