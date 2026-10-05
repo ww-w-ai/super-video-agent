@@ -157,6 +157,17 @@ render.mjs <dir> [--preview] --only id,id   # force-render exactly these segment
                                              # no longer matches its stored frame range
 ```
 
+A first render can go part by part, so no single call has to hold the whole film: `--only a,b`
+renders those segments and marks every segment never rendered before `PENDING` (skipped, not
+probed); the next call with `--only c,d` adds more. The film is joined, gated and muxed on the call
+that leaves no segment pending. A picture-only probe with no voice yet splits its silent clock with
+`--stub <sec> --segments N` (ids `stub-1`..`stub-N`), so it can go part by part too.
+
+One render opens the page once (once per `--workers` worker) and uses that session for the shot
+list, the probes, the frames, the page sound and the sound cues. Its warm-up seeks only the shots it
+will capture, so a page that builds a scene on first seek builds only the scenes those shots need.
+The last line of the output is `page opens: N`.
+
 With `--only`, the segment right before and right after each named one is also probed (not
 forced). A neighbour whose probe hashes differ from its stored ones renders too and prints
 `--only: also rendering <id> (its frames changed)`: its last or first frames can already show the
@@ -263,6 +274,12 @@ before `ready`. A key missing from `meta.overlay.picture` draws its fallback. Se
 hashes equal the base segment's is copied from it, so only shots that draw a changed string render.
 The probe sees three frames: a string that shows only between them is not noticed, so name such a
 shot with `--only <id>`.
+
+Every render records which picture strings each segment's frames read (`picture` in the
+segment's `.json`). A language render copies a base segment without probing it when its frames
+read no key that language sets and never read `Reel.lang`; only the other segments are probed.
+This trusts the base picture's cache: after changing the page, render the base picture again
+first, or pass `--probe-all` to probe every segment as before.
 
 Each language, including the first one, lives in its own folder:
 

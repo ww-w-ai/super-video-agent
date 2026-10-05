@@ -14,7 +14,8 @@ import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubTimings } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, takePictureReads } from "./lib/browser.mjs";
+import { createSessionPool } from "./lib/session-pool.mjs";
 import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid } from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
@@ -25,12 +26,14 @@ import {
   unknownOnlyIds,
   validateOnly,
   decideLangSegment,
+  decideLangUnprobed,
   neighbourIds,
+  pendingIds,
 } from "./lib/segments.mjs";
 import { draftsDir, draftSpan, draftSidecar, slotCut } from "./lib/drafts.mjs";
 
-const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code>]]
-                 [--stub <sec>] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
+const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
+                 [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
@@ -51,6 +54,11 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               unchanged neighbour is reused. Every other segment is reused
               without probing. Refuses (no render happens) if a segment
               outside --only no longer matches its stored frame range.
+              A segment outside --only that was never rendered (no stored
+              segment yet) is skipped ("PENDING"), not probed: a first render
+              can go part by part (--only a,b, then --only c,d, ...). The film
+              is joined, gated and muxed only on the run that leaves no
+              segment pending.
 --handle <sec>
               with --only: renders each named shot as a separate draft clip,
               from (slot start - sec) to (slot end + sec) clamped to the film,
@@ -80,13 +88,21 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               render always returns fallback). Segments go to
               out/segments-<code>/<final|preview>-nocap/; a segment whose
               probe hashes equal the base segment's in out/segments/ is
-              copied from it, not rendered. Writes out/picture-<code>-<stamp>.mp4
+              copied from it, not rendered. A base segment whose frames read
+              no picture string this language sets (and never Reel.lang) is
+              copied without probing: every render records the strings each
+              segment's frames read. --probe-all probes every segment instead
+              (e.g. after changing the page without re-rendering the base
+              picture). Writes out/picture-<code>-<stamp>.mp4
               + out/picture-<code>.mp4, picture-<code>.bed.wav and
               picture-<code>.timings.json; dub.mjs --lang <code> uses them.
 --stub <sec>  for a reel with no voice/timings.json: the page is served one
               silent line of <sec> seconds (id "stub"); nothing is written to
               voice/. Use with --no-captions; out/picture.timings.json then
               holds that stub clock.
+--segments N  with --stub: N equal silent lines (ids stub-1..stub-N) instead
+              of one, so the picture has N segments and --only stub-2 renders
+              one of them.
 --insert <clip.mp4>@<start-sec>
               puts an already rendered clip into the picture: frames from
               <start-sec> (rounded to the frame grid) for the clip's frame
@@ -113,6 +129,11 @@ probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
 match the current timeline and its .mp4 exists; otherwise it is
 re-rendered. Every render prints one REUSE or RENDER line per segment with
 the reason.
+
+One render opens the reel page once (once per --workers worker) and uses
+that session for the shot list, the probes, the frames, the page sound and
+the sound cues; its warm-up seeks only the shots it will capture. The last
+line says how many times the page was opened.
 `;
 
 export async function main(argv) {
@@ -145,10 +166,13 @@ export async function main(argv) {
     return;
   }
   let stubSec;
+  let stubSegments = 1;
   let insert;
   let handleSec = 0;
   try {
     stubSec = stubSeconds(flags.stub, paths.timingsJson, fs.existsSync);
+    stubSegments = stubSegmentCount(flags.segments, stubSec);
+    if (flags["probe-all"] !== undefined && !lang) throw new Error("--probe-all is for a language picture; add --no-captions --lang <code>");
     insert = flags.insert !== undefined ? parseInsertFlag(flags.insert) : null;
     if (flags["insert-stills"] !== undefined && !insert) throw new Error("--insert-stills needs --insert <clip.mp4>@<start-sec>");
     if (insert && flags["insert-stills"] !== undefined) {
@@ -178,27 +202,39 @@ export async function main(argv) {
 
   const started = Date.now();
   try {
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, insert, lang, handleSec });
+    const probeAll = !!flags["probe-all"];
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll });
     const elapsed = (Date.now() - started) / 1000;
-    if (result.draftsOnly) {
-      const frames = result.drafts.reduce((n, d) => n + d.frameEnd - d.frameStart, 0);
-      process.stdout.write(`drafts: ${result.drafts.length} clip(s), ${frames} frames  render time: ${elapsed.toFixed(2)}s\n`);
-      return;
-    }
-    if (result.planOnly) {
-      process.stdout.write(`--plan: ${result.decisions.length} segment(s), nothing rendered\n`);
-      return;
-    }
-    const achievedFps = result.frames / elapsed;
-    process.stdout.write(
-      `wrote ${result.outPath}\n` +
-        (result.bedPath ? `wrote ${result.bedPath}\n` : "") +
-        `frames: ${result.frames}  seconds: ${result.seconds.toFixed(3)}  ` +
-        `render time: ${elapsed.toFixed(2)}s  fps achieved: ${achievedFps.toFixed(2)}\n`
-    );
+    process.stdout.write(summaryLine(result, elapsed));
   } catch (e) {
     fail(e.message);
   }
+}
+
+/** The closing lines of a render: what was written, or why nothing was joined, and the page-open count. */
+export function summaryLine(result, elapsed) {
+  const opens = `page opens: ${result.pageOpens}\n`;
+  if (result.draftsOnly) {
+    const frames = result.drafts.reduce((n, d) => n + d.frameEnd - d.frameStart, 0);
+    return `drafts: ${result.drafts.length} clip(s), ${frames} frames  render time: ${elapsed.toFixed(2)}s\n` + opens;
+  }
+  if (result.planOnly) return `--plan: ${result.decisions.length} segment(s), nothing rendered\n` + opens;
+  if (result.partial) {
+    const done = result.decisions.filter((d) => d.action === "RENDER").length;
+    return (
+      `rendered ${done} segment(s); not joined: ${result.pending.length} segment(s) not rendered yet: ${result.pending.join(", ")}\n` +
+      `render them (--only <ids>, or no --only) to join the film; the A/V gate runs on that last call  render time: ${elapsed.toFixed(2)}s\n` +
+      opens
+    );
+  }
+  const achievedFps = result.frames / elapsed;
+  return (
+    `wrote ${result.outPath}\n` +
+    (result.bedPath ? `wrote ${result.bedPath}\n` : "") +
+    `frames: ${result.frames}  seconds: ${result.seconds.toFixed(3)}  ` +
+    `render time: ${elapsed.toFixed(2)}s  fps achieved: ${achievedFps.toFixed(2)}\n` +
+    opens
+  );
 }
 
 /**
@@ -274,105 +310,118 @@ function readPicturePayload(dir, lang) {
   return payload;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, insert = null, lang = null, handleSec = 0 }) {
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, stubSegments = 1, insert = null, lang = null, handleSec = 0, probeAll = false }) {
   const picture = readPicturePayload(dir, lang);
   const server = await serveDir(dir);
   const pageUrl = pictureUrl(server.url, noCaptions, lang);
-  const openAt = { url: pageUrl, opts: { stubSec, picture } }; // what every helper below opens: page URL + openReel options
+  // Every session is opened cold and warmed only for the shots it will capture (pool.warmFor).
+  const pool = createSessionPool({
+    open: () => openReel(pageUrl, { stubSec, stubSegments, picture, warm: false }),
+    warm: warmShotsOf,
+  });
   try {
-    const meta = await probeMeta(openAt);
-    const fps = meta.fps;
-    const duration = meta.duration;
-
-    const { segments, warnings } = computeSegments({ shots: meta.shots, fps, duration });
-    for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
-
-    const quality = preview ? "preview" : "final";
-    const segDir = segmentDirFor(paths.outDir, quality, noCaptions, lang);
-    const baseSegDir = lang ? segmentDirFor(paths.outDir, quality, noCaptions, null) : null;
-    fs.mkdirSync(segDir, { recursive: true });
-
-    const targetWidth = preview ? Math.round(meta.width / 2) : meta.width;
-    const targetHeight = preview ? Math.round(meta.height / 2) : meta.height;
-    const crf = preview ? 28 : 18;
-    const cPreset = preview ? "veryfast" : "medium";
-    const scaleFilter = preview ? `scale=${targetWidth}:${targetHeight}` : undefined;
-
-    const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
-    if (onlyIds && handleSec > 0) {
-      const drafts = await renderDrafts({ server: openAt, segments, onlyIds, handleSec, fps, meta, quality, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, outDir: paths.outDir, workers });
-      return { draftsOnly: true, drafts };
-    }
-    if (onlyIds) validateOnlyOrThrow({ segments, onlyIds, segDir });
-
-    const insertPlan = insert ? await prepareInsert({ insert, segments, fps }) : null;
-
-    const decisions = await decideAll({
-      server: openAt,
-      segments,
-      segDir,
-      baseSegDir,
-      fps,
-      targetWidth,
-      targetHeight,
-      onlyIds,
-      workers,
-      coveredIds: insertPlan ? insertPlan.coveredIds : [],
-    });
-    for (const d of decisions) {
-      if (d.neighbour && d.action === "RENDER") process.stdout.write(`--only: also rendering ${d.segment.id} (its frames changed)\n`);
-      process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
-    }
-
-    if (plan) return { planOnly: true, decisions };
-
-    copyBaseSegments({ decisions, baseSegDir, segDir });
-    await renderNeeded({ server: openAt, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
-
-    const videoOnlyPath = path.join(paths.outDir, "_video.mp4");
-    const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
-    if (insertPlan) {
-      await buildInsertedTrack({ insertPlan, segDir, fps, crf, preset: cPreset, outPath: videoOnlyPath, expectedFrames });
-    } else {
-      await concatMp4(
-        segments.map((s) => path.join(segDir, `${s.id}.mp4`)),
-        videoOnlyPath,
-        fps
-      );
-    }
-
-    if (noCaptions) {
-      return await finishPictureRender({ dir, paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, lang });
-    }
-
-    await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
-
-    let sfxPath;
-    const sfx = await maybeRenderSfx(openAt, paths);
-    if (sfx) sfxPath = sfx;
-
-    const cueInputs = await resolveSoundCues(openAt, paths.root);
-    const narrationWindows = narrationWindowsFor(dir, stubSec);
-    const sfxDuckDb = sfxDuckDbFor(dir);
-
-    const stampedPath = path.join(paths.outDir, `${quality}-${timestamp()}.mp4`);
-    await muxAudio({
-      videoOnlyPath,
-      narrationPath: paths.narrationWav,
-      sfxPath,
-      cueInputs,
-      outPath: stampedPath,
-      narrationWindows,
-      sfxDuckDb,
-    });
-    fs.rmSync(videoOnlyPath, { force: true });
-    if (sfxPath) fs.rmSync(sfxPath, { force: true });
-    const outPath = pointLatest(paths.outDir, `${quality}.mp4`, stampedPath);
-
-    return { outPath, stampedPath, frames: expectedFrames, seconds: expectedFrames / fps, segments, decisions };
+    const result = await renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll });
+    return { ...result, pageOpens: pool.opened };
   } finally {
+    await pool.closeAll();
     await server.close();
   }
+}
+
+async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll }) {
+  const meta = await probeMeta(pool);
+  const fps = meta.fps;
+  const duration = meta.duration;
+
+  const { segments, warnings } = computeSegments({ shots: meta.shots, fps, duration });
+  for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
+
+  const quality = preview ? "preview" : "final";
+  const segDir = segmentDirFor(paths.outDir, quality, noCaptions, lang);
+  const baseSegDir = lang ? segmentDirFor(paths.outDir, quality, noCaptions, null) : null;
+  fs.mkdirSync(segDir, { recursive: true });
+
+  const targetWidth = preview ? Math.round(meta.width / 2) : meta.width;
+  const targetHeight = preview ? Math.round(meta.height / 2) : meta.height;
+  const crf = preview ? 28 : 18;
+  const cPreset = preview ? "veryfast" : "medium";
+  const scaleFilter = preview ? `scale=${targetWidth}:${targetHeight}` : undefined;
+
+  const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
+  if (onlyIds && handleSec > 0) {
+    const drafts = await renderDrafts({ pool, segments, onlyIds, handleSec, fps, meta, quality, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, outDir: paths.outDir, workers });
+    return { draftsOnly: true, drafts };
+  }
+  const pending = onlyIds ? validateOnlyOrThrow({ segments, onlyIds, segDir }) : [];
+
+  const insertPlan = insert ? await prepareInsert({ insert, segments, fps }) : null;
+
+  const decisions = await decideAll({
+    pool,
+    segments,
+    segDir,
+    baseSegDir,
+    fps,
+    targetWidth,
+    targetHeight,
+    onlyIds,
+    workers,
+    coveredIds: insertPlan ? insertPlan.coveredIds : [],
+    pendingIds: pending,
+    langStrings: lang && !probeAll ? picture.strings : null,
+  });
+  for (const d of decisions) {
+    if (d.neighbour && d.action === "RENDER") process.stdout.write(`--only: also rendering ${d.segment.id} (its frames changed)\n`);
+    process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
+  }
+
+  if (plan) return { planOnly: true, decisions };
+
+  copyBaseSegments({ decisions, baseSegDir, segDir });
+  await renderNeeded({ pool, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
+  if (pending.length) return { partial: true, pending, decisions };
+
+  const videoOnlyPath = path.join(paths.outDir, "_video.mp4");
+  const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
+  if (insertPlan) {
+    await buildInsertedTrack({ insertPlan, segDir, fps, crf, preset: cPreset, outPath: videoOnlyPath, expectedFrames });
+  } else {
+    await concatMp4(
+      segments.map((s) => path.join(segDir, `${s.id}.mp4`)),
+      videoOnlyPath,
+      fps
+    );
+  }
+
+  if (noCaptions) {
+    return await finishPictureRender({ dir, paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, stubSegments, lang });
+  }
+
+  await gateAvSync({ videoOnlyPath, narrationPath: paths.narrationWav, expectedFrames });
+
+  let sfxPath;
+  const sfx = await maybeRenderSfx(pool, paths);
+  if (sfx) sfxPath = sfx;
+
+  const cueInputs = await resolveSoundCues(pool, paths.root);
+  const narrationWindows = narrationWindowsFor(dir, stubSec, stubSegments);
+  const sfxDuckDb = sfxDuckDbFor(dir);
+
+  const stampedPath = path.join(paths.outDir, `${quality}-${timestamp()}.mp4`);
+  await muxAudio({
+    videoOnlyPath,
+    narrationPath: paths.narrationWav,
+    sfxPath,
+    cueInputs,
+    outPath: stampedPath,
+    narrationWindows,
+    sfxDuckDb,
+  });
+  fs.rmSync(videoOnlyPath, { force: true });
+  if (sfxPath) fs.rmSync(sfxPath, { force: true });
+  const outPath = pointLatest(paths.outDir, `${quality}.mp4`, stampedPath);
+
+  return { outPath, stampedPath, frames: expectedFrames, seconds: expectedFrames / fps, segments, decisions };
 }
 
 /**
@@ -385,7 +434,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
  * out/picture.timings.json so dub.mjs can lay a language's caption + voice
  * over the picture later without re-deriving the shot clock.
  */
-async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, lang = null }) {
+async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, stubSegments = 1, lang = null }) {
   const frameCount = await probeFrameCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
@@ -398,9 +447,9 @@ async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrame
   const outPath = pointLatest(paths.outDir, `${stem}.mp4`, stampedPath);
 
   let sfxPath;
-  const sfx = await maybeRenderSfx(openAt, paths);
+  const sfx = await maybeRenderSfx(pool, paths);
   if (sfx) sfxPath = sfx;
-  const cueInputs = await resolveSoundCues(openAt, paths.root);
+  const cueInputs = await resolveSoundCues(pool, paths.root);
 
   const durationSec = String(await probeDuration(stampedPath));
   const bedStampedPath = path.join(paths.outDir, `${stem}-${stamp}.bed.wav`);
@@ -409,7 +458,7 @@ async function finishPictureRender({ paths, openAt, videoOnlyPath, expectedFrame
   const bedPath = pointLatest(paths.outDir, `${stem}.bed.wav`, bedStampedPath);
 
   const timingsPath = path.join(paths.outDir, `${stem}.timings.json`);
-  if (stubSec) writeJson(timingsPath, stubTimings(stubSec));
+  if (stubSec) writeJson(timingsPath, stubTimings(stubSec, stubSegments));
   else fs.copyFileSync(paths.timingsJson, timingsPath);
 
   return {
@@ -451,17 +500,19 @@ export function pointLatest(outDir, name, stampedPath) {
   return linkPath;
 }
 
-async function probeMeta(target) {
-  let session;
-  try {
-    session = await openReel(target.url, target.opts);
+/** The page's meta from the pool's first session, which stays open for the rest of the render. */
+async function probeMeta(pool) {
+  return pool.use(async (session) => {
     if (session.errors.length) {
       throw new Error(`page errors on load: ${session.errors.join("; ")}`);
     }
     return session.meta;
-  } finally {
-    if (session) await session.close();
-  }
+  });
+}
+
+/** Shot ids of every segment that overlaps frames [frameStart, frameEnd). */
+function shotIdsOver(segments, frameStart, frameEnd) {
+  return segments.filter((s) => s.frameStart < frameEnd && s.frameEnd > frameStart).flatMap((s) => s.shotIds);
 }
 
 function segMp4Path(segDir, id) {
@@ -481,56 +532,89 @@ function readStoredMeta(segDir, id) {
   }
 }
 
+/**
+ * Refuses unknown --only ids and segments outside --only whose stored frame
+ * range moved. Returns the segments outside --only never rendered yet
+ * (pending): they are skipped, and the film is not joined this run.
+ */
 function validateOnlyOrThrow({ segments, onlyIds, segDir }) {
   const unknown = unknownOnlyIds({ segments, onlyIds });
   if (unknown.length) {
     throw new Error(`--only references unknown segment(s): ${unknown.join(", ")}`);
   }
   const storedById = new Map(segments.map((s) => [s.id, readStoredMeta(segDir, s.id)]));
-  const check = validateOnly({ segments, onlyIds, storedById });
+  const mp4ExistsById = new Map(segments.map((s) => [s.id, fs.existsSync(segMp4Path(segDir, s.id))]));
+  const pending = pendingIds({ segments, onlyIds, storedById, mp4ExistsById });
+  const pendingSet = new Set(pending);
+  const check = validateOnly({ segments: segments.filter((s) => !pendingSet.has(s.id)), onlyIds, storedById });
   if (!check.ok) {
     throw new Error(
       `--only can't safely reuse segment(s) whose frame range moved: ${check.mustInclude.join(", ")} — ` +
         `include them in --only`
     );
   }
+  return pending;
 }
 
-/** One REUSE/RENDER decision per segment, probing only where needed. */
-async function decideAll({ server, segments, segDir, baseSegDir = null, fps, targetWidth, targetHeight, onlyIds, workers, coveredIds = [] }) {
+/**
+ * One decision per segment. Decided without the page: INSERT (covered by
+ * the clip), PENDING (--only first render), REUSE on the --only fast path,
+ * and a language segment whose base frames read no changed string
+ * (decideLangUnprobed). Every other segment is probed; only the shots of
+ * probed segments are warmed.
+ */
+async function decideAll({ pool, segments, segDir, baseSegDir = null, fps, targetWidth, targetHeight, onlyIds, workers, coveredIds = [], pendingIds: pending = [], langStrings = null }) {
   const results = new Array(segments.length);
-  let idx = 0;
   // --only: the segments next to a named one are probed, not forced.
-  const neighbours = new Set(onlyIds ? neighbourIds({ segments, onlyIds, skipIds: coveredIds }) : []);
+  const pendingSet = new Set(pending);
+  const neighbours = new Set(onlyIds ? neighbourIds({ segments, onlyIds, skipIds: [...coveredIds, ...pending] }) : []);
+  const toProbe = [];
+  segments.forEach((segment, i) => {
+    const neighbour = neighbours.has(segment.id);
+    const known = decideWithoutPage({ segment, segDir, baseSegDir, fps, targetWidth, targetHeight, onlyIds, neighbour, coveredIds, pendingSet, langStrings });
+    if (known) results[i] = known;
+    else toProbe.push({ i, segment, neighbour });
+  });
+  await pool.warmFor(toProbe.flatMap((p) => p.segment.shotIds));
 
+  let idx = 0;
   async function worker() {
-    let session = null;
-    try {
-      while (idx < segments.length) {
-        const i = idx++;
-        const segment = segments[i];
-        if (coveredIds.includes(segment.id)) {
-          results[i] = { segment, action: "INSERT", reason: "covered by the --insert clip (not rendered)" };
-          continue;
-        }
-        const neighbour = neighbours.has(segment.id);
-        if (onlyIds && !onlyIds.includes(segment.id) && !neighbour) {
-          results[i] = { segment, action: "REUSE", reason: "--only fast path (not probed)" };
-          continue;
-        }
-        if (!session) session = await openReel(server.url, server.opts);
+    if (idx >= toProbe.length) return;
+    await pool.use(async (session) => {
+      while (idx < toProbe.length) {
+        const { i, segment, neighbour } = toProbe[idx++];
         const forceRender = !!onlyIds && !neighbour; // named by --only
         results[i] = await decideOne({ session, segment, segDir, baseSegDir, fps, targetWidth, targetHeight, forceRender });
         if (neighbour) results[i].neighbour = true;
       }
-    } finally {
-      if (session) await session.close();
-    }
+    });
   }
 
-  const n = Math.max(1, Math.min(workers, segments.length || 1));
+  const n = Math.max(1, Math.min(workers, toProbe.length || 1));
   await Promise.all(Array.from({ length: n }, worker));
   return results;
+}
+
+/** The decision for a segment that needs no probe, or null. */
+function decideWithoutPage({ segment, segDir, baseSegDir, fps, targetWidth, targetHeight, onlyIds, neighbour, coveredIds, pendingSet, langStrings }) {
+  if (coveredIds.includes(segment.id)) return { segment, action: "INSERT", reason: "covered by the --insert clip (not rendered)" };
+  if (pendingSet.has(segment.id)) return { segment, action: "PENDING", reason: "--only: never rendered yet (skipped; the film is joined once no segment is pending)" };
+  if (onlyIds && !onlyIds.includes(segment.id) && !neighbour) return { segment, action: "REUSE", reason: "--only fast path (not probed)" };
+  if (!baseSegDir || !langStrings || (onlyIds && !neighbour)) return null;
+  const current = { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width: targetWidth, height: targetHeight };
+  const mp4Path = segMp4Path(segDir, segment.id);
+  const storedBase = readStoredMeta(baseSegDir, segment.id);
+  const d = decideLangUnprobed({
+    storedBase,
+    storedLang: readStoredMeta(segDir, segment.id),
+    current,
+    strings: langStrings,
+    baseMp4Exists: fs.existsSync(segMp4Path(baseSegDir, segment.id)),
+    langMp4Exists: fs.existsSync(mp4Path),
+  });
+  if (!d) return null;
+  if (d.action === "REUSE") return { segment, action: "REUSE", reason: d.reason };
+  return { segment, action: "COPY", reason: d.reason, current: storedBase, mp4Path, jsonPath: segJsonPath(segDir, segment.id), baseMp4Path: segMp4Path(baseSegDir, segment.id) };
 }
 
 async function decideOne({ session, segment, segDir, baseSegDir = null, fps, targetWidth, targetHeight, forceRender }) {
@@ -578,7 +662,7 @@ function copyBaseSegments({ decisions, baseSegDir, segDir }) {
   }
 }
 
-async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, workers }) {
+async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, workers }) {
   const toRender = decisions.filter((d) => d.action === "RENDER");
   let idx = 0;
 
@@ -588,6 +672,7 @@ async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, 
       while (idx < toRender.length) {
         const i = idx++;
         const d = toRender[i];
+        let reads = null;
         // Both film sessions had render.mjs die once on a Playwright
         // transport error mid-segment (no page error involved) and pass
         // clean on rerun — retry the segment itself, up to 2 more times,
@@ -596,8 +681,10 @@ async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, 
         // (isTransportError rejects it) — see scripts/lib/retry.mjs.
         await withTransportRetry(
           async () => {
-            if (!session) session = await openReel(server.url, server.opts);
+            if (!session) session = await pool.acquire();
+            await takePictureReads(session.page); // count only this segment's frames
             await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
+            reads = mergePictureReads(session.loadPictureReads, await takePictureReads(session.page));
           },
           {
             maxRetries: 2,
@@ -606,21 +693,35 @@ async function renderNeeded({ server, decisions, fps, crf, preset, scaleFilter, 
                 `retrying segment ${d.segment.id} after a transport error (attempt ${attempt}): ${err.message}\n`
               );
               if (session) {
-                await session.close().catch(() => {});
+                await pool.discard(session);
                 session = null;
               }
             },
           }
         );
-        writeJson(d.jsonPath, d.current);
+        writeJson(d.jsonPath, reads ? { ...d.current, picture: reads } : d.current);
       }
     } finally {
-      if (session) await session.close();
+      if (session) pool.release(session);
     }
   }
 
   const n = Math.max(1, Math.min(workers, toRender.length || 1));
   await Promise.all(Array.from({ length: n }, worker));
+}
+
+/**
+ * Picture-string reads of a segment: what its frames read plus what the page
+ * read while loading (that applies to every frame). Stored with the segment
+ * so a language picture can skip probing it (decideLangUnprobed).
+ * @param {{keys: string[], lang: boolean, all: boolean}|null} a
+ * @param {{keys: string[], lang: boolean, all: boolean}|null} b
+ */
+export function mergePictureReads(a, b) {
+  if (!a && !b) return null;
+  const x = a || { keys: [], lang: false, all: false };
+  const y = b || { keys: [], lang: false, all: false };
+  return { keys: [...new Set([...x.keys, ...y.keys])].sort(), lang: !!(x.lang || y.lang), all: !!(x.all || y.all) };
 }
 
 async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter }) {
@@ -657,7 +758,7 @@ export function parseHandleFlag(value) {
  * Renders each shot of `onlyIds` as out/drafts/<id>.mp4 (+ <id>.json) over its
  * slot widened by the handle. Nothing else is written: no segment cache, no join.
  */
-async function renderDrafts({ server, segments, onlyIds, handleSec, fps, quality, crf, preset, scaleFilter, targetWidth, targetHeight, outDir, workers }) {
+async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, crf, preset, scaleFilter, targetWidth, targetHeight, outDir, workers }) {
   const unknown = unknownOnlyIds({ segments, onlyIds });
   if (unknown.length) throw new Error(`--only references unknown segment(s): ${unknown.join(", ")}`);
   const filmStart = segments[0].frameStart;
@@ -669,13 +770,14 @@ async function renderDrafts({ server, segments, onlyIds, handleSec, fps, quality
     const span = draftSpan({ segment, fps, filmStart, filmEnd, handleSec });
     return { segment, span, mp4Path: path.join(dir, `${id}.mp4`), jsonPath: path.join(dir, `${id}.json`) };
   });
+  await pool.warmFor(jobs.flatMap((j) => shotIdsOver(segments, j.span.frameStart, j.span.frameEnd)));
   let idx = 0;
   async function worker() {
     let session = null;
     try {
       while (idx < jobs.length) {
         const job = jobs[idx++];
-        if (!session) session = await openReel(server.url, server.opts);
+        if (!session) session = await pool.acquire();
         await encodeSegment({ session, segment: job.span, outPath: job.mp4Path, fps, crf, preset, scaleFilter });
         writeJson(job.jsonPath, draftSidecar({ segment: job.segment, span: job.span, fps, handleSec, quality, width: targetWidth, height: targetHeight }));
         process.stdout.write(
@@ -683,7 +785,7 @@ async function renderDrafts({ server, segments, onlyIds, handleSec, fps, quality
         );
       }
     } finally {
-      if (session) await session.close();
+      if (session) pool.release(session);
     }
   }
   const n = Math.max(1, Math.min(workers, jobs.length || 1));
@@ -1013,15 +1115,11 @@ export async function gateAvSync({ videoOnlyPath, narrationPath, expectedFrames 
   }
 }
 
-async function maybeRenderSfx(server, paths) {
-  let session;
-  try {
-    session = await openReel(server.url, server.opts);
+async function maybeRenderSfx(pool, paths) {
+  return pool.use(async (session) => {
     const sfxPath = path.join(paths.outDir, "_sfx.wav");
     return (await pullPageSfx(session.page, { sampleRate: 48000, outPath: sfxPath })) ? sfxPath : null;
-  } finally {
-    if (session) await session.close();
-  }
+  });
 }
 
 const SFX_CHUNK_FRAMES = 1 << 20; // ~22 s at 48 kHz: 4 MB per channel per call
@@ -1089,27 +1187,22 @@ function decodeFloat32Base64(b64) {
  * Returns [] when the page has no library cues — the no-cue mux path is
  * then untouched (byte-for-byte the same as before this feature).
  */
-async function resolveSoundCues(server, dir) {
-  let session;
-  try {
-    session = await openReel(server.url, server.opts);
+async function resolveSoundCues(pool, dir) {
+  const cues = await pool.use(async (session) => {
     const hasFn = await session.page.evaluate(() => typeof window.__reel.soundCues === "function");
-    if (!hasFn) return [];
-    const cues = await session.page.evaluate(() => window.__reel.soundCues());
-    const resolved = [];
-    for (const cue of cues || []) {
-      const absPath = path.join(dir, cue.file);
-      const clipDur = await probeDuration(absPath);
-      const leadSec = cue.soundOnly ? await probeLeadSilenceSec(absPath) : 0;
-      const playable = Math.max(0.05, clipDur - leadSec);
-      const trimSec = cue.maxSec ? Math.min(cue.maxSec, playable) : playable;
-      const peakDb = await probePeakDb(absPath, leadSec + trimSec);
-      resolved.push({ absPath, atSec: cue.at, gainDb: cue.gainDb, trimSec, peakDb, leadSec });
-    }
-    return resolved;
-  } finally {
-    if (session) await session.close();
+    return hasFn ? session.page.evaluate(() => window.__reel.soundCues()) : null;
+  });
+  const resolved = [];
+  for (const cue of cues || []) {
+    const absPath = path.join(dir, cue.file);
+    const clipDur = await probeDuration(absPath);
+    const leadSec = cue.soundOnly ? await probeLeadSilenceSec(absPath) : 0;
+    const playable = Math.max(0.05, clipDur - leadSec);
+    const trimSec = cue.maxSec ? Math.min(cue.maxSec, playable) : playable;
+    const peakDb = await probePeakDb(absPath, leadSec + trimSec);
+    resolved.push({ absPath, atSec: cue.at, gainDb: cue.gainDb, trimSec, peakDb, leadSec });
   }
+  return resolved;
 }
 
 const MAX_LEAD_SKIP_SEC = 0.3;
@@ -1292,8 +1385,8 @@ async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
 }
 
 /** voice/timings.json's lines (or the --stub line) as {start,end} narration windows, for ducking (scripts/lib/duck.mjs). */
-function narrationWindowsFor(dir, stubSec) {
-  const timings = stubSec ? stubTimings(stubSec) : loadTimings(dir);
+function narrationWindowsFor(dir, stubSec, stubSegments = 1) {
+  const timings = stubSec ? stubTimings(stubSec, stubSegments) : loadTimings(dir);
   return (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
 }
 

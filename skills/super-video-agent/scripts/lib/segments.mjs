@@ -125,6 +125,57 @@ export function decideLangSegment({ storedLang, storedBase, current, langMp4Exis
 }
 
 /**
+ * A language picture's segment that needs no probe: the base segment's
+ * stored meta records which picture strings its frames read (render.mjs
+ * writes `picture` = {keys, lang, all} for every segment it renders). When
+ * those frames read no key this language sets, never read Reel.lang and
+ * never listed the keys, the language's frames are the base frames — take
+ * the base segment as is. Returns null when the segment must be probed:
+ * no record, a read that this language changes, or a base segment that does
+ * not match the current frame range, fps or size, or has no mp4.
+ * @param {{storedBase: object|null, storedLang: object|null, current: {frameStart:number,frameEnd:number,fps:number,width:number,height:number}, strings: Record<string,string>, baseMp4Exists: boolean, langMp4Exists: boolean}} args
+ * @returns {{action: "REUSE"|"COPY", reason: string}|null}
+ */
+export function decideLangUnprobed({ storedBase, storedLang, current, strings, baseMp4Exists, langMp4Exists }) {
+  if (!storedBase || !baseMp4Exists || !sameShape(storedBase, current)) return null;
+  const reads = storedBase.picture;
+  if (!reads || !Array.isArray(reads.keys) || reads.lang || reads.all) return null;
+  const set = strings && typeof strings === "object" ? strings : {};
+  const changed = reads.keys.filter((k) => Object.prototype.hasOwnProperty.call(set, k) && typeof set[k] === "string" && set[k] !== "");
+  if (changed.length) return null;
+  if (storedLang && langMp4Exists && sameShape(storedLang, current) && sameProbes(storedLang, storedBase)) {
+    return { action: "REUSE", reason: "the base segment draws no string this language changes; the language's copy of it is current (not probed)" };
+  }
+  return { action: "COPY", reason: "the base segment draws no string this language changes (copied, not probed)" };
+}
+
+function sameShape(stored, current) {
+  return (
+    stored.frameStart === current.frameStart &&
+    stored.frameEnd === current.frameEnd &&
+    stored.fps === current.fps &&
+    stored.width === current.width &&
+    stored.height === current.height
+  );
+}
+
+function sameProbes(a, b) {
+  return Array.isArray(a.probes) && Array.isArray(b.probes) && a.probes.length === b.probes.length && a.probes.every((h, i) => h === b.probes[i]);
+}
+
+/**
+ * With `--only`: the segments outside --only that have never been rendered
+ * (no stored metadata or no .mp4). A first render by parts skips them
+ * instead of refusing; the film is joined once none is left.
+ * @param {{segments: {id:string}[], onlyIds: string[], storedById: Map<string, object|null>, mp4ExistsById: Map<string, boolean>}} args
+ * @returns {string[]} in timeline order
+ */
+export function pendingIds({ segments, onlyIds, storedById, mp4ExistsById }) {
+  const named = new Set(onlyIds);
+  return segments.filter((s) => !named.has(s.id) && (!storedById.get(s.id) || !mp4ExistsById.get(s.id))).map((s) => s.id);
+}
+
+/**
  * With `--only`, the segments immediately before and after each named one
  * that are not named themselves (and not in `skipIds`, e.g. covered by an
  * --insert clip): their frames can depend on the changed state, so render.mjs

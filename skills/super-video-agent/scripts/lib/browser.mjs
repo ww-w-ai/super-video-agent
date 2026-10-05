@@ -42,11 +42,38 @@ export function withTimeout(promise, ms, step) {
 
 /**
  * The voice/timings.json a `--stub <sec>` run serves instead of the file on
- * disk: one silent line spanning the whole length. Never written to disk.
+ * disk: one silent line spanning the whole length (id "stub"), or with
+ * `segments` > 1 that many equal silent lines "stub-1".."stub-N", so the
+ * page reports that many shots and render.mjs can render them one by one.
+ * Never written to disk by the page load.
  * @param {number} sec
+ * @param {number} [segments]
  */
-export function stubTimings(sec) {
-  return { duration: sec, lines: [{ id: "stub", text: "", start: 0, end: sec, words: [] }] };
+export function stubTimings(sec, segments = 1) {
+  if (segments <= 1) return { duration: sec, lines: [{ id: "stub", text: "", start: 0, end: sec, words: [] }] };
+  const lines = [];
+  for (let i = 0; i < segments; i++) {
+    const start = (sec * i) / segments;
+    const end = i === segments - 1 ? sec : (sec * (i + 1)) / segments;
+    lines.push({ id: `stub-${i + 1}`, text: "", start, end, words: [] });
+  }
+  return { duration: sec, lines };
+}
+
+/**
+ * Reads a `--segments N` flag value (with --stub). Returns 1 when absent.
+ * Throws unless it is a whole number >= 1 and --stub is set.
+ * @param {string|boolean|undefined} value
+ * @param {number|null} stubSec
+ */
+export function stubSegmentCount(value, stubSec) {
+  if (value === undefined) return 1;
+  const n = Number(value);
+  if (value === true || !Number.isInteger(n) || n < 1) {
+    throw new Error(`--segments takes a whole number of segments, e.g. --segments 4 (got "${value}")`);
+  }
+  if (!stubSec) throw new Error("--segments splits a --stub clock; add --stub <sec>");
+  return n;
 }
 
 /**
@@ -75,10 +102,14 @@ export function stubSeconds(value, timingsPath, exists) {
  * settled) may take readyTimeoutMs(); the error names the step and lists
  * the page's own errors.
  * @param {string} url
- * @param {{width?: number, height?: number, stubSec?: number|null, warm?: boolean, readyTimeoutMs?: number}} [opts]
- *   stubSec: serve stubTimings(stubSec) as voice/timings.json.
- *   warm: false skips the per-shot warm-up seeks (verify.mjs's cold probe).
-   picture: {lang, strings}, set as globalThis.__svaPicture before the page runs.
+ * @param {{width?: number, height?: number, stubSec?: number|null, stubSegments?: number, warm?: boolean, warmShots?: string[]|null, readyTimeoutMs?: number, picture?: {lang: string|null, strings: object}}} [opts]
+ *   stubSec: serve stubTimings(stubSec, stubSegments) as voice/timings.json.
+ *   warm: false skips the per-shot warm-up seeks (verify.mjs's cold probe);
+ *     warmShotsOf() can warm chosen shots later.
+ *   warmShots: warm only these shot ids (null = every shot). A lazily built
+ *     page (one 3D world per shot group) then builds only what they need.
+ *   picture: {lang, strings}, set as globalThis.__svaPicture before the page
+ *     runs; every key and lang read is recorded (pictureReads()).
  */
 export async function openReel(url, opts = {}) {
   const chromium = await getChromium();
@@ -103,18 +134,18 @@ export async function openReel(url, opts = {}) {
     errors.push(msg.text());
   });
   if (opts.stubSec) {
-    const body = JSON.stringify(stubTimings(opts.stubSec));
+    const body = JSON.stringify(stubTimings(opts.stubSec, opts.stubSegments || 1));
     await page.route(/\/voice\/timings\.json(\?.*)?$/, (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body })
     );
   }
   if (opts.picture) {
     // Before any page script: Reel.lang / Reel.pictureText() read this (reel-engine.js "picture strings").
-    await page.addInitScript((p) => {
-      globalThis.__svaPicture = p;
-    }, opts.picture);
+    await page.addInitScript(installPictureState, opts.picture);
   }
   await waitUntilReady({ page, browser, url, errors, ms: opts.readyTimeoutMs || readyTimeoutMs() });
+  // Reads made while the page loaded apply to every frame; seek-time reads are counted per segment.
+  const loadPictureReads = opts.picture ? await takePictureReads(page) : null;
   const meta = await page.evaluate(() => {
     const r = window.__reel;
     return {
@@ -137,22 +168,92 @@ export async function openReel(url, opts = {}) {
   // contract (seek(t) independent of call history) actually needs.
   // `warmUp` lists these seeks in order, so a determinism diagnosis can
   // count them as seek history.
-  const warmUp = [];
-  if (opts.warm !== false) {
-    for (const shot of meta.shots) {
-      await captureFrame(page, shot.readAt);
-      await captureFrame(page, shot.readAt);
-      warmUp.push(shot.readAt, shot.readAt);
-    }
-  }
-  return {
+  const session = {
     browser,
     page,
     meta,
     errors,
-    warmUp,
+    warmUp: [],
+    warmed: new Set(),
+    loadPictureReads,
     close: () => browser.close(),
   };
+  if (opts.warm !== false) {
+    await warmShotsOf(session, opts.warmShots ? opts.warmShots : meta.shots.map((s) => s.id));
+  }
+  // Seek-time picture reads start counting after the warm-up.
+  if (opts.picture) await takePictureReads(page);
+  return session;
+}
+
+/**
+ * Two throwaway captures at each named shot's readAt (openReel's warm-up),
+ * in timeline order, skipping shots this session already warmed.
+ * @param {{page: object, meta: {shots: {id: string, readAt: number}[]}, warmUp: number[], warmed: Set<string>}} session
+ * @param {Iterable<string>} shotIds
+ */
+export async function warmShotsOf(session, shotIds) {
+  const want = new Set(shotIds);
+  for (const shot of session.meta.shots) {
+    if (!want.has(shot.id) || session.warmed.has(shot.id)) continue;
+    await captureFrame(session.page, shot.readAt);
+    await captureFrame(session.page, shot.readAt);
+    session.warmUp.push(shot.readAt, shot.readAt);
+    session.warmed.add(shot.id);
+  }
+}
+
+// Runs in the page before any page script. Wraps the picture payload so
+// every read is noted in globalThis.__svaPictureReads; the values returned
+// are the payload's own, so what the page draws does not change.
+function installPictureState(p) {
+  const reads = { keys: {}, lang: false, all: false };
+  globalThis.__svaPictureReads = reads;
+  const note = (k) => {
+    if (typeof k === "string") reads.keys[k] = true;
+  };
+  const strings = new Proxy(p.strings && typeof p.strings === "object" ? p.strings : {}, {
+    get(t, k, r) {
+      note(k);
+      return Reflect.get(t, k, r);
+    },
+    has(t, k) {
+      note(k);
+      return Reflect.has(t, k);
+    },
+    getOwnPropertyDescriptor(t, k) {
+      note(k);
+      return Reflect.getOwnPropertyDescriptor(t, k);
+    },
+    ownKeys(t) {
+      reads.all = true;
+      return Reflect.ownKeys(t);
+    },
+  });
+  globalThis.__svaPicture = {
+    get lang() {
+      reads.lang = true;
+      return p.lang;
+    },
+    strings,
+  };
+}
+
+/**
+ * The picture reads noted since the last call ({keys: sorted key names,
+ * lang: Reel.lang read, all: every key enumerated}), then starts a new count.
+ * @returns {Promise<{keys: string[], lang: boolean, all: boolean}>}
+ */
+export async function takePictureReads(page) {
+  return page.evaluate(() => {
+    const r = globalThis.__svaPictureReads;
+    if (!r) return { keys: [], lang: false, all: false };
+    const out = { keys: Object.keys(r.keys).sort(), lang: r.lang, all: r.all };
+    r.keys = {};
+    r.lang = false;
+    r.all = false;
+    return out;
+  });
 }
 
 // A page that throws before assigning window.__reel, whose `ready` rejects,
