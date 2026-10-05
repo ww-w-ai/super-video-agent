@@ -83,7 +83,7 @@ rules come first.
 | `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area, centred on the frame |
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads" \| "none" \| {top, bottom, left, right})` | the box text must stay inside; `"none"` = the whole frame, an object = the film's own margins in canvas px |
 | `centeredSafeArea(w, h)` | the part of that box centred on the frame — for centred titles and captions |
-| `checkSafe(ctx, label, left, top, right, bottom)` | for anything you draw by hand (a sticker, a card, a badge): the box, in the current transform's space, is mapped to canvas space and recorded to `issues()` if it leaves the safe area |
+| `checkSafe(ctx, label, left, top, right, bottom, w?, h?, {outline}?)` | for anything you draw by hand (a sticker, a card, a badge): the box, in the current transform's space, is mapped to canvas space and recorded to `issues()` if it leaves the safe area; `outline` (px) adds a stroke's half-width on each side |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
 
 ### Safe area
@@ -361,6 +361,11 @@ the script): a line that fits one row is not cut at a comma; a number stays with
 a Korean dependent noun or particle token (`수`, `것`, `밖에`, `은`) stays with the word before it;
 nothing breaks inside a short parenthesis or quote span; Japanese and Chinese wrap by character
 but keep a number+unit, a Latin word and closing/opening marks whole. A `|` always wins.
+
+A film that draws an outline around its caption can say so, if it wants:
+`Reel.captionRows(ctx, text, maxW, {lang, stroke: 3})` fits the rows so the outline stays inside
+`maxW`, and `Reel.checkSafe(..., {outline: 3})` counts the outline's half-width when it tests the
+safe area. Both are optional; without them nothing changes.
 
 Caption breaks differ per language, so it helps to check a translation for them, e.g. once after the
 language's lines are written and before the final render: run `validate-plan.mjs <reel-dir>

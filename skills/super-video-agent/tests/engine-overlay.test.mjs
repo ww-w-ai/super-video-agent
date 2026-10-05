@@ -35,6 +35,32 @@ test("checkSafe: the active transform is applied (a translated box moves out)", 
   assert.equal(Reel.issues().length, 1);
 });
 
+test("checkSafe: an outline counts half its width past the box on each side", () => {
+  Reel.setSafeArea("shorts");
+  const s = Reel.safeArea(1080, 1920);
+  const right = s.x + s.w - 1; // 1 px inside the right edge
+  Reel.clearIssues();
+  Reel.checkSafe(fakeCtx(), "plain", 400, 600, right, 700, 1080, 1920);
+  assert.equal(Reel.issues().length, 0);
+  Reel.checkSafe(fakeCtx(), "outlined", 400, 600, right, 700, 1080, 1920, { outline: 3 });
+  assert.equal(Reel.issues().length, 1);
+  assert.equal(Reel.issues()[0].drawn.right, Math.round(right + 1.5));
+  Reel.clearIssues();
+  Reel.checkSafe(fakeCtx(), "thin", 400, 600, right - 2, 700, 1080, 1920, { outline: 2 });
+  assert.equal(Reel.issues().length, 0);
+});
+
+test("captionRows: an optional stroke fits the rows inside maxW with the outline; omitted, nothing changes", () => {
+  const plain = Reel.captionRows(fakeCtx(), "aaaa bbbb", 90);
+  assert.deepEqual(plain.rows, [[0, 1]]);
+  assert.equal(plain.stroke, 0);
+  assert.deepEqual(Reel.captionRows(fakeCtx(), "aaaa bbbb", 90, "en").rows, plain.rows);
+  const stroked = Reel.captionRows(fakeCtx(), "aaaa bbbb", 90, { lang: "en", stroke: 4 });
+  assert.deepEqual(stroked.rows, [[0], [1]]);
+  assert.equal(stroked.stroke, 4);
+  assert.ok(stroked.rowWidths.every((w) => w + stroked.stroke <= 90));
+});
+
 test("captionRows: a \\n starts a new row even when everything fits on one", () => {
   const r = Reel.captionRows(fakeCtx(), "자! 오늘은 우리\n차례예요", 2000);
   assert.deepEqual(r.words, ["자!", "오늘은", "우리", "차례예요"]);

@@ -471,12 +471,16 @@
   // label, a scaled stamp), so the box is transformed into canvas space
   // before it is tested against the safe area — otherwise a rotated or
   // scaled label can sit outside the safe area with no issue recorded.
-  function checkSafe(ctx, text, left, top, right, bottom, width, height) {
+  // opts.outline: the stroke width (px, local space) of an outline drawn
+  // around the text; a stroke reaches half its width past the glyph box on
+  // every side, so the box grows by outline / 2 before the test.
+  function checkSafe(ctx, text, left, top, right, bottom, width, height, opts) {
     const cw = width || (ctx.canvas ? ctx.canvas.width : 1080);
     const ch = height || (ctx.canvas ? ctx.canvas.height : 1920);
     const s = safeArea(cw, ch);
     const m = ctx.getTransform ? ctx.getTransform() : { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-    const box = transformedBBox(m, left, top, right, bottom);
+    const pad = opts && opts.outline > 0 ? opts.outline / 2 : 0;
+    const box = transformedBBox(m, left - pad, top - pad, right + pad, bottom + pad);
     if (box.left < s.x || box.top < s.y || box.right > s.x + s.w || box.bottom > s.y + s.h) {
       recordIssue({
         type: "text-outside-safe-area",
@@ -816,7 +820,15 @@
   // before unit i (spaceW between words, 0 inside a CJK run), and balanced
   // rows where a "\n" in `text` always starts a new row and the break rules
   // above hold. Join a row's units with gaps[i] to draw it.
-  function captionRows(ctx, text, maxW, lang) {
+  // The 4th argument is the language code, or an options object
+  // {lang, stroke}. stroke (optional): the outline width (px) the film draws
+  // around the caption; rows are fitted to maxW - stroke so the outline's
+  // half-width on each side stays inside maxW. Pass the same value to
+  // checkSafe's `outline`.
+  function captionRows(ctx, text, maxW, langOrOpts) {
+    const o = langOrOpts && typeof langOrOpts === "object" ? langOrOpts : { lang: langOrOpts };
+    const lang = o.lang;
+    const stroke = o.stroke > 0 ? o.stroke : 0;
     const spaceW = ctx.measureText(" ").width;
     const words = [];
     const gaps = [];
@@ -832,8 +844,8 @@
       sizes.push(u.texts.length);
     });
     const widths = words.map(function (word) { return ctx.measureText(word).width; });
-    const b = balanceParts(widths, spaceW, maxW, sizes, { gaps: gaps, glue: glue });
-    return { words: words, widths: widths, gaps: gaps, spaceW: spaceW, rows: b.rows, rowWidths: b.widths };
+    const b = balanceParts(widths, spaceW, maxW - stroke, sizes, { gaps: gaps, glue: glue });
+    return { words: words, widths: widths, gaps: gaps, spaceW: spaceW, rows: b.rows, rowWidths: b.widths, stroke: stroke };
   }
 
   // wrapParts(ctx, text, w, lang) — "\n" in `text` forces a break (a caption
