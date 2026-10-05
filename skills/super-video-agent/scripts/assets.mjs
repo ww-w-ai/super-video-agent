@@ -6,7 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
-import { openLibrary, locateLibraryDir, assetFilePath, assertInsideLibrary, getById, searchAssets, isModelAsset } from "./lib/library.mjs";
+import { openLibrary, locateLibraryDir, assetFilePath, assertInsideLibrary, getById, searchAssetsRanked, isModelAsset } from "./lib/library.mjs";
 import { collectPlanCues, defaultPlay } from "./lib/cues.mjs";
 import { ffmpeg, ffprobe } from "./lib/ffmpeg.mjs";
 
@@ -14,9 +14,11 @@ const HELP = `usage: assets.mjs search <query> [--role sfx|reaction|character|pr
        assets.mjs fetch <reel-dir> [--allow-personal-scope]
        assets.mjs model <id> <reel-dir> [--allow-personal-scope]
 
-search   Lists library assets whose description/tags match every word in
-         <query> (case-insensitive): clips with duration, 3D models and
-         images with rigged/clips, plus the license.
+search   Lists library assets whose description/tags match the words in
+         <query> (case-insensitive): those matching every word first, then
+         those matching some, more words first, marked "(k/n words)".
+         Clips show duration, 3D models and images rigged/clips, plus the
+         license.
 model    Copies a 3D model (character, prop, set) or a code-built model
          module into <reel-dir>/assets/models/<id>/, an owner image into
          <reel-dir>/assets/refs/<id>/, and prints its license. A glTF also
@@ -85,12 +87,17 @@ async function runSearch(rest, flags) {
     return;
   }
   const limit = flags.limit ? parseInt(flags.limit, 10) : undefined;
-  const results = searchAssets(library, query, { role: flags.role, limit });
+  const results = searchAssetsRanked(library, query, { role: flags.role, limit });
   if (results.length === 0) {
     process.stdout.write("no matches\n");
     return;
   }
-  for (const a of results) process.stdout.write(searchLine(a) + "\n");
+  for (const r of results) process.stdout.write(rankedLine(r) + "\n");
+}
+
+/** A search result line; a hit that matched only some of the words says how many. */
+export function rankedLine({ asset, matched, words }) {
+  return matched < words ? `(${matched}/${words} words) ${searchLine(asset)}` : searchLine(asset);
 }
 
 /** One `search` result line: clips show duration, models show rigged/clips. */

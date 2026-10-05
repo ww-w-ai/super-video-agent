@@ -112,12 +112,14 @@ function haystack(asset) {
 }
 
 /**
- * Keyword search: every whitespace-separated token in `query` must appear
- * (case-insensitive) somewhere in an asset's description or tags. Matches
- * are ranked by total token-occurrence count, ties keeping catalog order.
- * @returns {object[]}
+ * Keyword search over an asset's description and tags (case-insensitive),
+ * with how many of the query's words each hit matched. Assets matching
+ * every word come first, then assets matching some of them, more words
+ * first; within each, by total word-occurrence count, ties keeping catalog
+ * order. An asset matching no word is left out.
+ * @returns {{asset: object, matched: number, words: number, score: number}[]}
  */
-export function searchAssets(library, query, opts = {}) {
+export function searchAssetsRanked(library, query, opts = {}) {
   const tokens = String(query || "")
     .normalize("NFC")
     .toLowerCase()
@@ -130,26 +132,30 @@ export function searchAssets(library, query, opts = {}) {
   for (const asset of library.assets) {
     if (role && asset.role !== role) continue;
     const text = haystack(asset);
-    if (tokens.length === 0) {
-      scored.push({ asset, score: 0 });
-      continue;
-    }
     let score = 0;
-    let missed = false;
+    let matched = 0;
     for (const tok of tokens) {
       const count = countOccurrences(text, tok);
-      if (count === 0) {
-        missed = true;
-        break;
-      }
+      if (count > 0) matched++;
       score += count;
     }
-    if (!missed) scored.push({ asset, score });
+    if (tokens.length === 0 || matched > 0) scored.push({ asset, matched, words: tokens.length, score });
   }
 
-  scored.sort((a, b) => b.score - a.score);
-  const results = scored.map((s) => s.asset);
-  return typeof limit === "number" ? results.slice(0, limit) : results;
+  scored.sort((a, b) => b.matched - a.matched || b.score - a.score);
+  return typeof limit === "number" ? scored.slice(0, limit) : scored;
+}
+
+/**
+ * The assets of searchAssetsRanked() in rank order; with `opts.all` true,
+ * only those matching every word.
+ * @returns {object[]}
+ */
+export function searchAssets(library, query, opts = {}) {
+  const ranked = searchAssetsRanked(library, query, { role: opts.role });
+  const kept = opts.all ? ranked.filter((r) => r.matched === r.words) : ranked;
+  const results = kept.map((r) => r.asset);
+  return typeof opts.limit === "number" ? results.slice(0, opts.limit) : results;
 }
 
 function countOccurrences(haystackStr, needle) {

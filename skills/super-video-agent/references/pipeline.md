@@ -474,7 +474,7 @@ A line picks clips in `plan.json` via `cues`: `[{asset, at, offsetMs?, gainDb?, 
 Two commands (`scripts/assets.mjs`):
 
 ```
-assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]   # keyword search over description+tags
+assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]   # keyword search over description+tags: every-word matches first, then partial ones
 assets.mjs model <id> <reel-dir> [--allow-personal-scope]      # copies a model/image into the reel (see below)
 assets.mjs fetch <reel-dir> [--allow-personal-scope]           # copies every cued asset into
                                                                  # <reel-dir>/assets/lib/
@@ -501,6 +501,11 @@ To add your own clip or effect: put the file in the library folder and add one e
 `catalog.json` with a new `id`, its `role`, `kind` and `path`, a `description` and `tags` a
 search will hit, its measured `durationSec` (and `width`/`height`, `hasAudio` for video), and
 `license: {kind: "user", commercialSafe: true}` for material you made yourself.
+
+`search` matches words as written, so a Korean-only label is not found by an English query. Give
+each entry English tags as well as its own language's (e.g. `["문", "삐걱", "door", "creak",
+"wood"]`). A search shows the entries matching every word first, then those matching some of
+them, marked `(k/n words)`.
 
 ### Drawing and mixing cues
 

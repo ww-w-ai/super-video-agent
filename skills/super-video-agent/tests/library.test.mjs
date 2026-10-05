@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { locateLibraryDir, loadLibrary, openLibrary, getById, searchAssets, isModelAsset } from "../scripts/lib/library.mjs";
+import { locateLibraryDir, loadLibrary, openLibrary, getById, searchAssets, searchAssetsRanked, isModelAsset } from "../scripts/lib/library.mjs";
 
 function makeFakeLibrary() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sva-lib-"));
@@ -90,13 +90,29 @@ test("getById: finds by id, undefined when absent", () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("searchAssets: every query token must match description or tags (case-insensitive)", () => {
+test("searchAssets: all: true keeps only assets matching every word (case-insensitive)", () => {
   const dir = makeFakeLibrary();
   const lib = loadLibrary(dir);
-  const hits = searchAssets(lib, "STAMP office");
+  const hits = searchAssets(lib, "STAMP office", { all: true });
   assert.deepEqual(hits.map((a) => a.id), ["stamp-1"]);
-  assert.equal(searchAssets(lib, "stamp nonexistent-token").length, 0);
+  assert.equal(searchAssets(lib, "stamp nonexistent-token", { all: true }).length, 0);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("searchAssetsRanked: every-word matches first, then partial matches by words matched", () => {
+  const lib = {
+    assets: [
+      { id: "one-word", role: "sfx", description: "a door", tags: [] },
+      { id: "both", role: "sfx", description: "a wooden door creak", tags: ["wood"] },
+      { id: "none", role: "sfx", description: "rain", tags: [] },
+      { id: "two-of-three", role: "sfx", description: "door creak", tags: [] },
+    ],
+  };
+  const ranked = searchAssetsRanked(lib, "door creak wooden");
+  assert.deepEqual(ranked.map((r) => [r.asset.id, r.matched]), [["both", 3], ["two-of-three", 2], ["one-word", 1]]);
+  assert.equal(ranked[0].words, 3);
+  assert.deepEqual(searchAssets(lib, "door nonexistent").map((a) => a.id), ["one-word", "both", "two-of-three"]);
+  assert.equal(searchAssetsRanked(lib, "nothing-here").length, 0);
 });
 
 test("searchAssets: --role filters, --limit caps", () => {
