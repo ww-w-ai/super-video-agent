@@ -63,7 +63,8 @@ use, adapt or ignore; none of it is a template.
    (3D/WebGL drawn on CPU, heavy effects) or several languages share one picture, for a 9:16
    film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
    opening line first (default when nobody can answer: no), if not given; start
-   FILM.md (the listener: who watches and what they should think or do, and who speaks if a
+   FILM.md with one line naming the skill version (`version` in the skill's `package.json`,
+   e.g. `super-video-agent 1.9.0`), then (the listener: who watches and what they should think or do, and who speaks if a
    character does — the voice, how the character refers to themselves and how they look on
    screen agree, and the delivery fits that speaker; with several speakers, a line takes its own
    `voice` over `meta.voice` (`references/voice.md`); facts with where
