@@ -38,7 +38,7 @@ test("synthBatches: a line with lang 'en' in a ko film is sent apart, with the E
   };
   const voice = { provider, providerName: "typecast", voiceCfg: { voiceId: "tc_x" }, key: "V" };
   const lines = [
-    { id: "hi", text: "Hello, I'm Tae.", lang: "en" },
+    { id: "hi", text: "Hello there.", lang: "en" },
     { id: "a", text: "안녕하세요." },
     { id: "b", text: "오늘은 영상을 만듭니다." },
   ];
