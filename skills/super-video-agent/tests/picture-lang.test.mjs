@@ -19,14 +19,14 @@ const Reel = globalThis.Reel;
 
 test("pictureText: no injected state returns the fallback and lang is null", () => {
   delete globalThis.__svaPicture;
-  assert.equal(Reel.pictureText("brand", "덥덥덥 AI 뉴스"), "덥덥덥 AI 뉴스");
+  assert.equal(Reel.pictureText("brand", "아침 브리핑"), "아침 브리핑");
   assert.equal(Reel.lang, null);
 });
 
 test("pictureText: a base render (own language, no strings) always returns the fallback", () => {
   globalThis.__svaPicture = { lang: "ko", strings: {} };
   try {
-    assert.equal(Reel.pictureText("brand", "덥덥덥 AI 뉴스"), "덥덥덥 AI 뉴스");
+    assert.equal(Reel.pictureText("brand", "아침 브리핑"), "아침 브리핑");
     assert.equal(Reel.lang, "ko");
   } finally {
     delete globalThis.__svaPicture;
@@ -34,9 +34,9 @@ test("pictureText: a base render (own language, no strings) always returns the f
 });
 
 test("pictureText: a language's string wins; a missing or empty key falls back", () => {
-  globalThis.__svaPicture = { lang: "en", strings: { brand: "DubDubDub AI News", empty: "" } };
+  globalThis.__svaPicture = { lang: "en", strings: { brand: "Morning Brief", empty: "" } };
   try {
-    assert.equal(Reel.pictureText("brand", "덥덥덥 AI 뉴스"), "DubDubDub AI News");
+    assert.equal(Reel.pictureText("brand", "아침 브리핑"), "Morning Brief");
     assert.equal(Reel.pictureText("other", "기본"), "기본");
     assert.equal(Reel.pictureText("empty", "기본"), "기본");
     assert.equal(Reel.pictureText("toString", "기본"), "기본"); // not an own key

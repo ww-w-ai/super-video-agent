@@ -261,7 +261,7 @@ The fallback is the base language's text. A base render always draws the fallbac
 language's text in `dub/<code>/plan.json` under `meta.overlay.picture`:
 
 ```json
-{ "meta": { "lang": "en", "overlay": { "picture": { "brand": "DubDubDub AI News" } } } }
+{ "meta": { "lang": "es", "overlay": { "picture": { "brand": "Resumen de la mañana" } } } }
 ```
 
 Render that language's picture, then dub it:
