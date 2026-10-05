@@ -9,6 +9,7 @@ line before the story — set `meta.lead` in the plan instead of rendering a sep
 and joining it in front (`references/pipeline.md` "Timeline", `references/sound.md` "Lead sound").
 The lead is on the film's own clock, so voice, captions, dubs and cues stay in step. A
 separate opening reel suits a channel title card or series intro that is not part of the film.
+The opening types a film can choose from, and how each is built, are in `references/openings.md`.
 
 ## Order that worked
 

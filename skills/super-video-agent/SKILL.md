@@ -54,9 +54,9 @@ use, adapt or ignore; none of it is a template.
 
 ```
 1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
-   length (a target; slightly over is fine), the opening type (none; a short lead matching the
-   cover, `meta.lead`; or a highlight preview, about 5–10 s of the film's own best shots before
-   the story, common in long-form and cut after the film is built), whether they want to review the script before the voice, the order — voice first
+   length (a target; slightly over is fine), the opening: pick the three types in
+   `references/openings.md` that fit this film best, recommend them with one line each on why,
+   and offer a fourth choice, "recommend other types", whether they want to review the script before the voice, the order — voice first
    (default) or picture first; both make the base language's voice (the user's language) before
    the picture, and picture first then renders the picture once without captions so other
    languages are laid over it — recommend picture first when the picture renders slowly
@@ -199,8 +199,8 @@ Style: at the start, ask the user which one to use.
 
 Ask this together with frame size, length, the script review, the voice-first-or-picture-first
 order and (for 9:16) the voice speed, in one question. If the user already said, do not ask
-again. If nobody can answer (an unattended run), use free style, skip the script review, use no
-opening unless the brief asks, leave
+again. If nobody can answer (an unattended run), use free style, skip the script review, use
+your first opening pick, leave
 the speed at 1.1, use voice first unless the brief names a slow 3D picture (then picture first),
 and note these in `FILM.md`. Write the choice in `FILM.md` so the later stages follow it.
 
@@ -281,6 +281,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/community.md` | How the viral Opus 5.5 films were prompted and built — read first |
 | `references/3d.md` | WebGL/three.js films — when to use them, capture path, determinism, speed, characters and the cast stage |
 | `references/shorts-formula.md` | The Shorts formula: structure, pacing, banded layout, captions — only when the user chose it |
+| `references/openings.md` | Opening types (result first, question, number card, title sting, mid-scene, preview, cover then motion, ...): what each looks like, when it fits, how to build it — read at the start to recommend three |
 | `references/sources.md` | Getting material out of each source type |
 | `references/craft.md` | Observations from earlier films and the failures viewers called out |
 | `references/sound.md` | Effects on visible events, music bed, mix |
