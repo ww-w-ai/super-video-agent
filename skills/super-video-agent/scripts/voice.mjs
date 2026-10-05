@@ -843,7 +843,7 @@ export function applySttResult(lineOut, line, heard, sttWords, langCode) {
       lineOut.wordsMeasured = aligned.measured;
     }
   }
-  const cmp = compareLine({ text: timedText, say: timedSay, heard });
+  const cmp = compareLine({ text: timedText, say: timedSay, heard, lang: langCode });
   const targetText = cmp.against === "say" ? timedSay : timedText;
   lineOut.stt = {
     advisory: true,
@@ -852,15 +852,15 @@ export function applySttResult(lineOut, line, heard, sttWords, langCode) {
     heard,
     cer: cmp.cer,
     diffs: cmp.diffs,
-    grossMismatch: isGrossMismatch(targetText, heard, cmp.cer),
-    tailMatched: tailCleared(targetText, heard),
+    grossMismatch: isGrossMismatch(targetText, heard, cmp.cer, langCode),
+    tailMatched: tailCleared(targetText, heard, langCode),
   };
 
-  if (lineOut.voiceFlag === "TAIL" && tailCleared(targetText, heard)) {
+  if (lineOut.voiceFlag === "TAIL" && tailCleared(targetText, heard, langCode)) {
     delete lineOut.voiceFlag;
     lineOut.stt.tailCleared = true;
   }
-  if (isGrossMismatch(targetText, heard, cmp.cer)) {
+  if (isGrossMismatch(targetText, heard, cmp.cer, langCode)) {
     lineOut.voiceFlag = "MISHEARD";
   } else if (lineOut.voiceFlag === "MISHEARD") {
     delete lineOut.voiceFlag;
@@ -923,7 +923,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     const newDur = await probeDuration(wavPath);
     const sttRes = await sttTranscribe(paths.voiceDir, [{ id: line.id, wav: `line-${line.id}.wav` }], langCode);
     const newHeard = sttRes.results ? sttRes.results.get(line.id) || "" : "";
-    const newCer = sttRes.results ? compareLine({ text: timedText, say: timedSay, heard: newHeard }).cer : Infinity;
+    const newCer = sttRes.results ? compareLine({ text: timedText, say: timedSay, heard: newHeard, lang: langCode }).cer : Infinity;
     const oldCer = lineOut.stt ? lineOut.stt.cer : Infinity;
 
     if (newCer < oldCer) {
@@ -1381,7 +1381,7 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
         const sttRes = await sttTranscribe(paths.voiceDir, [{ id: sttId, wav: `takes/${id}-${k}.wav` }], takeCode);
         if (!sttRes.skipped) {
           const heard = sttRes.results.get(sttId) || "";
-          cerVal = compareLine({ text: strippedText, say: strippedSay, heard }).cer;
+          cerVal = compareLine({ text: strippedText, say: strippedSay, heard, lang: takeCode }).cer;
         }
       }
       rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, lv.voiceCfg, lv.provider), cer: cerVal });
@@ -1613,11 +1613,12 @@ function listTakeFiles(paths, id) {
 /** CER of each take k of `line`, by transcribing the takes on disk. */
 async function takesCer(paths, line, ks, langCode) {
   const entries = ks.map((k) => ({ id: `${line.id}-${k}`, wav: `takes/${line.id}-${k}.wav` }));
-  const stt = await sttTranscribe(paths.voiceDir, entries, line.lang ? sttLangCode(line.lang) : langCode);
+  const code = line.lang ? sttLangCode(line.lang) : langCode;
+  const stt = await sttTranscribe(paths.voiceDir, entries, code);
   if (stt.skipped) throw new Error(`--pick-by stt: ${stt.skipped}`);
   const text = stripCaptionBreaks(line.text);
   const say = line.say != null ? stripCaptionBreaks(line.say) : line.say;
-  return new Map(ks.map((k) => [k, compareLine({ text, say, heard: stt.results.get(`${line.id}-${k}`) || "" }).cer]));
+  return new Map(ks.map((k) => [k, compareLine({ text, say, heard: stt.results.get(`${line.id}-${k}`) || "", lang: code }).cer]));
 }
 
 /**

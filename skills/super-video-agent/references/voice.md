@@ -221,6 +221,14 @@ local) and compares it against the intended line:
   take, babble or words never in the script). Error rate is taken as the *minimum* over `text`
   (caption) and `say` (spoken, if it differs).
 
+Before the error rate, numbers on both sides are written one way by the line's language rules
+(`scripts/lib/stt-numbers.mjs`), so "2 nm" heard as "two nanometers" is not an error. Covered
+now: English — number words to digits ("twenty-five" → 25, "five point two" → 5.2), a number
+before thousand/million/billion, "$5" → "5 dollars", "%" → "percent", long unit names after a
+number to the short form ("nanometers" → nm, also mm, cm, km, m, mg, kg, g, KB/MB/GB/TB, MHz/GHz)
+and no space between a number and its unit. Every other language is compared as before; add a
+language there only with rules that read one way.
+
 Every synthesized line gets `stt: {advisory, target, against, heard, cer, diffs,
 grossMismatch, tailMatched}` in `timings.json`. These measurements are evidence for the
 LLM, not a quality verdict. Read the target and transcript before deciding whether to

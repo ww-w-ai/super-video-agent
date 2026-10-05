@@ -7,16 +7,19 @@
 // (`[confident]`) are never heard as words, so every target is compared without them.
 
 import { stripTags } from "./tags.mjs";
+import { normalizeNumbers } from "./stt-numbers.mjs";
 
 /**
  * Lowercase and strip whitespace/punctuation, keeping letters and digits of
  * any script (Korean included) so character error rate isn't inflated by
  * spacing/punctuation differences between the intended text and what the
- * STT model transcribed.
+ * STT model transcribed. With `lang`, numbers are first written the way that
+ * language's rules say (stt-numbers.mjs; English only so far), on both sides.
  * @param {string} s
+ * @param {string|null} [lang]
  */
-export function normalize(s) {
-  return String(s ?? "")
+export function normalize(s, lang = null) {
+  return normalizeNumbers(s, lang)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "");
 }
@@ -46,11 +49,12 @@ function levenshtein(a, b) {
  * length (floored at 1 so an empty target never divides by zero).
  * @param {string} a target text
  * @param {string} b heard text
+ * @param {string|null} [lang] the line's language, for number rules
  * @returns {number}
  */
-export function cer(a, b) {
-  const na = normalize(a);
-  const nb = normalize(b);
+export function cer(a, b, lang = null) {
+  const na = normalize(a, lang);
+  const nb = normalize(b, lang);
   return levenshtein(na, nb) / Math.max(1, na.length);
 }
 
@@ -138,22 +142,24 @@ function tokenDiffs(target, heard) {
  * legitimately transcribe differently from `text` (e.g. "UTM" read as
  * "유티엠" vs spelled "UTM" — either is a correct read, only `text` should
  * be penalized, `say` should not).
- * @param {{text:string, say?:string, heard:string}} args
+ * `lang` (optional) applies that language's number rules to both sides
+ * before comparing, so "2 nm" heard as "two nanometers" is not an error.
+ * @param {{text:string, say?:string, heard:string, lang?:string|null}} args
  * @returns {{cer:number, against:"text"|"say", diffs:{want:string,heard:string}[]}}
  */
-export function compareLine({ text, say, heard }) {
+export function compareLine({ text, say, heard, lang = null }) {
   const candidates = [{ key: "text", value: stripTags(text) }];
   if (say != null) candidates.push({ key: "say", value: stripTags(say) });
 
   let best = null;
   for (const c of candidates) {
-    const c_er = cer(c.value, heard);
+    const c_er = cer(c.value, heard, lang);
     if (!best || c_er < best.cer) {
       best = { against: c.key, cer: c_er, target: c.value };
     }
   }
 
-  const diffs = tokenDiffs(best.target, heard);
+  const diffs = tokenDiffs(normalizeNumbers(best.target, lang), normalizeNumbers(heard, lang));
   return { cer: best.cer, against: best.against, diffs };
 }
 
@@ -170,12 +176,13 @@ const MAX_LENGTH_RATIO = 1.4;
  * @param {string} target the line as it should be heard (`say ?? text`)
  * @param {string} heard the STT transcript
  * @param {number} lineCer the error rate from compareLine
+ * @param {string|null} [lang] the line's language, for number rules
  */
-export function isGrossMismatch(target, heard, lineCer) {
+export function isGrossMismatch(target, heard, lineCer, lang = null) {
   if (lineCer > GROSS_CER) return true;
-  const nt = normalize(stripTags(target)).length;
+  const nt = normalize(stripTags(target), lang).length;
   if (nt === 0) return false;
-  const ratio = normalize(heard).length / nt;
+  const ratio = normalize(heard, lang).length / nt;
   return ratio < MIN_LENGTH_RATIO || ratio > MAX_LENGTH_RATIO;
 }
 
@@ -185,10 +192,11 @@ export function isGrossMismatch(target, heard, lineCer) {
  * complementing the qwen3 provider's own tail-RMS gate (voiceFlag TAIL).
  * @param {string} target
  * @param {string} heard
+ * @param {string|null} [lang] the line's language, for number rules
  */
-export function tailCleared(target, heard) {
-  const nt = normalize(stripTags(target));
-  const nh = normalize(heard);
+export function tailCleared(target, heard, lang = null) {
+  const nt = normalize(stripTags(target), lang);
+  const nh = normalize(heard, lang);
   if (nt.length === 0) return true;
   const tail = nt.slice(-2);
   return nh.endsWith(tail);
