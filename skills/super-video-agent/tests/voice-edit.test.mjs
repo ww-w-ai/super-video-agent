@@ -334,8 +334,10 @@ test("STT evidence is advisory and compares numeric speech with the matching tar
   const out={id:"a",start:0,end:3};
   applySttResult(out,line,"Opus cut 20% to 4 in, 20 out.",null,"en");
   assert.equal(out.stt.advisory,true);
-  assert.equal(out.stt.against,"text");
-  assert.equal(out.stt.target,line.text);
+  // English number rules: "twenty percent" and "20%" read the same, so the spoken `say` matches exactly
+  assert.equal(out.stt.against,"say");
+  assert.equal(out.stt.target,line.say);
+  assert.equal(out.stt.cer,0);
   assert.equal(out.stt.grossMismatch,false);
   assert.equal(out.voiceFlag,undefined);
   applySttResult(out,line,"unrelated words entirely",null,"en");
