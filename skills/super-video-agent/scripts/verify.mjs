@@ -7,11 +7,11 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
 import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds } from "./lib/browser.mjs";
+import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 
-const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check]
+const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check] [--range <t0>-<t1> | --world <key>]
 
 Runs three checks against <reel-dir>/reel.html:
   1. Static scan of the scene script for banned nondeterministic/network
@@ -31,6 +31,16 @@ box of the pixel difference.
 
 --stub <sec>  for a reel with no voice/timings.json: the page is served one
               silent line of <sec> seconds. Nothing is written to voice/.
+
+--range <t0>-<t1>
+              probe only between t0 and t1 seconds (e.g. --range 42-61.5).
+              Only the shots that overlap the range are warmed, in this page
+              and in every fresh page the diagnosis opens, so a page that
+              builds its scenes on first seek builds only those.
+--world <key> probe only where the page's window.__reel.segments lists
+              {from, to, key} entries with this key (a film that builds one
+              3D world per key and exposes its segment list). Fails when the
+              page lists no such entry.
 
 Also prints an info line counting boil() call sites in the scene code and
 how many pass a \`moving\` option — a fact report, not a gate.
@@ -56,8 +66,10 @@ export async function main(argv) {
     return;
   }
   let stubSec;
+  let scope;
   try {
     stubSec = stubSeconds(flags.stub, paths.timingsJson, fs.existsSync);
+    scope = parseScopeFlags(flags);
   } catch (e) {
     fail(e.message);
     return;
@@ -71,7 +83,7 @@ export async function main(argv) {
 
   const server = await serveDir(dir);
   try {
-    const ok = await determinismChecks({ url: server.url, opts: { stubSec } });
+    const ok = await determinismChecks({ url: server.url, opts: { stubSec } }, scope);
     if (!ok) process.exitCode = 1;
   } catch (e) {
     process.stderr.write(`DIAGNOSIS: ${e.message}\n`);
@@ -106,10 +118,13 @@ function staticChecks(paths) {
 /**
  * Warm in-order pass, shuffled pass, then the cold pass. Returns false
  * after writing DIAGNOSIS lines on the first failing check.
- * @param {{url: string, opts: object}} target page URL + openReel options
+ * @param {{url: string, opts: object}} target page URL + openReel options;
+ *   with a scope, opts.warmShots is set to the scope's shots for every page
+ *   the diagnosis opens later.
+ * @param {{range?: {from:number,to:number}, world?: string}|null} [scope]
  */
-async function determinismChecks(target) {
-  const session = await openReel(target.url, target.opts);
+async function determinismChecks(target, scope = null) {
+  const session = await openReel(target.url, { ...target.opts, warm: false });
   let warm;
   try {
     if (session.errors.length) {
@@ -123,7 +138,14 @@ async function determinismChecks(target) {
       process.stderr.write("DIAGNOSIS: window.__reel.shots is empty — timings.json produced no lines (a picture-only probe can pass --stub <sec>).\n");
       return false;
     }
-    const probeTimes = buildProbeTimes(shots, duration, 8);
+    const windows = await scopeWindows(session.page, scope);
+    const scoped = windows ? shotsInWindows(shots, windows) : shots;
+    if (windows) {
+      target.opts.warmShots = scoped.map((s) => s.id);
+      process.stdout.write(`scope: ${windows.map((w) => `${w.from}-${w.to}s`).join(", ")} (${scoped.length} of ${shots.length} shots)\n`);
+    }
+    await warmShotsOf(session, scoped.map((s) => s.id));
+    const probeTimes = buildProbeTimes(scoped, duration, 8, windows);
     if (probeTimes.length < 12) {
       process.stderr.write(
         `DIAGNOSIS: only ${probeTimes.length} probe times available (need >=12) — reel duration too short for a meaningful probe.\n`
@@ -158,6 +180,57 @@ async function determinismChecks(target) {
   }
   process.stdout.write(`cold probe: ok (${warm.probeTimes.length} times, fresh page without warm-up matches warm hashes)\n`);
   return true;
+}
+
+/**
+ * Reads --range <t0>-<t1> or --world <key>; null when neither is given.
+ * @returns {{range?: {from:number,to:number}, world?: string}|null}
+ */
+export function parseScopeFlags(flags) {
+  const hasRange = flags.range !== undefined;
+  const hasWorld = flags.world !== undefined;
+  if (hasRange && hasWorld) throw new Error("--range and --world both narrow the probe; use one");
+  if (hasWorld) {
+    if (typeof flags.world !== "string" || flags.world === "") throw new Error("--world takes a key from window.__reel.segments, e.g. --world park");
+    return { world: flags.world };
+  }
+  if (!hasRange) return null;
+  const m = typeof flags.range === "string" ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(flags.range) : null;
+  const from = m ? Number(m[1]) : NaN;
+  const to = m ? Number(m[2]) : NaN;
+  if (!m || !(to > from)) throw new Error(`--range takes <t0>-<t1> seconds with t1 > t0, e.g. --range 42-61.5 (got "${flags.range}")`);
+  return { range: { from, to } };
+}
+
+/** The time windows a scope names; null for the whole film. Throws when --world matches nothing. */
+async function scopeWindows(page, scope) {
+  if (!scope) return null;
+  if (scope.range) return [scope.range];
+  const segs = await page.evaluate(() => {
+    const s = window.__reel.segments;
+    return Array.isArray(s) ? s.map((x) => ({ from: x.from, to: x.to, key: x.key })) : null;
+  });
+  return worldWindows(segs, scope.world);
+}
+
+/**
+ * The windows of `segments` ({from, to, key}) whose key is `world`, in order.
+ * @param {{from:number,to:number,key:string|null}[]|null} segments
+ * @param {string} world
+ */
+export function worldWindows(segments, world) {
+  if (!segments) throw new Error("--world needs the page to list window.__reel.segments as [{from, to, key}]; this page lists none (use --range)");
+  const out = segments.filter((s) => s.key === world).map((s) => ({ from: s.from, to: s.to }));
+  if (!out.length) {
+    const keys = [...new Set(segments.map((s) => s.key).filter(Boolean))];
+    throw new Error(`--world ${world}: no entry in window.__reel.segments has that key (keys: ${keys.join(", ") || "none"})`);
+  }
+  return out;
+}
+
+/** Shots that overlap any of the windows. */
+export function shotsInWindows(shots, windows) {
+  return shots.filter((s) => windows.some((w) => s.start <= w.to && s.end >= w.from));
 }
 
 /**

@@ -13,28 +13,45 @@ export function sha256(buf) {
  * @param {{start:number,end:number,readAt:number}[]} shots
  * @param {number} duration
  * @param {number} boilHz
+ * @param {{from:number,to:number}[]|null} [windows] probe only inside these
+ *   time windows (verify.mjs --range / --world); null = the whole film.
  */
-export function buildProbeTimes(shots, duration, boilHz = 8) {
+export function buildProbeTimes(shots, duration, boilHz = 8, windows = null) {
+  const spans = windows && windows.length ? windows : [{ from: 0, to: duration }];
+  const inside = (t) => t >= 0 && t <= duration && spans.some((w) => t >= w.from && t <= w.to);
   const times = new Set();
+  const add = (t) => {
+    const r = round(t);
+    if (inside(r)) times.add(r);
+  };
   for (const s of shots) {
-    times.add(round(s.start));
-    times.add(round(s.readAt));
-    times.add(round(Math.max(s.start, s.end - 1 / 60)));
+    add(s.start);
+    add(s.readAt);
+    add(Math.max(s.start, s.end - 1 / 60));
   }
-  // boil bucket edges: t just after n/hz for several n across the duration
+  // boil bucket edges: t just after n/hz for several n across each span
   const step = 1 / boilHz;
-  const bucketCount = Math.max(1, Math.floor(duration / step));
-  const sampleEvery = Math.max(1, Math.floor(bucketCount / 8));
-  for (let n = 0; n < bucketCount; n += sampleEvery) {
-    times.add(round(n * step + step / 2));
+  for (const w of spans) {
+    const first = Math.floor(w.from / step);
+    const bucketCount = Math.max(1, Math.floor((w.to - w.from) / step));
+    const sampleEvery = Math.max(1, Math.floor(bucketCount / 8));
+    for (let n = 0; n < bucketCount; n += sampleEvery) add((first + n) * step + step / 2);
   }
   // even spread fallback to guarantee >= 12
-  for (let i = 0; i < 12 && times.size < 12; i++) {
-    times.add(round((duration * i) / 12));
+  const total = spans.reduce((s, w) => s + (w.to - w.from), 0);
+  for (let i = 0; i < 12 && times.size < 12; i++) add(timeAtFraction(spans, (total * i) / 12));
+  return Array.from(times).sort((a, b) => a - b);
+}
+
+// The time `offset` seconds into the spans laid end to end.
+function timeAtFraction(spans, offset) {
+  let left = offset;
+  for (const w of spans) {
+    const len = w.to - w.from;
+    if (left <= len) return w.from + left;
+    left -= len;
   }
-  return Array.from(times)
-    .filter((t) => t >= 0 && t <= duration)
-    .sort((a, b) => a - b);
+  return spans[spans.length - 1].to;
 }
 
 function round(t) {
