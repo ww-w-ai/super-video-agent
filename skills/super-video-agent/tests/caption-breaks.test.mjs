@@ -52,7 +52,7 @@ test("report: maxChars adds the engine's own split of a long phrase", async () =
   const plan = { lines: [{ id: "l1", text: "one two three four five six seven eight" }] };
   const none = await captionBreakReport(plan);
   const split = await captionBreakReport(plan, { maxChars: 20 });
-  assert.match(none, /l1: \(one piece\)/);
+  assert.match(none, /checked nothing/);
   assert.match(split, /l1: …/);
 });
 

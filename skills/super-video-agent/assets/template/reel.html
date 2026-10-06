@@ -64,6 +64,16 @@
   var files = null; // Reel.layerFiles(plan.meta.lang), set once plan.json is read
   var dubPlan = null; // that language's plan, loaded only in caption-layer mode
 
+  // Optional declarations a tool reads from window.__reel (a malformed entry
+  // throws, naming it). Fill what the film has; leave the rest empty.
+  var REGIONS = []; // [{id, kind: "key"|"label"|"overlay", box: [x0, y0, x1, y1] (canvas px), outline?, from?, to?}]
+  var HOLDS = []; // [{from, to, id?, reason?}] seconds the film holds or slows on purpose
+  var CAPTION_FONTS = {}; // {"<lang>": "<css font-family list>", "*": "<fallback>"} the caption font per language
+  var LANG_SPANS = []; // [{start, end, in?: "layer" | "scene"}] seconds that draw language-dependent text
+  // Corner notes (a term gloss): plan line `notes: [{at: "start" | "word:<text>", text, corner?, holdSec?}]`,
+  // drawn in the language's caption layer from that language's plan and word times.
+  var cornerNoteList = [];
+
   // The one allowed network call in scene code (design.md §2.1 exception):
   // loading local JSON as part of building `ready`. `required` files
   // (timings.json) throw when missing; optional ones (the asset library's
@@ -107,8 +117,14 @@
       basePlan = plan;
       var meta = (plan && plan.meta) || {};
       ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id || "film");
+      Reel.setBaseLang(meta.lang || null);
       files = Reel.layerFiles(meta.lang || "ko-KR");
     });
+  }
+
+  // The notes this language shows, built once both its timings and plan are loaded.
+  function buildNotes() {
+    cornerNoteList = Reel.cornerNotes({ timings: timings, plan: dubPlan || basePlan, basePlan: basePlan });
   }
 
   // Two clocks in a dub (references/pipeline.md "Dubbing"): `timings`/`tl`
@@ -374,7 +390,7 @@
     loadBasePlan().then(function () {
       return isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings().then(loadAssetLibrary);
     }),
-  ]).then(function () { return undefined; });
+  ]).then(function () { buildNotes(); });
 
   // ---- scene ---------------------------------------------------------
   // Replace this. Draw your film in the medium you chose (medium.md).
@@ -449,7 +465,16 @@
     var idx = currentLineIndex(t);
     var line = idx >= 0 ? timings.lines[idx] : null;
     var meta = (dubPlan && dubPlan.meta) || (basePlan && basePlan.meta) || {};
-    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT, lang: line && line.lang || meta.lang });
+    var lang = line && line.lang || meta.lang;
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT, lang: lang, captionFonts: CAPTION_FONTS });
+    drawNotes(t, lang);
+  }
+
+  // Corner notes belong to a language, so they draw with the captions: never
+  // into a picture-first render (?captions=0), always in the caption layer.
+  function drawNotes(t, lang) {
+    if (!Reel.captionsOn()) return;
+    Reel.drawCornerNotes(ctx, cornerNoteList, t, { width: WIDTH, height: HEIGHT, lang: lang, captionFonts: CAPTION_FONTS });
   }
 
   // seek(t): pure function of t. Background paint + scene dispatch by the
@@ -482,6 +507,7 @@
     }
     sceneFn(t, line, u);
     drawLibCues(t);
+    drawNotes(t, basePlan && basePlan.meta && basePlan.meta.lang);
   }
 
   window.__reel = {
@@ -493,6 +519,10 @@
     seek: seek,
     get shots() { return shots; },
     get layers() { return ["captions"]; },
+    get regions() { return Reel.checkRegions(REGIONS); },
+    get holds() { return Reel.checkHolds(HOLDS); },
+    get captionFonts() { return CAPTION_FONTS; },
+    get langSpans() { return Reel.checkLangSpans(LANG_SPANS); },
     issues: function () { return Reel.issues(); },
     audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
     sfxStems: sfxStems,

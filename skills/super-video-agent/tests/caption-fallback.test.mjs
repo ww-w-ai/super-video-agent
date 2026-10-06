@@ -55,8 +55,11 @@ test("fallback: a break never follows a French article or preposition", () => {
 
 test("fallback: a line that fits one chunk keeps its comma; one that does not still splits there", () => {
   assert.deepEqual(chunkTexts("Yes, we can do it", 40), [["Yes,", "we", "can", "do", "it"]]);
-  const long = chunkTexts("Yes, we can do it all by tomorrow morning", 20);
-  assert.deepEqual(long[0], ["Yes,"]);
+  // A lone "Yes," joins the next chunk when the pair fits (A8: no single-word caption) ...
+  assert.deepEqual(chunkTexts("Yes, we can do it all by tomorrow morning", 20)[0], ["Yes,", "we", "can", "do", "it"]);
+  // ... and stays a chunk of its own when the pair would not fit.
+  const long = chunkTexts("Honestly, extraordinarily complicated arrangements", 24);
+  assert.deepEqual(long[0], ["Honestly,"]);
   assert.ok(long.length > 1);
 });
 

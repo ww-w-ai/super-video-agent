@@ -343,7 +343,41 @@
   }
   function pictureText(key, fallback) {
     var p = pictureState();
-    return pictureTextFrom(p && p.strings, key, fallback);
+    var strings = p && p.strings;
+    var v = pictureTextFrom(strings, key, fallback);
+    // The language's own text is missing: the base text is drawn silently
+    // otherwise (item 43). Reported as a fact; a brand kept as is can be
+    // listed with the same value to say so. Never enumerates `strings`
+    // (render.mjs's string-read tracking would see "all keys").
+    if (v === fallback && _baseLang && p && p.lang && !samePrimaryLang(p.lang, _baseLang) && !hasOwnString(strings, key)) {
+      recordIssue({ type: "picture-string-missing", key: String(key), lang: String(p.lang) });
+    }
+    return v;
+  }
+  function hasOwnString(strings, key) {
+    if (!strings || typeof strings !== "object" || !Object.prototype.hasOwnProperty.call(strings, key)) return false;
+    return typeof strings[key] === "string" && strings[key] !== "";
+  }
+  // The film's own language (plan.meta.lang); a page sets it once so a
+  // missing translation is told from the base language drawing its own text.
+  var _baseLang = null;
+  function setBaseLang(lang) {
+    _baseLang = lang ? String(lang) : null;
+  }
+
+  // overlayText(overlay, key, fallback, {dub, base}) — a 2D caption-layer
+  // label in the language being drawn: overlay is dub/<code>/plan.json
+  // meta.overlay, the fallback the base language's string. A key the language
+  // lacks is recorded (overlay-text-missing) when dub names a language other
+  // than base; the base language itself never reports.
+  function overlayText(overlay, key, fallback, o) {
+    const v = pictureTextFrom(overlay, key, fallback);
+    const dub = o && o.dub;
+    const base = (o && o.base) || _baseLang;
+    if (v === fallback && dub && base && !samePrimaryLang(dub, base) && !hasOwnString(overlay, key)) {
+      recordIssue({ type: "overlay-text-missing", key: String(key), lang: String(dub) });
+    }
+    return v;
   }
   function pictureLang() {
     var p = pictureState();
@@ -416,6 +450,16 @@
     }
     if (kind !== "none" && !SAFE_MARGINS_9x16[kind]) throw new Error("unknown safe area: " + kind);
     _safeKind = kind;
+    const note = safeAreaNote();
+    if (note && typeof console !== "undefined") console.info(note);
+  }
+
+  // With "none" the whole frame is safe, so checkSafe can never record an
+  // issue: a clean report then proves nothing. Says so (a fact, not a pass).
+  function safeAreaNote() {
+    return _safeKind === "none"
+      ? 'checked nothing: the safe area is "none", so no text can fall outside it (text-outside-safe-area is never recorded)'
+      : null;
   }
 
   // safeArea(width, height) -> {x, y, w, h} of the text-safe box.
@@ -885,6 +929,12 @@
   // never splits a phrase mid-clause when it doesn't have to.
   const CAPTION_PHRASE_END = /[,.!?…，。！？]$/;
 
+  function indexRange(from, to) {
+    const out = [];
+    for (let i = from; i <= to; i++) out.push(i);
+    return out;
+  }
+
   // char length of a run of words as captionChunks would render it
   // (word lengths + one separator char between each).
   function phraseCharLen(idxs, words) {
@@ -955,9 +1005,10 @@
   //      chunks, words distributed evenly by count (splitEvenlyByCount).
   //      A forced-break phrase goes through this same step, so a long
   //      "|"-delimited piece still balances instead of overflowing.
-  //   3. a one-word chunk of <=3 characters (a lone connector, e.g. "자,")
-  //      merges into its neighbour (next if there is one, else previous).
-  // Fallback rules (captionGlue, opts.lang = BCP 47): a line that fits
+  //   3. a one-word chunk merges into its neighbour (next if there is one,
+  //      else previous) when the word is <=3 characters (a lone connector,
+  //      e.g. "자,") or the joined chunk still fits maxChars.
+  // Fallback rules (captionGlue, opts.lang = BCP 47): a "|" segment that fits
   // maxChars is not cut at a comma; no cut splits a number from its unit,
   // follows an article/preposition, or falls inside a parenthesis/quote span.
   // A writer's "|" always wins over all of them.
@@ -973,14 +1024,22 @@
     // short function word, or inside a parenthesis/quote span. A forced
     // break ("|") overrides all of it.
     const glue = captionGlue(words.map(function (x) { return String(x.w); }), opts && opts.lang);
-    const allIdx = words.map(function (x, i) { return i; });
-    const fitsOneRow = phraseCharLen(allIdx, words) <= maxChars;
+    // "fits one row" is judged per "|" segment: a piece the writer already cut
+    // that fits maxChars keeps its commas even when the whole line is longer.
+    const segmentFits = new Array(n);
+    for (let from = 0; from < n; ) {
+      let to = from;
+      while (to < n - 1 && !isForcedBreak[to]) to++;
+      const fits = phraseCharLen(indexRange(from, to), words) <= maxChars;
+      for (let k = from; k <= to; k++) segmentFits[k] = fits;
+      from = to + 1;
+    }
 
     const phrases = [];
     let cur = [];
     for (let i = 0; i < n; i++) {
       cur.push(i);
-      const punctEnd = !fitsOneRow && !glue[i] && CAPTION_PHRASE_END.test(String(words[i].w));
+      const punctEnd = !segmentFits[i] && !glue[i] && CAPTION_PHRASE_END.test(String(words[i].w));
       if (punctEnd || isForcedBreak[i]) {
         phrases.push(cur);
         cur = [];
@@ -999,18 +1058,23 @@
       chunks = chunks.concat(splitEvenlyByCount(phrase, k, glue));
     }
 
-    // A writer's "|" always wins: a short piece merges only across an
-    // automatic boundary, never across a forced one.
+    // A writer's "|" always wins: a one-word chunk merges only across an
+    // automatic boundary, never across a forced one. A word of <= 3 chars
+    // always merges; a longer lone word merges when the joined chunk still
+    // fits maxChars (a single-word caption is a flash, not a phrase).
     const endsForced = function (c) { return !!isForcedBreak[c[c.length - 1]]; };
+    const joinable = function (lone, other) {
+      return String(words[lone[0]].w).length <= 3 || phraseCharLen(lone.concat(other), words) <= maxChars;
+    };
     for (let i = 0; i < chunks.length; i++) {
       if (chunks[i].length !== 1) continue;
-      if (String(words[chunks[i][0]].w).length > 3) continue;
-      if (i + 1 < chunks.length && !endsForced(chunks[i])) {
+      if (i + 1 < chunks.length && !endsForced(chunks[i]) && joinable(chunks[i], chunks[i + 1])) {
         chunks[i] = chunks[i].concat(chunks[i + 1]);
         chunks.splice(i + 1, 1);
-      } else if (i > 0 && !endsForced(chunks[i - 1])) {
+      } else if (i > 0 && !endsForced(chunks[i - 1]) && joinable(chunks[i], chunks[i - 1])) {
         chunks[i - 1] = chunks[i - 1].concat(chunks[i]);
         chunks.splice(i, 1);
+        i--;
       }
     }
 
@@ -1171,7 +1235,8 @@
     const boxH = o.boxH == null ? lineHeight * 2 + 20 : o.boxH;
     const x = o.x == null ? safe.x + (safe.w - boxW) / 2 : o.x;
     const y = o.y == null ? safe.y + safe.h - boxH - (o.marginBottom == null ? 0 : o.marginBottom) : o.y;
-    const font = o.font == null ? "800 " + fontPx + "px 'Pretendard'" : o.font;
+    const family = captionFontFor(o.captionFonts, o.lang || pictureLang()) || "'Pretendard'";
+    const font = o.font == null ? "800 " + fontPx + "px " + family : o.font;
     const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight, lang: pictureLang() || undefined }, o);
     return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
   }
@@ -1362,6 +1427,178 @@
   }
 
   // ---------------------------------------------------------------------
+  // corner notes (a term gloss in a corner of the frame) — drawn in the
+  // per-language caption layer. A plan line carries
+  //   notes: [{ at: "start" | "word:<text>", text, corner?: "tl"|"tr"|"bl"|"br", holdSec? }]
+  // The note's wording is that language's own plan line (same line id); the
+  // moment is the first word containing <text> in that language's own word
+  // times (its timings line), so a note follows its word in every language.
+  // ---------------------------------------------------------------------
+  const NOTE_HOLD_SEC = 3.5;
+  const NOTE_FADE_SEC = 0.2;
+  const NOTE_CORNERS = { tl: 1, tr: 1, bl: 1, br: 1 };
+
+  function planLinesById(plan) {
+    const byId = Object.create(null);
+    ((plan && plan.lines) || []).forEach(function (l) { byId[l.id] = l; });
+    return byId;
+  }
+
+  // The moment a note appears on that language's clock; a word the line does
+  // not contain falls back to the line start and is recorded.
+  function noteStart(note, idx, line, tl) {
+    const at = note.at == null ? "start" : note.at;
+    if (at === "start") return line.start;
+    if (typeof at === "string" && at.indexOf("word:") === 0) {
+      const wi = firstWordIndexContaining(line.text, at.slice(5));
+      const win = wi === -1 ? null : tl.word(idx, wi);
+      if (win) return win.start;
+    }
+    recordIssue({ type: "note-word-not-found", lineId: line.id, at: String(at) });
+    return line.start;
+  }
+
+  // cornerNotes({timings, plan, basePlan?}) -> [{id, lineId, text, corner, from, to}]
+  // Pure. `timings` is the language being drawn (dub timings.placed.json),
+  // `plan` that language's plan. A base note the language's line lacks is
+  // recorded (note-missing-in-language) — the note would silently vanish.
+  function cornerNotes(src) {
+    const timings = src && src.timings;
+    const lines = (timings && timings.lines) || [];
+    const tl = timeline(timings);
+    const own = planLinesById(src && src.plan);
+    const base = planLinesById(src && src.basePlan);
+    const duration = timings && Number.isFinite(timings.duration) ? timings.duration : Infinity;
+    const out = [];
+    lines.forEach(function (line, idx) {
+      const notes = (own[line.id] && own[line.id].notes) || [];
+      const baseNotes = (base[line.id] && base[line.id].notes) || [];
+      if (src.basePlan && src.plan !== src.basePlan && baseNotes.length > notes.length) {
+        recordIssue({ type: "note-missing-in-language", lineId: line.id, have: notes.length, base: baseNotes.length });
+      }
+      notes.forEach(function (note, k) {
+        if (!note || typeof note.text !== "string" || !note.text) {
+          recordIssue({ type: "note-text-missing", lineId: line.id, index: k });
+          return;
+        }
+        const from = noteStart(note, idx, line, tl);
+        const hold = note.holdSec > 0 ? note.holdSec : NOTE_HOLD_SEC;
+        out.push({
+          id: line.id + "#" + k,
+          lineId: line.id,
+          text: note.text,
+          corner: NOTE_CORNERS[note.corner] ? note.corner : "tr",
+          from: from,
+          to: Math.min(from + hold, duration),
+        });
+      });
+    });
+    return out;
+  }
+
+  // drawCornerNotes(ctx, notes, t, opts) — the notes showing at t, each in
+  // its corner of the safe area with a short fade; a pure function of t.
+  // opts: {width, height, lang, font, fontPx, color, panel}
+  function drawCornerNotes(ctx, notes, t, opts) {
+    const o = opts || {};
+    const width = o.width == null ? (ctx.canvas ? ctx.canvas.width : 1080) : o.width;
+    const height = o.height == null ? (ctx.canvas ? ctx.canvas.height : 1920) : o.height;
+    const fontPx = o.fontPx == null ? Math.max(24, Math.round(captionFontSizePx(height) * 0.55)) : o.fontPx;
+    const lineHeight = Math.round(fontPx * 1.3);
+    const pad = Math.round(fontPx * 0.5);
+    const safe = safeArea(width, height);
+    const boxW = Math.round(Math.min(safe.w * 0.45, width * 0.4));
+    const font = o.font || "700 " + fontPx + "px " + (captionFontFor(o.captionFonts, o.lang) || "'Pretendard'");
+    (notes || []).forEach(function (n) {
+      if (t < n.from || t >= n.to) return;
+      const a = Math.min(1, (t - n.from) / NOTE_FADE_SEC, (n.to - t) / NOTE_FADE_SEC);
+      ctx.save();
+      ctx.font = font;
+      const lines = wrapLines(ctx, n.text, boxW - 2 * pad);
+      const h = lines.length * lineHeight + 2 * pad;
+      const x = n.corner.charAt(1) === "l" ? safe.x : safe.x + safe.w - boxW;
+      const y = n.corner.charAt(0) === "t" ? safe.y : safe.y + safe.h - h;
+      ctx.globalAlpha = Math.max(0, a);
+      ctx.fillStyle = o.panel || "rgba(0,0,0,0.62)";
+      ctx.fillRect(x, y, boxW, h);
+      textBlock(ctx, n.text, x + pad, y + pad, boxW - 2 * pad, h - 2 * pad, {
+        font: font, lineHeight: lineHeight, color: o.color || "#fff", lang: o.lang, width: width, height: height,
+      });
+      ctx.restore();
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // page declarations — optional window.__reel fields a tool reads:
+  //   regions: [{id, kind: "key"|"label"|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]
+  //   holds: [{from, to, id?, reason?}]
+  //   langSpans: [{start, end, in?: "layer"|"scene"}]
+  //   captionFonts: {"<lang>": "<css font-family list>", "*": "<fallback>"}
+  // A malformed entry is definitely wrong: the check throws and names it.
+  // ---------------------------------------------------------------------
+  const REGION_KINDS = { key: 1, label: 1, overlay: 1 };
+  const SPAN_PLACES = { layer: 1, scene: 1 };
+
+  function declared(name, list) {
+    if (list == null) return [];
+    if (!Array.isArray(list)) throw new Error("window.__reel." + name + " must be an array");
+    return list;
+  }
+  function finite(v) {
+    return typeof v === "number" && Number.isFinite(v);
+  }
+  function checkRegions(regions) {
+    const list = declared("regions", regions);
+    list.forEach(function (r, i) {
+      const at = "window.__reel.regions[" + i + "]";
+      if (!r || typeof r.id !== "string" || !r.id) throw new Error(at + ": id must be a non-empty string");
+      if (!REGION_KINDS[r.kind]) throw new Error(at + " (" + r.id + '): kind must be "key", "label" or "overlay"');
+      const b = r.box;
+      if (!Array.isArray(b) || b.length !== 4 || !b.every(finite) || !(b[2] > b[0]) || !(b[3] > b[1])) {
+        throw new Error(at + " (" + r.id + "): box must be [x0, y0, x1, y1] in canvas px with x1 > x0 and y1 > y0");
+      }
+      if (r.outline != null && !(finite(r.outline) && r.outline >= 0)) throw new Error(at + " (" + r.id + "): outline must be a number >= 0");
+      checkWindow(at + " (" + r.id + ")", r.from, r.to, "from", "to");
+    });
+    return list;
+  }
+  function checkWindow(at, from, to, fromName, toName) {
+    if (from != null && !finite(from)) throw new Error(at + ": " + fromName + " must be seconds");
+    if (to != null && !finite(to)) throw new Error(at + ": " + toName + " must be seconds");
+    if (from != null && to != null && !(to > from)) throw new Error(at + ": " + toName + " must be after " + fromName);
+  }
+  function checkHolds(holds) {
+    const list = declared("holds", holds);
+    list.forEach(function (h, i) {
+      const at = "window.__reel.holds[" + i + "]";
+      if (!h || !finite(h.from) || !finite(h.to) || !(h.to > h.from)) throw new Error(at + ": {from, to} seconds with to > from");
+    });
+    return list;
+  }
+  function checkLangSpans(spans) {
+    const list = declared("langSpans", spans);
+    list.forEach(function (s, i) {
+      const at = "window.__reel.langSpans[" + i + "]";
+      if (!s || !finite(s.start) || !finite(s.end) || !(s.end > s.start)) throw new Error(at + ": {start, end} seconds with end > start");
+      if (s.in != null && !SPAN_PLACES[s.in]) throw new Error(at + ': in must be "layer" (drawn in the caption layer) or "scene" (text inside the picture)');
+    });
+    return list;
+  }
+
+  // captionFontFor(captionFonts, lang) -> the CSS font-family list for that
+  // language: its exact tag, then its primary subtag, then "*"; null when
+  // the map names none (the caller keeps its default).
+  function captionFontFor(map, lang) {
+    if (!map || typeof map !== "object") return null;
+    const keys = Object.keys(map);
+    const want = String(lang || "").toLowerCase();
+    const exact = keys.find(function (k) { return k.toLowerCase() === want; });
+    const primary = keys.find(function (k) { return k !== "*" && want && k.toLowerCase() === want.split(/[-_]/)[0]; });
+    const key = exact || primary || (map["*"] != null ? "*" : null);
+    return key && typeof map[key] === "string" && map[key] ? map[key] : null;
+  }
+
+  // ---------------------------------------------------------------------
   // export
   // ---------------------------------------------------------------------
 
@@ -1390,6 +1627,15 @@
     clocks,
     pictureText,
     pictureTextFrom,
+    overlayText,
+    setBaseLang,
+    cornerNotes,
+    drawCornerNotes,
+    checkRegions,
+    checkHolds,
+    checkLangSpans,
+    captionFontFor,
+    safeAreaNote,
     get lang() {
       return pictureLang();
     },

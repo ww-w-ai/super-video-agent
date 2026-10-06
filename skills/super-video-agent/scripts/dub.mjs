@@ -47,6 +47,7 @@ import {
 } from "./lib/fit-track.mjs";
 import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
 import { formatLeadReport } from "./lib/lead.mjs";
+import { measureCaptionContrast, formatContrastReport } from "./lib/caption-contrast.mjs";
 
 export { measureEdgeEnvelope };
 import {
@@ -64,7 +65,7 @@ import { gateAvSync, pointLatest, timestamp, concatMp4, checkPicturePair } from 
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>] [--table]
+const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>] [--table] [--no-contrast]
        dub.mjs <reel-dir> --lang <code> --audio-only [--audio-format m4a|wav] [--max-speed <x>]
        dub.mjs <reel-dir> --insert-time <sec> --seconds <n>
 
@@ -135,6 +136,18 @@ language-drawn pixels (every frame in a span under 10 s, else every 0.25 s); a s
 has some is made a language span. The run prints the split and how many frames were
 probed. A label the page draws that is not a caption should be listed in
 window.__reel.langSpans ({start,end} seconds) so it is never left to the probe.
+Text INSIDE the picture (a sign or screen in a 3D world) cannot be drawn by the caption
+layer: list it as {start,end,in:"scene"}. For a language other than the base one such a
+span needs that language's own picture (render.mjs <reel-dir> --no-captions --lang <code>);
+with the base picture the run stops and says so, because the base language's text would
+stay in the picture. Text outside the scene is drawn in the caption layer from
+dub/<code>/plan.json (labels in its meta.overlay, corner notes in a line's \`notes\`).
+
+Caption contrast: for up to three frames per line the caption layer's drawn colour is
+compared with the picture behind its text box as a WCAG contrast ratio, in both
+directions (light text on a bright picture, dark text on a dark one). Frames under 3:1
+are reported LOW, under 4.5:1 marginal, per line id and time; the full rows go to
+dub/<code>/contrast.json. It is a report, never a stop. --no-contrast skips it.
 SIGTERM / SIGINT stop the run: child processes are ended and this run's temporary files
 are removed. A film with no neutral span of at least 1 s encodes whole.
 
@@ -173,10 +186,9 @@ export async function main(argv) {
     return;
   }
   const dir = abs(positional[0]);
+  createTerminationGuard().install();
   if (inserting) return runTimeInsert(dir, flags);
   const lang = flags.lang;
-  const guard = createTerminationGuard();
-  guard.install();
   let minGap = null;
   if (flags["min-gap"] !== undefined) {
     minGap = Number(flags["min-gap"]);
@@ -198,7 +210,7 @@ export async function main(argv) {
     if (!["m4a", "wav"].includes(audioFormat)) throw new Error(`--audio-format must be m4a or wav, got "${audioFormat}"`);
     const result = replacing
       ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed), maxSpeed })
-      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined, audioOnly, audioFormat });
+      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined, audioOnly, audioFormat, contrast: flags["no-contrast"] === undefined });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -319,7 +331,7 @@ async function verifyReplacementDurations(lines, clips) {
   }
 }
 
-export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false, audioOnly = false, audioFormat = "m4a" }) {
+export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false, audioOnly = false, audioFormat = "m4a", contrast = true }) {
   const startedMs = Date.now();
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
@@ -431,6 +443,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
     const { videoPath: videoNoAudioPath, captionNote } = await buildCaptionedVideo({
       dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir,
+      pictureSource: picked.source, contrast,
     });
 
     const expectedFrames = Math.round(baseTimings.duration * fps);
@@ -513,7 +526,15 @@ export function createTerminationGuard({ temps = runTemps, kill = killChildren, 
   const handlers = new Map();
   const handle = (signal) => {
     kill();
-    for (const p of temps) fs.rmSync(p, { recursive: true, force: true });
+    // A child that is still dying can write into a temp folder while it is removed (ENOTEMPTY);
+    // one failed removal must not stop the others or the exit code.
+    for (const p of temps) {
+      try {
+        fs.rmSync(p, { recursive: true, force: true, maxRetries: 3 });
+      } catch (e) {
+        write(`dub.mjs: could not remove ${p} (${e.code || e.message})\n`);
+      }
+    }
     write(`dub.mjs: stopped by ${signal}; child processes ended and temporary files removed\n`);
     exit(SIGNAL_EXIT[signal]);
   };
@@ -670,27 +691,69 @@ function formatSpanReport(plan, fps) {
 }
 
 /** Caption layer + picture -> a video-only file; language-neutral spans come from the shared cache. */
-async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir }) {
+async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir, pictureSource, contrast }) {
   const captionsDir = path.join(workDir, "captions");
   ensureDir(captionsDir);
   const duration = baseTimings.duration;
   const planFor = (labelSpans) => planCaptionSpans({ lines: fit.lines, duration, fps, labelSpans });
-  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, fps, framesDir: captionsDir, planFor });
+  const baseLang = readBaseLang(dir);
+  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor });
+  if (ownLayer.fatal) throw new Error(ownLayer.fatal);
   let plan = ownLayer.plan;
   let captionNote = null;
   if (!ownLayer.ok) {
     plan = planFor([]);
     captionNote = await renderCaptionLayer({
       reelDir: dir, reelHtmlPath: paths.reelHtml, lines: fit.lines, duration, width: meta.width, height: meta.height,
-      fps, framesDir: captionsDir, ranges: langFrameRanges(plan),
+      fps, framesDir: captionsDir, ranges: langFrameRanges(plan), notes: await dubCornerNotes({ dir, lang }), lang,
     });
     if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
   }
   process.stdout.write(formatSpanReport(plan, fps));
+  if (contrast) await reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps });
   const videoPath = path.join(workDir, "video-captioned.mp4");
   if (plan.sharedFrames === 0) await overlayCaptions({ pictureMp4: gridPictureMp4, captionsDir, fps, outPath: videoPath });
   else await assembleSpans({ plan, pictureMp4, gridPictureMp4, captionsDir, fps, workDir, outDir: paths.outDir, outPath: videoPath });
   return { videoPath, captionNote };
+}
+
+function readBaseLang(dir) {
+  try {
+    return (loadPlan(dir).meta || {}).lang || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Text inside the picture that the caption layer cannot reach. Returns the
+ * message that stops the step, or null. A scene span (langSpans in:"scene")
+ * for a language other than the base one is definitely wrong over the base
+ * picture: the base language's text would stay in the picture.
+ * @param {{spans: {start:number,end:number,in?:string}[], lang: string, baseLang: string|null, pictureSource: "lang"|"base", dir: string}} o
+ */
+export function sceneSpanVerdict({ spans, lang, baseLang, pictureSource, dir }) {
+  const scene = spans.filter((s) => s.in === "scene");
+  if (!scene.length || !baseLang || pictureSource === "lang") return null;
+  if (String(lang).split(/[-_]/)[0].toLowerCase() === String(baseLang).split(/[-_]/)[0].toLowerCase()) return null;
+  const list = scene.map((s) => `${s.start}-${s.end}`).join(", ");
+  return (
+    `the page lists text inside the picture (langSpans in:"scene": ${list} s) but this dub would use the base picture, which still shows ${baseLang} there. ` +
+    `Render this language's picture first: render.mjs ${dir} --no-captions --lang ${lang} (shots that read no language string are reused), then run dub again`
+  );
+}
+
+/** Contrast of the drawn captions against the picture, per line and time: printed, saved, never a stop. */
+async function reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps }) {
+  try {
+    const rows = await measureCaptionContrast({
+      captionsDir, pictureMp4: gridPictureMp4, lines: fit.lines, fps, width: meta.width, height: meta.height, frameFile: frameFileName,
+    });
+    writeJson(path.join(dir, "dub", lang, "contrast.json"), { lang, rows });
+    process.stdout.write(formatContrastReport(rows));
+  } catch (e) {
+    process.stdout.write(`caption contrast: not measured (${e.message.split("\n")[0]})\n`);
+  }
 }
 
 /** Identity of the picture plus the encoder settings: a shared span built from other input or settings is never reused. */
@@ -838,7 +901,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string}>}
  */
-async function tryOwnCaptionLayer({ reelDir, lang, fps, framesDir, planFor }) {
+async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor }) {
   const server = await serveDir(reelDir);
   let session;
   try {
@@ -853,9 +916,13 @@ async function tryOwnCaptionLayer({ reelDir, lang, fps, framesDir, planFor }) {
     }
     // Only the language spans are drawn; a probe then checks the rest is blank.
     const declared = await declaredLangSpans(session.page);
-    let plan = planFor(declared);
+    const fatal = sceneSpanVerdict({ spans: declared, lang, baseLang, pictureSource, dir: reelDir });
+    if (fatal) return { ok: false, fatal };
+    // Scene text lives in the language's own picture; the caption layer draws nothing there.
+    const layerSpans = declared.filter((s) => s.in !== "scene");
+    let plan = planFor(layerSpans);
     await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
-    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: declared.length });
+    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: layerSpans.length });
     return { ok: true, plan };
   } catch (e) {
     return { ok: false, note: `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.` };
@@ -875,7 +942,7 @@ async function tryOwnCaptionLayer({ reelDir, lang, fps, framesDir, planFor }) {
  *   captions another way (the engine's default look is used instead), or
  *   null when reel.html calls Reel.caption() itself (same look).
  */
-async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir, ranges }) {
+async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir, ranges, notes = [], lang }) {
   const captionNote = sceneUsesEngineCaption(reelHtmlPath)
     ? null
     : "reel.html's scene code does not call Reel.caption() directly — the caption layer uses the engine's default caption look, which may not match this film's own captions.";
@@ -883,7 +950,7 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
   const engineSrc = fs.readFileSync(path.join(here, "engine", "reel-engine.js"), "utf8");
   const pageName = `.dub-caption-${crypto.randomUUID()}.html`;
   const pagePath = trackTemp(path.join(reelDir, pageName));
-  fs.writeFileSync(pagePath, buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines }), "utf8");
+  fs.writeFileSync(pagePath, buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines, notes, lang }), "utf8");
 
   const server = await serveDir(reelDir);
   try {
@@ -900,8 +967,35 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
   return captionNote;
 }
 
-function buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines }) {
+/**
+ * The corner notes of a language, from its own plan (wording) and placed
+ * timings (moments). Notes the language lacks or whose word it cannot find
+ * are printed as facts. Empty when the language has no placed timings yet.
+ */
+async function dubCornerNotes({ dir, lang }) {
+  const placed = path.join(dir, "dub", lang, "timings.placed.json");
+  const planPath = path.join(dir, "dub", lang, "plan.json");
+  if (!fs.existsSync(placed) || !fs.existsSync(planPath)) return [];
+  await import("./engine/reel-engine.js");
+  const Reel = globalThis.Reel;
+  Reel.clearIssues();
+  let basePlan = null;
+  try {
+    basePlan = loadPlan(dir);
+  } catch {
+    // no readable base plan: only the language's own notes are drawn
+  }
+  const notes = Reel.cornerNotes({ timings: readJson(placed), plan: readJson(planPath), basePlan });
+  for (const i of Reel.issues().filter((x) => /^note-/.test(x.type))) process.stdout.write(`corner note: ${i.type} ${JSON.stringify(i)}\n`);
+  Reel.clearIssues();
+  if (notes.length) process.stdout.write(`corner notes: ${notes.length} drawn in the ${lang} caption layer\n`);
+  return notes;
+}
+
+function buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines, notes = [], lang }) {
   const linesJson = JSON.stringify(lines.map((l) => ({ id: l.id, text: l.text, start: l.start, end: l.end })));
+  const notesJson = JSON.stringify(notes);
+  const langJson = JSON.stringify(lang || null);
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>dub caption layer</title>
 <style>
@@ -917,6 +1011,8 @@ function buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines }
   "use strict";
   var WIDTH = ${width}, HEIGHT = ${height}, FPS = ${fps}, DURATION = ${duration};
   var LINES = ${linesJson};
+  var NOTES = ${notesJson};
+  var LANG = ${langJson};
   var canvas = document.getElementById("stage");
   var ctx = canvas.getContext("2d");
 
@@ -931,7 +1027,8 @@ function buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines }
 
   function seek(t) {
     ctx.clearRect(0, 0, WIDTH, HEIGHT); // stays transparent — this layer is composited over the picture
-    Reel.caption(ctx, currentLine(t), t, { width: WIDTH, height: HEIGHT });
+    Reel.caption(ctx, currentLine(t), t, { width: WIDTH, height: HEIGHT, lang: LANG || undefined });
+    Reel.drawCornerNotes(ctx, NOTES, t, { width: WIDTH, height: HEIGHT, lang: LANG || undefined });
   }
 
   function loadDeclaredFonts() {

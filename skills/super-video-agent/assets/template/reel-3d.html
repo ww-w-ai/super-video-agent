@@ -72,6 +72,19 @@
   var files = null; // Reel.layerFiles(plan.meta.lang), set once plan.json is read
   var dubPlan = null; // that language's plan, loaded only in caption-layer mode
 
+  // Optional declarations a tool reads from window.__reel (a malformed entry
+  // throws, naming it). Fill what the film has; leave the rest empty.
+  var REGIONS = []; // [{id, kind: "key"|"label"|"overlay", box: [x0, y0, x1, y1] (canvas px), outline?, from?, to?}]
+  var HOLDS = []; // [{from, to, id?, reason?}] seconds the film holds or slows on purpose
+  var CAPTION_FONTS = {}; // {"<lang>": "<css font-family list>", "*": "<fallback>"} the caption font per language
+  // Seconds that draw language-dependent text. in: "layer" (default) = drawn in the 2D caption layer;
+  // in: "scene" = text inside the 3D world (a sign, a screen): dub.mjs then needs this language's
+  // own picture (render.mjs <dir> --no-captions --lang <code>), because the caption layer cannot reach it.
+  var LANG_SPANS = []; // [{start, end, in?: "layer" | "scene"}]
+  // Corner notes (a term gloss): plan line `notes: [{at: "start" | "word:<text>", text, corner?, holdSec?}]`,
+  // drawn in the language's 2D caption layer from that language's plan and word times.
+  var cornerNoteList = [];
+
   // ---- three.js + addons: dynamic imports, so a missing vendor file
   // rejects `ready` with one clear message instead of crashing the module
   // script load (references/3d.md "Install three.js"). three.js is never
@@ -154,8 +167,14 @@
       basePlan = plan;
       var meta = (plan && plan.meta) || {};
       ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id || "film");
+      Reel.setBaseLang(meta.lang || null);
       files = Reel.layerFiles(meta.lang || "ko-KR");
     });
+  }
+
+  // The notes this language shows, built once both its timings and plan are loaded.
+  function buildNotes() {
+    cornerNoteList = Reel.cornerNotes({ timings: timings, plan: dubPlan || basePlan, basePlan: basePlan });
   }
 
   // Two clocks in a dub: `timings`/`tl` follow the language being drawn (the
@@ -583,7 +602,13 @@
   function drawCaptions(t) {
     var idx = currentLineIndex(t);
     var line = idx >= 0 ? timings.lines[idx] : null;
-    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT });
+    var meta = (dubPlan && dubPlan.meta) || (basePlan && basePlan.meta) || {};
+    var lang = line && line.lang || meta.lang;
+    Reel.caption(ctx, line, t, { width: WIDTH, height: HEIGHT, lang: lang, captionFonts: CAPTION_FONTS });
+    // Corner notes belong to a language: never in a picture-first render (?captions=0).
+    if (Reel.captionsOn()) {
+      Reel.drawCornerNotes(ctx, cornerNoteList, t, { width: WIDTH, height: HEIGHT, lang: lang, captionFonts: CAPTION_FONTS });
+    }
   }
 
   function seek(t) {
@@ -611,6 +636,7 @@
           return isCaptionLayer ? Promise.all([loadTimings(), loadDubPlan()]) : loadTimings().then(loadAssetLibrary);
         }),
       ]).then(function () {
+        buildNotes();
         if (!isCaptionLayer) buildWorld();
       });
 
@@ -623,6 +649,10 @@
     seek: seek,
     get shots() { return shots; },
     get layers() { return ["captions"]; },
+    get regions() { return Reel.checkRegions(REGIONS); },
+    get holds() { return Reel.checkHolds(HOLDS); },
+    get captionFonts() { return CAPTION_FONTS; },
+    get langSpans() { return Reel.checkLangSpans(LANG_SPANS); },
     sceneOn: sceneOn,
     issues: function () { return Reel.issues(); },
     audio: { narration: "voice/narration.wav", renderSfx: renderSfx },
