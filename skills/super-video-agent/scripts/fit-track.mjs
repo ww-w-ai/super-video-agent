@@ -11,10 +11,11 @@ import { readJson, ensureDir } from "./lib/reeldir.mjs";
 import { probeDuration } from "./lib/ffmpeg.mjs";
 import { computeSlots } from "./lib/dub-timing.mjs";
 import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
-import { MAX_SPEED_DEFAULT, trimVoiceClips, shiftForTrim, fitOrThrow, placeLineClips, buildNarrationTrack } from "./lib/fit-track.mjs";
+import { MAX_SPEED_DEFAULT, trimVoiceClips, shiftForTrim, fitOrThrow, fitDraft, formatDraftOverflow, placeLineClips, buildNarrationTrack } from "./lib/fit-track.mjs";
 import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
+import { measureNarrationCuts, formatCutReport } from "./lib/audio-analysis.mjs";
 
-const HELP = `usage: fit-track.mjs --timings <picture.timings.json> --voice <voice-dir> --out <track.wav> [--video <picture.mp4>] [--plan <plan.json>] [--max-speed <x>]
+const HELP = `usage: fit-track.mjs --timings <picture.timings.json> --voice <voice-dir> --out <track.wav> [--video <picture.mp4>] [--plan <plan.json>] [--max-speed <x>] [--draft]
 
 Fits a language's voice lines to a picture's slots and writes one mono
 48 kHz narration track of exactly the picture's length.
@@ -28,6 +29,10 @@ Fits a language's voice lines to a picture's slots and writes one mono
 --plan      the language's plan.json; a pause it asks for (pauseAfterMs) is
             listed as planned, not as a silence failure.
 --max-speed the fastest a line may be sped up (default ${MAX_SPEED_DEFAULT}, 10%). Widen it only when asked.
+--draft     write the track even when some lines need more than --max-speed: those
+            lines are placed at --max-speed, run past their slot, and are listed
+            as DRAFT with the speed they need. A draft is for listening; fix the
+            listed lines before the final.
 
 Order for every line: trim to its voiced span (0.05 s head, 0.3 s tail),
 then speed up by at most --max-speed (pitch kept) if it is longer than its
@@ -36,7 +41,8 @@ leave the rest of the slot voice-free up to 1.0 s; a longer gap slows the line
 (down to 0.95x). A line that still does not fit is listed for rewording and no
 track is written; a line left with under 0.5 s of silence after it, or a gap
 over 1.0 s, is listed with its id. Then the silence gate
-reports every pause over 1 s with the line ids around it.
+reports every pause over 1 s with the line ids around it, and the waveform cut
+check lists any line whose start or end is still loud (an abrupt cut).
 `;
 
 export async function main(argv) {
@@ -58,6 +64,7 @@ export async function main(argv) {
       videoPath: typeof flags.video === "string" ? abs(flags.video) : null,
       planPath: typeof flags.plan === "string" ? abs(flags.plan) : null,
       maxSpeed,
+      draft: flags.draft !== undefined && flags.draft !== "false",
     });
     process.stdout.write(`wrote ${result.outPath}\nlines: ${result.lineCount}  seconds: ${result.seconds.toFixed(3)}  samples: ${result.samples}\n`);
   } catch (e) {
@@ -68,26 +75,32 @@ export async function main(argv) {
 /**
  * @returns {Promise<{outPath:string, lineCount:number, seconds:number, samples:number, fit:object, silence:object}>}
  */
-export async function fitTrack({ timingsPath, voiceDir, outPath, videoPath = null, planPath = null, maxSpeed = MAX_SPEED_DEFAULT }) {
+export async function fitTrack({ timingsPath, voiceDir, outPath, videoPath = null, planPath = null, maxSpeed = MAX_SPEED_DEFAULT, draft = false }) {
   const base = readJson(timingsPath);
   const voice = readJson(path.join(voiceDir, "timings.json"));
   const seconds = videoPath ? await probeDuration(videoPath) : base.duration;
   if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("the reference needs a positive duration (--video or timings.duration)");
-  const planLines = planPath ? readJson(planPath).lines || [] : [];
+  const plan = planPath ? readJson(planPath) : {};
+  const planLines = plan.lines || [];
+  const gapMs = plan.meta && plan.meta.gapMs != null ? plan.meta.gapMs : undefined;
   ensureDir(path.dirname(outPath));
   const workDir = fs.mkdtempSync(path.join(path.dirname(outPath), ".fit-track-"));
   try {
     const trims = await trimVoiceClips({ voiceTimings: voice, voiceDir, workDir });
     for (const [id, t] of trims) process.stdout.write(`line "${id}" trimmed: lead ${t.leadTrimSec.toFixed(3)}s, tail ${t.tailTrimSec.toFixed(3)}s\n`);
     const durations = new Map([...trims].map(([id, t]) => [id, t.trimmedDurationSec]));
-    const fit = fitOrThrow(base.lines, shiftForTrim(voice.lines, trims), durations, seconds, maxSpeed);
+    const voiceLines = shiftForTrim(voice.lines, trims);
+    const fit = draft ? fitDraft(base.lines, voiceLines, durations, seconds, maxSpeed) : fitOrThrow(base.lines, voiceLines, durations, seconds, maxSpeed);
+    if (draft) process.stdout.write(formatDraftOverflow(fit.overflow, maxSpeed));
     const fill = formatFillWarnings(reportLineFill(fit.lines, computeSlots(base.lines, seconds), base.lines));
     if (fill) process.stdout.write(fill);
     const clips = await placeLineClips({ fit, trims, workDir, maxSpeed });
     const { samples } = await buildNarrationTrack({ clips, durationSec: seconds, outPath });
-    const silence = await measureNarrationGaps(outPath, fit.lines, pictureGapPlan(base.lines, planLines));
+    const silence = await measureNarrationGaps(outPath, fit.lines, pictureGapPlan(base.lines, planLines), { gapMs });
     process.stdout.write(formatSilenceReport(silence));
-    return { outPath, lineCount: fit.lines.length, seconds, samples, fit, silence };
+    const cuts = await measureNarrationCuts(outPath, fit.lines);
+    process.stdout.write(formatCutReport(cuts));
+    return { outPath, lineCount: fit.lines.length, seconds, samples, fit, silence, cuts };
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }

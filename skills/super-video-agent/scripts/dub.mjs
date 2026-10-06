@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
@@ -21,7 +22,8 @@ import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
 import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
 import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
-import { buildDuckVolumeExpr } from "./lib/duck.mjs";
+import { buildDuckVolumeExpr, measureDuckSwing, formatDuckSwingReport, DUCK_DB_DEFAULT } from "./lib/duck.mjs";
+import { measureNarrationCuts, formatCutReport } from "./lib/audio-analysis.mjs";
 import {
   fitFrozenLines,
   buildPlacedTimings,
@@ -58,7 +60,7 @@ import {
   buildPlainSpanArgs,
   buildCaptionSpanArgs,
 } from "./lib/dub-space.mjs";
-import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan, concatMp4 } from "./render.mjs";
+import { gateAvSync, pointLatest, timestamp, concatMp4, checkPicturePair } from "./render.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -86,8 +88,19 @@ it. Then each line's silence after it is judged against its own scene's
 allowed range, the same in every language: at least ${GAP_MIN_SEC} s, at most
 ${GAP_MAX_SHARE * 100}% of the slot (never under ${GAP_MAX_FLOOR_SEC} s). Under it the line is listed as
 crammed, over it as sparse; a line sped up or past its slot is listed too. Afterwards the silence gate lists every pause over 1 s in the placed
-narration with the line ids around it (a pause the picture itself has is
-listed as planned).
+narration with the line ids around it (a pause the picture itself has, a plan line's
+pauseAfterMs, or the plan's meta.gapMs is listed as planned). A waveform cut check lists any
+placed line whose start or end is still loud (an abrupt cut). The bed duck report prints how
+far the bed drops when the page's own duck and this dub's duck stack. All of these are
+reports; none stops the run.
+
+A short translation leaves silence after its line by itself. Judge it against the picture:
+if the scene needs the time, lengthen that line's script or add pauseAfterMs where the pause
+is meant; never stretch the picture for it. A long pause between lines that the picture does
+not have is the thing to fix.
+
+Before laying a dub over a picture, the picture, its bed and its timings are checked to be
+one render of the same length; a mismatched set stops the run (render again).
 
 --table: also print every line's fill, gap after, allowed range and state.
 
@@ -100,7 +113,10 @@ placed line is under <sec>, slow that slot's picture (setpts) and bed
 dub/<code>/spaced/picture.mp4, picture.bed.wav and picture.timings.json
 (lines and words remapped) and uses them for this language's final. Prints
 each slot's delta and factor and the old -> new length. First and last
-frames are unchanged.
+frames are unchanged. It lengthens only this language, so the film is no longer the same
+length in every language (a track made for one video stops fitting the others). A language
+that grows when translated is usually better fixed by shortening the lines that overflow
+than by spacing the picture; use --min-gap when the other languages may keep their own length.
 
 Picture: out/picture-<code>.mp4 (render.mjs --no-captions --lang <code>) when
 it exists, else out/picture.mp4. The output says which one it used.
@@ -114,14 +130,19 @@ Shared spans: the picture is cut into language spans (a caption chunk, the last
 caption's hold to the end, and any {start,end} the page lists in __reel.langSpans)
 and language-neutral spans. A neutral span is encoded ONCE into out/shared-spans/
 and reused by every language (stream-copied into the final); only the language
-spans are captured and encoded per language. Samples inside neutral spans are
-checked for language-drawn pixels; a span that has some is made a language span.
-The run prints the split. A film with no neutral span of at least 1 s encodes whole.
+spans are captured and encoded per language. Neutral spans are probed for
+language-drawn pixels (every frame in a span under 10 s, else every 0.25 s); a span that
+has some is made a language span. The run prints the split and how many frames were
+probed. A label the page draws that is not a caption should be listed in
+window.__reel.langSpans ({start,end} seconds) so it is never left to the probe.
+SIGTERM / SIGINT stop the run: child processes are ended and this run's temporary files
+are removed. A film with no neutral span of at least 1 s encodes whole.
 
 --audio-only: write only the language's audio track, no caption capture and no video:
 out/audio-<code>-<stamp>.m4a (AAC 192k; --audio-format wav for 48 kHz PCM) plus
 out/audio-<code>.<ext> pointing at the newest. Its length is checked against the
-picture's. Use it to add a language to a video that was already uploaded
+picture timings' duration; when the picture file exists too, the picture, its bed and its
+timings must also be one matched render (the same check as for a video). Use it to add a language to a video that was already uploaded
 (--replace-audio cannot: it requires the frozen caption text to be unchanged). Cannot
 combine with --min-gap.
 
@@ -154,6 +175,8 @@ export async function main(argv) {
   const dir = abs(positional[0]);
   if (inserting) return runTimeInsert(dir, flags);
   const lang = flags.lang;
+  const guard = createTerminationGuard();
+  guard.install();
   let minGap = null;
   if (flags["min-gap"] !== undefined) {
     minGap = Number(flags["min-gap"]);
@@ -209,6 +232,37 @@ export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
   };
 }
 
+/**
+ * A dub is never laid over a picture whose bed or timings belong to another render
+ * (render.mjs checkPicturePair): the result would be out of sync with no warning.
+ * Only a set that is wholly one language's or wholly the base picture's can be checked.
+ */
+async function requireMatchedPair({ outDir, picked, lang }) {
+  if (!fs.existsSync(picked.pictureMp4)) return;
+  const ownBed = path.basename(picked.bedWav) === `picture-${lang}.bed.wav`;
+  const ownTimings = path.basename(picked.timingsJson) === `picture-${lang}.timings.json`;
+  const pairLang = picked.source === "lang" && ownBed && ownTimings ? lang : picked.source === "base" ? null : undefined;
+  if (pairLang === undefined) {
+    process.stdout.write(`note: the picture is this language's own but its bed or timings are the base ones; the picture pair was not checked\n`);
+    return;
+  }
+  const { ok, problems } = await checkPicturePair({ outDir, lang: pairLang });
+  if (!ok) {
+    const flag = pairLang ? ` --lang ${pairLang}` : "";
+    throw new Error(`the picture, its bed and its timings are not one render — ${problems.join("; ")}. Render the picture again (render.mjs <reel-dir> --no-captions${flag}) before dubbing.`);
+  }
+}
+
+const SHORT_TRANSLATION_GUIDANCE =
+  "guidance: silence after a line may come from a translation that is shorter than the base line, not from the voice. Judge it against the picture — " +
+  "if the scene needs the time, lengthen that line's script or add pauseAfterMs where the pause is meant; the picture is never stretched for it\n";
+
+/** The bed's duck depth: the plan's meta.sound.sfxDuckDb, else the gentle default. */
+function bedDuckDb(plan) {
+  const sound = plan && plan.meta && plan.meta.sound;
+  return sound && sound.sfxDuckDb != null ? sound.sfxDuckDb : DUCK_DB_DEFAULT;
+}
+
 /** Replace narration in an already-captioned final video. All source files remain immutable. */
 export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPath, maxSpeed = MAX_SPEED_DEFAULT }) {
   if (typeof lang !== "string" || !/^[\w-]+$/.test(lang)) throw new Error("invalid language code");
@@ -232,7 +286,7 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
     throw new Error("video, clean bed and frozen timings must share the same clock");
   }
   ensureDir(paths.outDir);
-  const workDir = fs.mkdtempSync(path.join(dubDir, ".revoice-work-"));
+  const workDir = trackTemp(fs.mkdtempSync(path.join(dubDir, ".revoice-work-")));
   try {
     const trims = await trimVoiceClips({ voiceTimings: voice, voiceDir: dubVoiceDir, workDir });
     const durations = new Map([...trims].map(([id, t]) => [id, t.trimmedDurationSec]));
@@ -242,7 +296,7 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
     await verifyReplacementDurations(fit.lines, clips);
     const audioPath = path.join(workDir, "audio.wav");
     await mixDubAudio({ placedClips: clips, bedPath, narrationWindows: fit.lines,
-      duckDb: sfxDuckDbFromPlan(plan), durationSec: frozen.duration, outPath: audioPath });
+      duckDb: bedDuckDb(plan), durationSec: frozen.duration, outPath: audioPath });
     const outPath = path.join(paths.outDir, `revoice-${lang}-${timestamp()}-${crypto.randomBytes(4).toString("hex")}.mp4`);
     await muxVideoAudio({ videoPath, audioPath, durationSec: videoDuration, outPath });
     await verifyFreshOutput({ filePath: outPath, startedMs, expectedSec: videoDuration, toleranceSec: tolerance + 0.05 });
@@ -284,6 +338,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       ? `picture: ${path.basename(pictureMp4)} (this language's own picture)\n`
       : `picture: ${path.basename(pictureMp4)} (base picture; no out/picture-${lang}.mp4)\n`
   );
+  await requireMatchedPair({ outDir: paths.outDir, picked, lang });
   requireFile(path.join(dubDir, "plan.json"), `no ${path.join(dubDir, "plan.json")} — create dub/${lang}/plan.json with this reel's line ids, in ${lang}`);
   requireFile(dubTimingsPath, `no ${dubTimingsPath} — run voice.mjs ${dubDir} first`);
 
@@ -291,7 +346,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
   const dubPlan = loadPlan(dubDir);
   const dubTimings = readJson(dubTimingsPath);
 
-  const workDir = path.join(dubDir, `.dub-work-${lang}`);
+  const workDir = trackTemp(path.join(dubDir, `.dub-work-${lang}`));
   ensureDir(workDir);
   try {
     // 1. trim: each take's own edge silence goes before it is measured for
@@ -343,8 +398,10 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     // Silence gate on the placed narration alone (the bed would hide a voice gap).
     const narrationOnly = path.join(workDir, "narration-only.wav");
     await buildNarrationTrack({ clips: placedClips, durationSec: baseTimings.duration, outPath: narrationOnly });
-    const silence = await measureNarrationGaps(narrationOnly, fit.lines, pictureGapPlan(baseTimings.lines, dubPlan.lines));
+    const silence = await measureNarrationGaps(narrationOnly, fit.lines, pictureGapPlan(baseTimings.lines, dubPlan.lines), { gapMs: dubPlan.meta && dubPlan.meta.gapMs });
     process.stdout.write(formatSilenceReport(silence));
+    process.stdout.write(formatCutReport(await measureNarrationCuts(narrationOnly, fit.lines)));
+    if (silence.unplanned.length || fillReport.some((r) => r.gapState === "sparse")) process.stdout.write(SHORT_TRANSLATION_GUIDANCE);
     if (baseTimings.lead > 0) {
       process.stdout.write(formatLeadReport({ meta: { ...dubPlan.meta, lead: baseTimings.lead }, lines: dubPlan.lines }));
     }
@@ -354,10 +411,13 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       placedClips,
       bedPath: pictureBedWav,
       narrationWindows: fit.lines.map((l) => ({ start: l.start, end: l.end })),
-      duckDb: sfxDuckDbFromPlan(dubPlan),
+      duckDb: bedDuckDb(dubPlan),
       durationSec: baseTimings.duration,
       outPath: audioPath,
     });
+    process.stdout.write(formatDuckSwingReport(measureDuckSwing({
+      pageWindows: baseTimings.lines, dubWindows: fit.lines, durationSec: baseTimings.duration, dubDb: bedDuckDb(dubPlan),
+    })));
     if (audioOnly) {
       return await writeAudioTrack({ audioPath, outDir: paths.outDir, lang, format: audioFormat, startedMs, durationSec: baseTimings.duration, lineCount: fit.lines.length });
     }
@@ -418,10 +478,59 @@ async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit,
   return out;
 }
 
+// Every temporary file or folder this run made; a termination signal removes them.
+const runTemps = new Set();
+
+/** Records a temp path for removal on SIGTERM / SIGINT and returns it. */
+function trackTemp(p) {
+  runTemps.add(p);
+  return p;
+}
+
 /** A temp name no earlier run can own: hidden, with a microsecond clock and the pid. */
 export function uniqueTempPath(dir, stem, ext) {
   const micros = process.hrtime.bigint() / 1000n;
-  return path.join(dir, `.${stem}.${Date.now()}-${micros}-${process.pid}${ext}`);
+  return trackTemp(path.join(dir, `.${stem}.${Date.now()}-${micros}-${process.pid}${ext}`));
+}
+
+/** Ends this process's direct children (ffmpeg, the browser) so none keeps running after a signal. */
+function killChildren() {
+  try {
+    spawnSync("pkill", ["-TERM", "-P", String(process.pid)], { stdio: "ignore" });
+  } catch {
+    // no pkill on this system: the children end when their pipes close with this process
+  }
+}
+
+const SIGNAL_EXIT = { SIGTERM: 143, SIGINT: 130 };
+
+/**
+ * SIGTERM / SIGINT stop the run for real: children are ended, this run's temp
+ * files are removed, and the process exits with the conventional 128+n code.
+ * The handlers are injectable so the behaviour can be tested without a signal.
+ */
+export function createTerminationGuard({ temps = runTemps, kill = killChildren, exit = (code) => process.exit(code), write = (s) => process.stderr.write(s) } = {}) {
+  const handlers = new Map();
+  const handle = (signal) => {
+    kill();
+    for (const p of temps) fs.rmSync(p, { recursive: true, force: true });
+    write(`dub.mjs: stopped by ${signal}; child processes ended and temporary files removed\n`);
+    exit(SIGNAL_EXIT[signal]);
+  };
+  return {
+    handle,
+    install() {
+      for (const signal of Object.keys(SIGNAL_EXIT)) {
+        const fn = () => handle(signal);
+        handlers.set(signal, fn);
+        process.on(signal, fn);
+      }
+    },
+    uninstall() {
+      for (const [signal, fn] of handlers) process.off(signal, fn);
+      handlers.clear();
+    },
+  };
 }
 
 /**
@@ -468,13 +577,22 @@ async function writeAudioTrack({ audioPath, outDir, lang, format, startedMs, dur
   return { outPath, stampedPath, lineCount, seconds: durationSec, captionNote: note };
 }
 
-/** Frame numbers to sample inside a span: about every 2 s, plus its last frame. */
-function probeFramesOf(span, fps) {
-  const step = Math.max(1, Math.round(2 * fps));
-  const frames = [];
-  for (let f = span.startFrame; f < span.endFrame; f += step) frames.push(f);
-  frames.push(span.endFrame - 1);
-  return frames;
+/** A span shorter than this is probed at every frame; a longer one every PROBE_STEP_SEC. */
+export const PROBE_EVERY_FRAME_UNDER_SEC = 10;
+export const PROBE_STEP_SEC = 0.25;
+
+/**
+ * Frame numbers to probe inside a neutral span, plus its last frame. A label that
+ * shows for a fraction of a second must not fall between two probes, so a span
+ * under 10 s is probed at every frame and a longer one at least every 0.25 s.
+ */
+export function probeFramesOf(span, fps) {
+  const frames = span.endFrame - span.startFrame;
+  const step = frames / fps < PROBE_EVERY_FRAME_UNDER_SEC ? 1 : Math.max(1, Math.floor(PROBE_STEP_SEC * fps));
+  const out = [];
+  for (let f = span.startFrame; f < span.endFrame; f += step) out.push(f);
+  if (out[out.length - 1] !== span.endFrame - 1) out.push(span.endFrame - 1);
+  return out;
 }
 
 /** True when the caption PNG has any non-transparent pixel. */
@@ -483,28 +601,35 @@ export async function pngDrawsPixels(png) {
   return stdout.some((b) => b !== 0);
 }
 
-async function captureRanges(page, framesDir, ranges, fps) {
+async function captureRanges(page, framesDir, ranges, fps, capture = captureFrame) {
   for (const [from, to] of ranges) {
     for (let frame = from; frame < to; frame++) {
-      fs.writeFileSync(path.join(framesDir, frameFileName(frame)), await captureFrame(page, frame / fps));
+      fs.writeFileSync(path.join(framesDir, frameFileName(frame)), await capture(page, frame / fps));
     }
   }
 }
 
-async function spanDrawsPixels(page, span, fps) {
+/** Probes a span's frames until one draws; `probed.n` counts the frames captured. */
+async function spanDrawsPixels(page, span, fps, capture, probed) {
   for (const frame of probeFramesOf(span, fps)) {
-    if (await pngDrawsPixels(await captureFrame(page, frame / fps))) return true;
+    probed.n++;
+    if (await pngDrawsPixels(await capture(page, frame / fps))) return true;
   }
   return false;
 }
 
+const LANG_SPANS_ADVICE = "advice: this page draws text beyond the captions without declaring it; list those labels as {start,end} seconds in window.__reel.langSpans so they never depend on the probe\n";
+
 /**
- * Samples every language-neutral span; one with a language-drawn pixel (a
+ * Probes every language-neutral span; one with a language-drawn pixel (a
  * label the page did not list in __reel.langSpans) becomes a language span
  * and its frames are captured. Reported, never silently dropped.
+ * @param {{declaredCount?:number, capture?:Function}} [o] declaredCount: how many langSpans the page declares
  */
-async function settleSharedSpans({ page, framesDir, plan, fps }) {
+export async function settleSharedSpans({ page, framesDir, plan, fps, declaredCount = 0, capture = captureFrame }) {
   const checked = new Set();
+  const probed = { n: 0 };
+  let promoted = 0;
   for (let i = 0; i < plan.spans.length; ) {
     const span = plan.spans[i];
     const key = `${span.startFrame}-${span.endFrame}`;
@@ -512,16 +637,19 @@ async function settleSharedSpans({ page, framesDir, plan, fps }) {
       i++;
       continue;
     }
-    if (!(await spanDrawsPixels(page, span, fps))) {
+    if (!(await spanDrawsPixels(page, span, fps, capture, probed))) {
       checked.add(key);
       i++;
       continue;
     }
     process.stdout.write(`span ${span.startFrame}-${span.endFrame}: the caption layer draws here although no line or langSpans entry covers it; encoded per language\n`);
-    await captureRanges(page, framesDir, [[span.startFrame, span.endFrame]], fps);
+    await captureRanges(page, framesDir, [[span.startFrame, span.endFrame]], fps, capture);
     plan = promoteSharedSpan(plan, i);
+    promoted++;
     i = 0;
   }
+  process.stdout.write(`probed ${probed.n} frames over ${checked.size + promoted} neutral spans\n`);
+  if (promoted && declaredCount === 0) process.stdout.write(LANG_SPANS_ADVICE);
   return plan;
 }
 
@@ -724,9 +852,10 @@ async function tryOwnCaptionLayer({ reelDir, lang, fps, framesDir, planFor }) {
       };
     }
     // Only the language spans are drawn; a probe then checks the rest is blank.
-    let plan = planFor(await declaredLangSpans(session.page));
+    const declared = await declaredLangSpans(session.page);
+    let plan = planFor(declared);
     await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
-    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps });
+    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: declared.length });
     return { ok: true, plan };
   } catch (e) {
     return { ok: false, note: `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.` };
@@ -753,7 +882,7 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
 
   const engineSrc = fs.readFileSync(path.join(here, "engine", "reel-engine.js"), "utf8");
   const pageName = `.dub-caption-${crypto.randomUUID()}.html`;
-  const pagePath = path.join(reelDir, pageName);
+  const pagePath = trackTemp(path.join(reelDir, pageName));
   fs.writeFileSync(pagePath, buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines }), "utf8");
 
   const server = await serveDir(reelDir);

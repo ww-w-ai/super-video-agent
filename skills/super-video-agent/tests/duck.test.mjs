@@ -23,8 +23,8 @@ test("mergeDuckWindows: merges windows whose ramps would overlap", () => {
 });
 
 test("mergeDuckWindows: keeps windows with a real gap apart", () => {
-  const merged = mergeDuckWindows([{ start: 0, end: 1 }, { start: 2, end: 3 }], 0.08);
-  assert.deepEqual(merged, [{ start: 0, end: 1 }, { start: 2, end: 3 }]);
+  const merged = mergeDuckWindows([{ start: 0, end: 1 }, { start: 3, end: 4 }]);
+  assert.deepEqual(merged, [{ start: 0, end: 1 }, { start: 3, end: 4 }]);
 });
 
 test("mergeDuckWindows: drops malformed windows (end <= start, non-finite)", () => {

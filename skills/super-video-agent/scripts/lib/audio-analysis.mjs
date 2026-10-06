@@ -158,3 +158,80 @@ export function findOnsetOffsetMs(samples, sampleRate, markAtSec, windowSec) {
   if (bestIdx === null) return null;
   return Math.round((bestIdx / sampleRate - markAtSec) * 1000);
 }
+
+const dbOf = (rms) => 20 * Math.log10(Math.max(rms, 1e-6));
+/** A window quieter than this is not audible speech, so its edges are not judged. */
+export const CUT_AUDIBLE_DB = -40;
+/** A span edge within this many dB of the span's loudest 10 ms still has the voice going: it was cut. */
+export const CUT_EDGE_BELOW_BODY_DB = 20;
+/** Without spans: a level step of at least this many dB between two 5 ms windows is a cut. */
+export const CUT_STEP_DB = 30;
+
+function spanCuts(samples, sampleRate, spans, edgeLen) {
+  const winLen = Math.max(1, Math.round(sampleRate * 0.01));
+  const cuts = [];
+  for (const s of spans) {
+    const from = Math.round(s.start * sampleRate);
+    const to = Math.min(samples.length, Math.round(s.end * sampleRate));
+    let bodyDb = -120;
+    for (let i = from; i + winLen <= to; i += winLen) bodyDb = Math.max(bodyDb, dbOf(rmsWindow(samples, i, winLen)));
+    if (bodyDb < CUT_AUDIBLE_DB) continue;
+    for (const [edge, idx] of [["start", from], ["end", to - edgeLen]]) {
+      const edgeDb = dbOf(rmsWindow(samples, idx, edgeLen));
+      if (edgeDb > bodyDb - CUT_EDGE_BELOW_BODY_DB) cuts.push({ id: s.id ?? null, edge, atSec: (edge === "start" ? from : to) / sampleRate, edgeDb, bodyDb });
+    }
+  }
+  return cuts;
+}
+
+/** A step only counts when the loud side is already at full level: a fast fade-in or fade-out is not a cut. */
+const CUT_FULL_LEVEL_DB = 12;
+const CUT_NEIGHBOUR_WINDOWS = 10;
+
+function stepCuts(samples, sampleRate, edgeLen, stepDb) {
+  const levels = [];
+  for (let i = 0; i + edgeLen <= samples.length; i += edgeLen) levels.push(dbOf(rmsWindow(samples, i, edgeLen)));
+  const loudest = (from, to) => Math.max(...levels.slice(Math.max(0, from), Math.min(levels.length, to)));
+  const cuts = [];
+  for (let w = 1; w < levels.length; w++) {
+    const prev = levels[w - 1];
+    const db = levels[w];
+    const atSec = (w * edgeLen) / sampleRate;
+    if (prev > CUT_AUDIBLE_DB && db < prev - stepDb && prev >= loudest(w - CUT_NEIGHBOUR_WINDOWS, w) - CUT_FULL_LEVEL_DB) {
+      cuts.push({ id: null, edge: "end", atSec, edgeDb: prev, bodyDb: prev });
+    } else if (db > CUT_AUDIBLE_DB && prev < db - stepDb && db >= loudest(w, w + CUT_NEIGHBOUR_WINDOWS) - CUT_FULL_LEVEL_DB) {
+      cuts.push({ id: null, edge: "start", atSec, edgeDb: db, bodyDb: db });
+    }
+  }
+  return cuts;
+}
+
+/**
+ * Spots where audio stops or starts unnaturally: the waveform is still loud at
+ * the edge instead of fading through the head and tail room a trimmed clip has.
+ * With `spans` ({id,start,end} seconds, e.g. the placed lines) each span's first
+ * and last 5 ms are compared with its loudest 10 ms; without spans the whole
+ * track is scanned for 5 ms level steps. Reports only; the model judges by ear.
+ * @param {Float32Array} samples mono PCM
+ * @param {number} sampleRate
+ * @param {{spans?: {id?:string,start:number,end:number}[], edgeMs?:number, stepDb?:number}} [opts]
+ * @returns {{id:string|null, edge:"start"|"end", atSec:number, edgeDb:number, bodyDb:number}[]}
+ */
+export function findWaveformCuts(samples, sampleRate, opts = {}) {
+  const edgeLen = Math.max(1, Math.round((sampleRate * (opts.edgeMs ?? 5)) / 1000));
+  return opts.spans ? spanCuts(samples, sampleRate, opts.spans, edgeLen) : stepCuts(samples, sampleRate, edgeLen, opts.stepDb ?? CUT_STEP_DB);
+}
+
+/** Decode `wavPath` and run findWaveformCuts over the placed lines. */
+export async function measureNarrationCuts(wavPath, lines) {
+  const sampleRate = 48000;
+  const samples = await decodeMonoPcm(wavPath, sampleRate);
+  return findWaveformCuts(samples, sampleRate, { spans: (lines || []).map((l) => ({ id: l.id, start: l.start, end: l.end })) });
+}
+
+/** The text dub.mjs / fit-track.mjs print for findWaveformCuts. */
+export function formatCutReport(cuts) {
+  if (!cuts.length) return "waveform cut check: no abrupt start or end in the placed lines\n";
+  const rows = cuts.map((c) => `  ${c.id == null ? "track" : `line "${c.id}"`} ${c.edge} at ${c.atSec.toFixed(2)}s: ${c.edgeDb.toFixed(0)} dB at the edge, ${c.bodyDb.toFixed(0)} dB in the body`);
+  return `WARN: ${cuts.length} abrupt cut(s) in the placed audio (the voice is still loud at the edge):\n${rows.join("\n")}\nhint: listen at those times; a cut at an end usually means the take was trimmed or sped past its own tail — re-make the line\n`;
+}
