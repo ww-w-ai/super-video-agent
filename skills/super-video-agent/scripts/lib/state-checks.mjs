@@ -150,11 +150,12 @@ export function glyphFallbacks(frames, covered, { fps }) {
 }
 
 /** Printable report of the three checks; each section says what it covered. */
-export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks }) {
+export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, langGlyphs }) {
   let s = `sampled ${sampledFrames} frames\n`;
+  const skip = new Set((nothing || []).map((n) => n.check));
   if (overlaps) {
     const names = Object.keys(overlaps).sort();
-    s += names.length ? `text overlap: ${names.length} pair${names.length > 1 ? "s" : ""}\n` : "text overlap: none\n";
+    s += names.length ? `text overlap: ${names.length} pair${names.length > 1 ? "s" : ""}\n` : skip.has("text overlap") ? "" : "text overlap: none\n";
     for (const n of names) {
       const sp = overlaps[n].spans.map((x) => `${x.start.toFixed(3)}–${x.end.toFixed(3)} s (max ${x.maxCount} px² at ${x.maxAt.toFixed(3)} s)`);
       s += `  ${n}: ${sp.join("; ")}\n`;
@@ -162,7 +163,7 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
   }
   if (glyphs) {
     const total = glyphs.fallbacks.length + glyphs.missingFamilies.length;
-    s += total ? `glyph fallback: ${glyphs.fallbacks.length} character${glyphs.fallbacks.length === 1 ? "" : "s"} and ${glyphs.missingFamilies.length} font famil${glyphs.missingFamilies.length === 1 ? "y" : "ies"} drawn by a fallback font\n` : "glyph fallback: none\n";
+    s += total ? `glyph fallback: ${glyphs.fallbacks.length} character${glyphs.fallbacks.length === 1 ? "" : "s"} and ${glyphs.missingFamilies.length} font famil${glyphs.missingFamilies.length === 1 ? "y" : "ies"} drawn by a fallback font\n` : skip.has("glyph fallback") ? "" : "glyph fallback: none\n";
     for (const m of glyphs.missingFamilies) {
       s += `  none of the ${m.chars} characters drawn with ${m.families} are in it (font not loaded?): ${m.firstAt.toFixed(3)}–${m.lastAt.toFixed(3)} s, in ${m.strings.slice(0, 5).map((x) => `"${x}"`).join(", ")}\n`;
     }
@@ -172,8 +173,177 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
     for (const u of glyphs.uncheckedFonts) s += `  not checked (generic family only): ${u.font}\n`;
   }
   if (flicker) {
-    s += flicker.length ? `one-frame flicker: ${flicker.length}\n` : `one-frame flicker: none (${hooks ? "texts and layer hook" : "texts only; no window.__reel.visibleAt hook"})\n`;
+    s += flicker.length ? `one-frame flicker: ${flicker.length}\n` : skip.has("one-frame flicker") ? "" : `one-frame flicker: none (${hooks ? "texts and layer hook" : "texts only; no window.__reel.visibleAt hook"})\n`;
     for (const f of flicker) s += `  ${f.t.toFixed(3)} s (frame ${f.frame}): ${f.key}\n`;
   }
+  for (const n of nothing || []) s += `${n.check}: checked nothing (${n.reason})\n`;
+  if (covers && covers.length) {
+    s += `label or overlay over key content: ${covers.length}\n`;
+    for (const c of covers) s += `  ${c.label} over ${c.key}: ${c.from.toFixed(3)}–${c.to.toFixed(3)} s, ${c.sharePx} px² (${Math.round(c.shareOfKey * 100)}% of the key area)${c.alwaysOn ? ", always on" : ""}\n`;
+  }
+  if (langGlyphs) s += formatLangGlyphs(langGlyphs);
   return s;
+}
+
+/**
+ * Checks that looked at nothing, so the report says "checked nothing" and never reads as a pass.
+ * @param {{frames:{texts:object[]}[], checks:string[], hasLayerHook:boolean}} args
+ * @returns {{check:string, reason:string}[]}
+ */
+export function checkedNothingReasons({ frames, checks, hasLayerHook }) {
+  const out = [];
+  if (checks.includes("overlap") && !frames.some((f) => f.texts.filter((t) => t.alpha >= VISIBLE_ALPHA).length >= 2)) {
+    out.push({ check: "text overlap", reason: "no frame had two texts on screen" });
+  }
+  if (checks.includes("glyphs") && !frames.some((f) => f.texts.some((t) => t.alpha >= VISIBLE_ALPHA && t.text.trim()))) {
+    out.push({ check: "glyph fallback", reason: "no text was drawn in any sampled frame" });
+  }
+  if (checks.includes("flicker") && frames.length < FLICKER_MAX_FRAMES + 1) {
+    out.push({ check: "one-frame flicker", reason: `only ${frames.length} sampled frame${frames.length === 1 ? "" : "s"}; a flicker needs a frame on each side` });
+  } else if (checks.includes("flicker") && !hasLayerHook && !frames.some((f) => f.texts.length)) {
+    out.push({ check: "one-frame flicker", reason: "no text drawn and no window.__reel.visibleAt hook" });
+  }
+  return out;
+}
+
+const box = (r) => {
+  const pad = r.outline > 0 ? r.outline / 2 : 0;
+  return [r.box[0] - pad, r.box[1] - pad, r.box[2] + pad, r.box[3] + pad];
+};
+
+/**
+ * Page-declared regions only (window.__reel.regions): every label or always-on overlay whose box
+ * (grown by half its outline) shares area with a key region while both are on screen. Report only.
+ * @param {{id:string, kind:"key"|"label"|"overlay", box:number[], outline?:number, from?:number, to?:number}[]} regions
+ * @param {{duration:number}} args
+ * @returns {{label:string, key:string, from:number, to:number, sharePx:number, shareOfKey:number, alwaysOn:boolean}[]}
+ */
+export function regionCovers(regions, { duration }) {
+  const norm = (r) => ({ ...r, from: Number.isFinite(r.from) ? r.from : 0, to: Number.isFinite(r.to) ? r.to : duration });
+  const list = (regions || []).filter((r) => Array.isArray(r.box) && r.box.length === 4).map(norm);
+  const keys = list.filter((r) => r.kind === "key");
+  const out = [];
+  for (const cover of list.filter((r) => r.kind === "label" || r.kind === "overlay")) {
+    const cb = box(cover);
+    for (const key of keys) {
+      const from = Math.max(cover.from, key.from);
+      const to = Math.min(cover.to, key.to);
+      const w = Math.min(cb[2], key.box[2]) - Math.max(cb[0], key.box[0]);
+      const h = Math.min(cb[3], key.box[3]) - Math.max(cb[1], key.box[1]);
+      if (to <= from || w <= 0 || h <= 0) continue;
+      const keyArea = area(key.box);
+      out.push({ label: cover.id || cover.kind, key: key.id || "key", from, to, sharePx: Math.round(w * h),
+        shareOfKey: keyArea > 0 ? (w * h) / keyArea : 0, alwaysOn: cover.kind === "overlay" && cover.from === 0 && cover.to === duration });
+    }
+  }
+  return out;
+}
+
+/** The font list for a language: the page's captionFonts (lang, then "*"), else plan style.fonts (lang, caption, body, default). */
+export function fontForLang(lang, pageFonts, planFonts) {
+  const pick = (o, keys) => keys.map((k) => o && o[k]).find((v) => typeof v === "string" && v.trim());
+  return pick(pageFonts, [lang, "*"]) || pick(planFonts, [lang, "caption", "body", "default"]) || null;
+}
+
+/** Characters of a caption text as drawn: break marks and newlines are not glyphs. */
+export function captionChars(text) {
+  return Array.from(String(text || "").replace(/\|/g, "").replace(/\s+/g, " ")).filter((c) => !/[\p{Z}\p{C}]/u.test(c));
+}
+
+/**
+ * Pairs [family list, char] to test, per language, with the line ids that use each character.
+ * Languages without a font are listed in `noFont` (not checked), never passed.
+ * @param {{lang:string, lines:{id:string, text?:string}[]}[]} langs
+ * @param {(lang:string)=>string|null} fontOf
+ */
+export function langGlyphPairs(langs, fontOf) {
+  const pairs = [];
+  const noFont = [];
+  const users = new Map();
+  for (const l of langs) {
+    const font = fontOf(l.lang);
+    // A generic family (sans-serif) is the browser's own fallback: it cannot be told apart from one.
+    if (!font || namedFamilies(`1px ${font}`).length === 0) { noFont.push(l.lang); continue; }
+    for (const line of l.lines) {
+      for (const ch of new Set(captionChars(line.text))) {
+        const key = `${l.lang}\u0000${ch}`;
+        if (!users.has(key)) { users.set(key, { lang: l.lang, font, char: ch, lineIds: [] }); pairs.push([font, ch]); }
+        users.get(key).lineIds.push(line.id);
+      }
+    }
+  }
+  return { pairs, entries: [...users.values()], noFont };
+}
+
+/** Per-language result: characters the language's font does not have (definitely wrong for that language). */
+export function langGlyphReport({ entries, noFont }, covered, langs) {
+  const missing = new Map();
+  const checked = new Map();
+  entries.forEach((e, i) => {
+    checked.set(e.lang, (checked.get(e.lang) || 0) + 1);
+    if (covered[i]) return;
+    const list = missing.get(e.lang) || [];
+    list.push({ char: e.char, codepoint: "U+" + e.char.codePointAt(0).toString(16).toUpperCase().padStart(4, "0"), font: e.font, lineIds: e.lineIds });
+    missing.set(e.lang, list);
+  });
+  return {
+    languages: langs.map((l) => ({ lang: l.lang, checkedChars: checked.get(l.lang) || 0, missing: missing.get(l.lang) || [], noFont: noFont.includes(l.lang) })),
+    definitelyWrong: missing.size > 0,
+  };
+}
+
+function formatLangGlyphs(r) {
+  let s = "";
+  for (const l of r.languages) {
+    if (l.noFont) s += `glyphs ${l.lang}: checked nothing (no named font for this language, a generic family cannot be told from the fallback: set window.__reel.captionFonts or plan style.fonts)\n`;
+    else if (l.checkedChars === 0) s += `glyphs ${l.lang}: checked nothing (no caption characters)\n`;
+    else if (!l.missing.length) s += `glyphs ${l.lang}: ${l.checkedChars} characters, all in the font\n`;
+    else {
+      s += `glyphs ${l.lang}: ${l.missing.length} of ${l.checkedChars} characters are not in the font — definitely wrong for ${l.lang}\n`;
+      for (const m of l.missing) s += `  ${m.codepoint} "${m.char}" not in ${m.font}: lines ${m.lineIds.slice(0, 8).join(", ")}${m.lineIds.length > 8 ? ", …" : ""}\n`;
+    }
+  }
+  return s;
+}
+
+/**
+ * In the page: whether each [families, char] has a glyph in the named font. The glyph's mask (alpha > 8)
+ * is dilated by outlineEm / 2 of the font size first, so a caption drawn with an outline is compared on the
+ * shape it really draws; the same char in a font that does not exist is the fallback it is compared with.
+ * @param {import("playwright-core").Page} page
+ * @param {[string, string][]} pairs
+ * @param {{outlineEm?:number}} [opts]
+ * @returns {Promise<boolean[]>}
+ */
+export async function glyphMaskCoverage(page, pairs, { outlineEm = 0 } = {}) {
+  return page.evaluate(({ list, em }) => {
+    const N = 96, FONT = 64, r = Math.round((em * FONT) / 2);
+    const mask = (family, ch) => {
+      const c = document.createElement("canvas");
+      c.width = c.height = N;
+      const x = c.getContext("2d", { willReadFrequently: true });
+      x.font = `${FONT}px ${family}`;
+      x.fillStyle = "#000";
+      x.fillText(ch, 8, 72);
+      const d = x.getImageData(0, 0, N, N).data;
+      const m = new Uint8Array(N * N);
+      for (let i = 0; i < N * N; i++) m[i] = d[i * 4 + 3] > 8 ? 1 : 0;
+      if (r <= 0) return { w: x.measureText(ch).width, m };
+      const out = new Uint8Array(N * N);
+      for (let y = 0; y < N; y++) for (let xx = 0; xx < N; xx++) {
+        if (!m[y * N + xx]) continue;
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+          const yy = y + dy, px = xx + dx;
+          if (yy >= 0 && yy < N && px >= 0 && px < N) out[yy * N + px] = 1;
+        }
+      }
+      return { w: x.measureText(ch).width, m: out };
+    };
+    return list.map(([families, ch]) => {
+      const a = mask(families, ch), b = mask('"__sva_no_such_font__"', ch);
+      if (a.w !== b.w) return true;
+      for (let i = 0; i < a.m.length; i++) if (a.m[i] !== b.m[i]) return true;
+      return false;
+    });
+  }, { list: pairs, em: outlineEm });
 }

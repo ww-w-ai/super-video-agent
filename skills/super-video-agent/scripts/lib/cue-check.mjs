@@ -57,6 +57,7 @@ export function checkWordCues(plan, timings, onsets) {
 
 /** One line per warning, or a clean line. */
 export function formatCueWarnings(warnings, cueCount) {
+  if (cueCount === 0) return "checked nothing: plan.json has no cue keyed to a word (at: \"word:<text>\"), so no cue was looked at\n";
   if (!warnings.length) return `${cueCount} word cue${cueCount === 1 ? "" : "s"} checked, no warnings\n`;
   return `${cueCount} word cue${cueCount === 1 ? "" : "s"} checked, ${warnings.length} warning${warnings.length === 1 ? "" : "s"}\n` +
     warnings.map((w) => `${w.lineId} ${w.asset ?? "?"} at word:${w.word}: ${w.type}: ${w.detail}\n`).join("");

@@ -10,13 +10,13 @@ import { reelPaths, writeJson, loadTimings, loadPlan, readJson } from "./lib/ree
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
-import { probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
-import { excludeEndHold } from "./lib/dead-air.mjs";
+import { excludeEndHold, splitIntendedHolds } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
 import { captionLayerAliases, placedDuration, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
 import { markOnsetOffset } from "./lib/sync-marks.mjs";
-import { extractGrayFrames, analyzeMotion } from "./lib/frame-diff.mjs";
+import { extractGrayFrames, analyzeMotion, FREEZE_SCAN_WIDTH } from "./lib/frame-diff.mjs";
 import { loudnessSpread } from "./lib/join-report.mjs";
 import {
   probeStreamDurations,
@@ -35,7 +35,8 @@ import { gapsFromPcm } from "./lib/silence-gate.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
-       review.mjs --file <video.mp4> [--parts t1,t2,...] [--json] [--out <report.json>]
+       review.mjs --file <video.mp4> [--parts t1,t2,...] [--holds a-b,c-d] [--json] [--out <report.json>]
+       review.mjs <reel-dir> --copy [--lang <code,code>] [--out <dir>]
 
 Reviews a rendered reel: builds a contact sheet (one frame per shot's
 readAt, with timestamps), scans for dead air, compares audio/video
@@ -68,7 +69,20 @@ duration, and collects layout issues(). Writes
 --parts part boundaries in seconds inside --file (e.g. the join times
         join.mjs printed); loudness is reported per part and the spread
         across parts.
+--holds with --file: spans (seconds, "12.5-15,40-44") where the picture is meant to move slowly or hold;
+        a freeze inside them is listed as an intended hold, not flagged. In a reel review the page declares
+        them: window.__reel.holds = [{from, to}]. The freeze test reads 320-px frames (64 px read slow
+        movement as frozen).
+--copy  review copy, for showing a film to a reviewer: for each language layer (the base language, and every
+        dub/<code>/ that has an out/final-<code>.mp4) the existing encode, which carries picture, voice and
+        bed, is stream-copied into <out>/review-copy-<code>.mp4 with one subtitle track whose cues read
+        "<line id> <text>" (line text from that language's plan). Nothing is rendered or re-encoded. A layer
+        with no encode or no timings is skipped with the reason; exit 1 only when no copy could be built.
+--lang  with --copy: only these language codes.
 --json  with --file, print the report as JSON.
+
+A check that looked at nothing (no audio stream, no shots, no samples) prints "checked nothing" and the
+reason; it is never counted as a pass.
 --out   with --file, also write the JSON report to this path.
 `;
 
@@ -98,6 +112,10 @@ export async function main(argv) {
   }
 
   try {
+    if (flags.copy) {
+      await runCopy(dir, paths, flags);
+      return;
+    }
     if (flags.scan) {
       const stepFlag = typeof flags.scan === "string" ? parseFloat(flags.scan) : undefined;
       if (flags.layer !== undefined) {
@@ -225,7 +243,8 @@ async function runFileReview(flags) {
   }
   try {
     const cuts = typeof flags.parts === "string" ? parseParts(flags.parts) : [];
-    const report = await reviewFile({ file, cuts });
+    const holds = typeof flags.holds === "string" ? parseHolds(flags.holds) : [];
+    const report = await reviewFile({ file, cuts, holds });
     if (typeof flags.out === "string") writeJson(abs(flags.out), report);
     process.stdout.write((flags.json ? JSON.stringify(report, null, 2) : formatFileReport(report)) + "\n");
   } catch (e) {
@@ -243,12 +262,116 @@ export function parseParts(text) {
   return cuts;
 }
 
+/** SRT time "HH:MM:SS,mmm". */
+function srtTime(sec) {
+  const ms = Math.max(0, Math.round(sec * 1000));
+  const p = (n, w) => String(n).padStart(w, "0");
+  return `${p(Math.floor(ms / 3600000), 2)}:${p(Math.floor(ms / 60000) % 60, 2)}:${p(Math.floor(ms / 1000) % 60, 2)},${p(ms % 1000, 3)}`;
+}
+
+/** The cue a reviewer reads for one line: "<line id> <text>", break marks removed, one row. */
+export function reviewCueText(id, text) {
+  return `${id} ${String(text || "").replace(/\|/g, "").replace(/\s+/g, " ").trim()}`.trim();
+}
+
+/**
+ * SRT body for the review copy: one cue per line from `start` to `end`.
+ * @param {{id:string, start:number, end:number, text?:string}[]} lines
+ * @param {Map<string,string>} [planText] line id -> that language's plan text (wins over the timings text)
+ */
+export function buildReviewSrt(lines, planText = new Map()) {
+  return lines.map((l, i) => `${i + 1}\n${srtTime(l.start)} --> ${srtTime(l.end)}\n${reviewCueText(l.id, planText.has(l.id) ? planText.get(l.id) : l.text)}\n`).join("\n");
+}
+
+/**
+ * The language layers a review copy covers and the existing files each is built from. A layer
+ * whose picture or timings are missing is returned with `skip` (the reason), never guessed.
+ */
+export function reviewLayers(dir, paths, only) {
+  const exists = (p) => fs.existsSync(p);
+  const first = (...c) => c.find(exists) || null;
+  const basePlan = exists(paths.planJson) ? readJson(paths.planJson) : { meta: {}, lines: [] };
+  const baseCode = (basePlan.meta && basePlan.meta.lang) || "base";
+  const layers = new Map();
+  layers.set(baseCode, { code: baseCode, mp4: first(path.join(paths.outDir, "final.mp4"), path.join(paths.outDir, "preview.mp4")),
+    timings: first(paths.timingsJson), plan: paths.planJson });
+  const dubRoot = path.join(dir, "dub");
+  for (const code of exists(dubRoot) ? fs.readdirSync(dubRoot).sort() : []) {
+    const mp4 = first(path.join(paths.outDir, `final-${code}.mp4`), path.join(paths.outDir, `preview-${code}.mp4`));
+    if (!mp4 && layers.has(code)) continue;
+    layers.set(code, { code, mp4, timings: first(path.join(dubRoot, code, "timings.placed.json")), plan: path.join(dubRoot, code, "plan.json") });
+  }
+  const wanted = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : [...layers.keys()];
+  return wanted.map((code) => {
+    const l = layers.get(code);
+    if (!l) return { code, skip: `no such language layer (have: ${[...layers.keys()].join(", ")})` };
+    if (!l.mp4) return { code, skip: "no existing encode (out/final[-<code>].mp4 or preview): render it first, a review copy never renders" };
+    if (!l.timings) return { code, skip: "no timings (voice/timings.json or dub/<code>/timings.placed.json)" };
+    return l;
+  });
+}
+
+/** Unique temp name beside the target: microsecond clock + pid. */
+function uniqueTemp(target) {
+  const us = process.hrtime.bigint() / 1000n;
+  return path.join(path.dirname(target), `.${path.basename(target)}.${us}-${process.pid}.tmp${path.extname(target)}`);
+}
+
+/**
+ * --copy: per language layer, the existing encode (picture + voice + bed) stream-copied with a subtitle
+ * track whose cues read "<line id> <text>". Nothing is rendered or re-encoded; only the muxer runs.
+ * @returns {Promise<{code:string, out?:string, cues?:number, skip?:string}[]>}
+ */
+export async function reviewCopy({ dir, paths, only, outDir }) {
+  fs.mkdirSync(outDir, { recursive: true });
+  const results = [];
+  for (const layer of reviewLayers(dir, paths, only)) {
+    if (layer.skip) { results.push({ code: layer.code, skip: layer.skip }); continue; }
+    const lines = (readJson(layer.timings).lines || []).filter((l) => Number.isFinite(l.start) && Number.isFinite(l.end));
+    if (!lines.length) { results.push({ code: layer.code, skip: "timings has no lines with start/end" }); continue; }
+    const planLines = fs.existsSync(layer.plan) ? readJson(layer.plan).lines || [] : [];
+    const text = new Map(planLines.filter((l) => typeof l.text === "string").map((l) => [l.id, l.text]));
+    const out = path.join(outDir, `review-copy-${layer.code}.mp4`);
+    const tmp = uniqueTemp(out);
+    const srt = tmp.replace(/\.mp4$/, ".srt");
+    try {
+      fs.writeFileSync(srt, buildReviewSrt(lines, text), "utf8");
+      await ffmpeg(["-y", "-i", layer.mp4, "-i", srt, "-map", "0:v", "-map", "0:a?", "-map", "1:0", "-c:v", "copy", "-c:a", "copy",
+        "-c:s", "mov_text", "-disposition:s:0", "default", "-movflags", "+faststart", tmp]);
+      fs.renameSync(tmp, out);
+    } finally {
+      fs.rmSync(srt, { force: true });
+      fs.rmSync(tmp, { force: true });
+    }
+    results.push({ code: layer.code, out, cues: lines.length, from: layer.mp4 });
+  }
+  return results;
+}
+
+async function runCopy(dir, paths, flags) {
+  const outDir = typeof flags.out === "string" ? abs(flags.out) : paths.outDir;
+  const results = await reviewCopy({ dir, paths, only: typeof flags.lang === "string" ? flags.lang : undefined, outDir });
+  for (const r of results) {
+    process.stdout.write(r.out ? `${r.code}: ${r.out} (${r.cues} cues "<line id> <text>", picture+audio copied from ${path.basename(r.from)})\n` : `${r.code}: skipped — ${r.skip}\n`);
+  }
+  if (!results.some((r) => r.out)) throw new Error("no review copy was built");
+}
+
+/** "12.5-15,40-44" -> [{from:12.5,to:15},{from:40,to:44}]: intended slow-motion / hold spans in seconds. */
+export function parseHolds(text) {
+  return text.split(",").map((s) => {
+    const m = /^\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*$/.exec(s);
+    if (!m || Number(m[2]) <= Number(m[1])) throw new Error(`--holds expects from-to seconds like 12.5-15,40-44, got "${text}"`);
+    return { from: Number(m[1]), to: Number(m[2]) };
+  });
+}
+
 /**
  * --file: facts about one finished video, no page. Every number is
  * reported; nothing here decides whether the video is good.
- * @param {{file:string, cuts:number[]}} args
+ * @param {{file:string, cuts:number[], holds?:{from:number,to:number}[]}} args holds = intended slow-motion / hold spans
  */
-export async function reviewFile({ file, cuts }) {
+export async function reviewFile({ file, cuts, holds = [] }) {
   const streams = await probeStreamDurations(file);
   const totalSec = streams.videoSec != null ? streams.videoSec : await probeDuration(file);
   const avDeltaMs =
@@ -260,12 +383,17 @@ export async function reviewFile({ file, cuts }) {
   const parts = partLoudness.map((l, i) => ({ ...spans[i], ...l }));
 
   const { fps } = await probeVideoInfo(file);
-  const { frames } = await extractGrayFrames(file, fps, { width: 64 });
-  const { deadAirRuns } = analyzeMotion(frames, fps);
+  const { frames } = await extractGrayFrames(file, fps, { width: FREEZE_SCAN_WIDTH });
+  const { deadAirRuns, intendedHoldRuns } = analyzeMotion(frames, fps, { holds });
 
-  const pcm = streams.audioSec != null ? await decodeMonoPcm(file, AUDIO_SAMPLE_RATE) : new Float32Array(0);
+  const hasAudio = streams.audioSec != null;
+  const pcm = hasAudio ? await decodeMonoPcm(file, AUDIO_SAMPLE_RATE) : new Float32Array(0);
   const silence = longestSilenceAfterFirstSound(pcm, AUDIO_SAMPLE_RATE, { thresholdDb: -50 });
   const blackRuns = await detectBlackRuns(file, { minSec: 1 / fps });
+  const checkedNothing = [];
+  if (!hasAudio) checkedNothing.push({ check: "silence", reason: "the file has no audio stream" });
+  else if (!Number.isFinite(silence.firstSoundSec)) checkedNothing.push({ check: "silence", reason: "no sound above the threshold, so there is no first sound to measure from" });
+  if (frames.length < 2) checkedNothing.push({ check: "deadAir", reason: `${frames.length} decoded frame(s); a freeze needs two` });
 
   return {
     file,
@@ -278,10 +406,12 @@ export async function reviewFile({ file, cuts }) {
     },
     deadAir: {
       runs: deadAirRuns,
-      note: "runs of >=0.8 s where under 0.2 % of 64-px greyscale pixels change between frames; an intended hold (end card) is reported too",
+      intendedHolds: intendedHoldRuns,
+      note: `runs of >=0.8 s where under 0.2 % of ${FREEZE_SCAN_WIDTH}-px greyscale pixels change between frames; spans given with --holds are listed as intended holds, not flagged`,
     },
     silence: { ...silence, thresholdDb: -50 },
     black: { runs: blackRuns },
+    checkedNothing,
   };
 }
 
@@ -298,8 +428,14 @@ function formatFileReport(r) {
   if (r.loudness.spread && r.loudness.spread.spreadLu != null) {
     lines.push(`  spread across parts: ${f(r.loudness.spread.spreadLu, 2)} LU${r.loudness.spread.warn ? " (over 1 LU)" : ""}`);
   }
-  lines.push(`picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs.map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s`).join(",")}`);
-  lines.push(`audio: longest silence after first sound ${f(r.silence.longestSilenceSec)}s (first sound at ${f(r.silence.firstSoundSec)}s)`);
+  const nothing = (name) => (r.checkedNothing || []).find((c) => c.check === name);
+  lines.push(nothing("deadAir")
+    ? `picture dead air: checked nothing (${nothing("deadAir").reason})`
+    : `picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs.map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s`).join(",")}`);
+  for (const h of r.deadAir.intendedHolds || []) lines.push(`  intended hold (not flagged): ${f(h.startSec, 2)}s+${f(h.durationSec, 2)}s`);
+  lines.push(nothing("silence")
+    ? `audio: silence checked nothing (${nothing("silence").reason})`
+    : `audio: longest silence after first sound ${f(r.silence.longestSilenceSec)}s (first sound at ${f(r.silence.firstSoundSec)}s)`);
   lines.push(`black picture: ${r.black.runs.length} run(s)${r.black.runs.map((x) => ` ${f(x.startSec, 2)}-${f(x.endSec, 2)}s`).join(",")}`);
   return lines.join("\n");
 }
@@ -377,7 +513,16 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     const lastLineEndsBeforeFinalFrame = lastLineEnd <= videoDuration;
 
     const allIssues = issuesByShot.flatMap((s) => s.issues);
-    const deadAirRuns = excludeEndHold(deadAirScan.runs, lastLineEnd, DEAD_AIR_RUN_SEC_MIN);
+    // Spans the page declared as intended slow motion / hold (window.__reel.holds) are marked, not flagged,
+    // the same way the end hold is.
+    const declaredHolds = await session.page.evaluate(() => (window.__reel && window.__reel.holds) || []);
+    const { runs: deadAirRuns, intendedHolds } = splitIntendedHolds(
+      excludeEndHold(deadAirScan.runs, lastLineEnd, DEAD_AIR_RUN_SEC_MIN), declaredHolds, DEAD_AIR_RUN_SEC_MIN);
+    const checkedNothing = [];
+    if (shots.length === 0) checkedNothing.push({ check: "layout", reason: "the page declares no shots, so no frame was read for issues()" });
+    if (deadAirScan.times.length < 2) checkedNothing.push({ check: "deadAir", reason: "fewer than 2 samples" });
+    if (!(timings.lines && timings.lines.length)) checkedNothing.push({ check: "silence", reason: "timings.json has no lines, so there is no narration span to measure" });
+    const nothingOf = (name) => checkedNothing.some((c) => c.check === name);
 
     const loudness = await measureLoudness(mp4Path);
     const pcm = await decodeMonoPcm(mp4Path, AUDIO_SAMPLE_RATE);
@@ -437,18 +582,22 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           lastLineEndsBeforeFinalFrame,
         },
         deadAir: {
-          pass: deadAirRuns.length === 0,
+          pass: nothingOf("deadAir") ? null : deadAirRuns.length === 0,
+          checkedNothing: nothingOf("deadAir"),
           runs: deadAirRuns,
+          intendedHolds,
           endHoldSec: Math.max(0, videoDuration - lastLineEnd),
           note: "measured from seek() output at native resolution: canvas pixel hash every 0.1s, a run of identical hashes >=0.8s is flagged; the end hold after the last line (meta.tailSec) is not counted",
         },
         layout: {
-          pass: allIssues.length === 0,
+          pass: nothingOf("layout") ? null : allIssues.length === 0,
+          checkedNothing: nothingOf("layout"),
           issueCount: allIssues.length,
           byShot: issuesByShot,
         },
         audio: {
           pass: silencePass && marksPass,
+          silenceCheckedNothing: nothingOf("silence"),
           integratedLufs: loudness.integratedLufs,
           truePeakDb: loudness.truePeakDb,
           longestSilenceSec: silence.longestSilenceSec,
@@ -462,6 +611,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
             "render.mjs ducks library asset cue sounds (plan.json line `cues`) by meta.sound.sfxDuckDb (default -6dB, ~80ms ramps) while a narration line speaks; each mark above carries duckedByNarration for whether it fell inside a narration window. The sync tolerance (-20..+40ms) is unchanged, but a mark on a ducked sound near that edge is expected, not a regression.",
         },
       },
+      checkedNothing,
       note: "Technical checks do not certify art — this reports what was mechanically checked (motion, sync, layout); a human must read the contact sheet and judge composition, legibility, and taste.",
     };
     return report;
@@ -471,6 +621,8 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
   }
 }
 
+const verdict = (check) => (check.checkedNothing ? "CHECKED NOTHING" : check.pass ? "PASS" : "FAIL");
+
 function printSummary(report) {
   const c = report.checks;
   const lines = [
@@ -478,10 +630,11 @@ function printSummary(report) {
     `video: ${report.mp4}${report.renderedNow ? " (rendered now, preview)" : ""}`,
     `contact sheet: ${report.contactSheet}`,
     `A/V duration: video=${report.duration.video.toFixed(3)}s audio=${report.duration.audio.toFixed(3)}s delta=${report.duration.deltaMs.toFixed(1)}ms [${c.avSync.pass ? "PASS" : "FAIL"}]`,
-    `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${c.deadAir.pass ? "PASS" : "FAIL"}]`,
-    `layout issues: ${c.layout.issueCount} [${c.layout.pass ? "PASS" : "FAIL"}]`,
-    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${c.audio.silencePass ? "PASS" : "FAIL"}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
+    `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${verdict(c.deadAir)}]${c.deadAir.intendedHolds.map((h) => ` intended hold ${h.startSec.toFixed(2)}s+${h.durationSec.toFixed(2)}s (not flagged)`).join(";")}`,
+    `layout issues: ${c.layout.issueCount} [${verdict(c.layout)}]`,
+    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${c.audio.silenceCheckedNothing ? "CHECKED NOTHING" : c.audio.silencePass ? "PASS" : "FAIL"}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
+    ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}`),
     report.note,
   ];
   process.stdout.write(lines.join("\n") + "\n");

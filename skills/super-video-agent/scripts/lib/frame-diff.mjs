@@ -1,6 +1,10 @@
 // Pixel-diff analysis over a decoded mp4: 64px greyscale frame diffs used
 // by review.mjs for dead-air detection.
 import { ffmpeg, ffprobe } from "./ffmpeg.mjs";
+import { splitIntendedHolds } from "./dead-air.mjs";
+
+/** Width of the greyscale frames the freeze test reads: at 64 px a slow push-in changes under 0.2% of pixels and read as frozen. */
+export const FREEZE_SCAN_WIDTH = 320;
 
 const CHANGE_THRESHOLD = 6; // 0-255 greyscale delta counted as "changed"
 const DEAD_AIR_FRACTION = 0.002; // 0.2% of pixels
@@ -66,38 +70,33 @@ export function changedFraction(a, b) {
 /**
  * @param {Buffer[]} frames greyscale frames, one per rendered fps tick
  * @param {number} fps
- * @returns {{fractions:number[], deadAirRuns:{startSec:number,durationSec:number}[]}}
+ * @param {{holds?: {from:number, to:number}[]}} [opts] holds = intended slow-motion / hold spans (seconds)
+ * @returns {{fractions:number[], deadAirRuns:{startSec:number,durationSec:number}[], intendedHoldRuns:{startSec:number,durationSec:number}[], frameCount:number}}
  */
-export function analyzeMotion(frames, fps) {
+export function analyzeMotion(frames, fps, { holds } = {}) {
   const fractions = [];
   for (let i = 1; i < frames.length; i++) {
     fractions.push(changedFraction(frames[i - 1], frames[i]));
   }
-  const deadAirRuns = [];
+  const found = [];
   let runStart = null;
-  let runLen = 0;
+  const close = (end) => {
+    if (runStart !== null && (end - runStart) / fps >= DEAD_AIR_RUN_SEC) {
+      found.push({ startSec: runStart / fps, durationSec: (end - runStart) / fps });
+    }
+    runStart = null;
+  };
   for (let i = 0; i < fractions.length; i++) {
     if (fractions[i] < DEAD_AIR_FRACTION) {
       if (runStart === null) runStart = i;
-      runLen++;
     } else {
-      if (runStart !== null) {
-        const durationSec = runLen / fps;
-        if (durationSec >= DEAD_AIR_RUN_SEC) {
-          deadAirRuns.push({ startSec: runStart / fps, durationSec });
-        }
-      }
-      runStart = null;
-      runLen = 0;
+      close(i);
     }
   }
-  if (runStart !== null) {
-    const durationSec = runLen / fps;
-    if (durationSec >= DEAD_AIR_RUN_SEC) {
-      deadAirRuns.push({ startSec: runStart / fps, durationSec });
-    }
-  }
-  return { fractions, deadAirRuns };
+  close(fractions.length);
+  // Spans the page declared as intended slow motion / hold are reported apart, never flagged.
+  const split = splitIntendedHolds(found, holds, DEAD_AIR_RUN_SEC);
+  return { fractions, deadAirRuns: split.runs, intendedHoldRuns: split.intendedHolds, frameCount: frames.length };
 }
 
 export const DEAD_AIR_FRACTION_THRESHOLD = DEAD_AIR_FRACTION;

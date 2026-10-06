@@ -49,9 +49,9 @@ export function main(argv) {
   const cueCount = (plan.lines || []).reduce((n, l) => n + (l.cues || []).filter((c) => typeof c.at === "string" && c.at.startsWith("word:")).length, 0);
   const warnings = checkWordCues(plan, timings, onsets);
   const outPath = typeof flags.out === "string" ? abs(flags.out) : path.join(paths.outDir, "cue-check.json");
-  writeJson(outPath, { cueCount, waveformChecked: onsets !== null, warnings });
+  writeJson(outPath, { cueCount, checkedNothing: cueCount === 0, waveformChecked: onsets !== null, warnings });
   process.stdout.write(formatCueWarnings(warnings, cueCount));
-  if (!onsets) process.stdout.write("no voice/narration.wav: moved-word checks skipped\n");
+  if (!onsets && cueCount > 0) process.stdout.write("no voice/narration.wav: moved-word checks skipped\n");
   process.stdout.write(`wrote ${outPath}\n`);
 }
 
