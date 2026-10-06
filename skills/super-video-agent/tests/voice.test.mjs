@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { synthesizeAll, lineTempo, withShortsRate, withFishConfidentDelivery, slotFitMessage } from "../scripts/voice.mjs";
+import { synthesizeAll, lineTempo, withShortsRate, withFishConfidentDelivery } from "../scripts/voice.mjs";
+import { retakeFitMessage, planRetakeFit } from "../scripts/voice/line-edit.mjs";
 import { reelPaths } from "../scripts/lib/reeldir.mjs";
 import * as none from "../scripts/voice/none.mjs";
 
@@ -414,12 +415,9 @@ test("withFishConfidentDelivery: fish + 9:16 with no delivery defaults to confid
   assert.equal(withFishConfidentDelivery({}, { ratio: "9:16" }, "elevenlabs").delivery, undefined);
 });
 
-test("slotFitMessage: says how a re-made take was fitted to its old slot", () => {
-  assert.equal(slotFitMessage("l26", 2.97, 4.56), "l26: take 2.97s fitted to its slot 4.56s (+1.59s silence)");
-  assert.equal(slotFitMessage("l3", 4.16, 4), "l3: take 4.16s fitted to its slot 4.00s (sped up 1.04x)");
-  assert.equal(
-    slotFitMessage("l7", 5.2, 4.56),
-    "l7: take 5.20s keeps its own length, longer than its slot 4.56s — later lines shift +0.64s"
-  );
-  assert.equal(slotFitMessage("l1", 4.561, 4.56), null);
+test("retakeFitMessage: says how a re-made take compares with its slot and the take it replaces", () => {
+  const slot = { slotSec: 5.06, oldClipSec: 4.56 };
+  assert.match(retakeFitMessage("l26", 2.97, slot, planRetakeFit(2.97, slot)), /^l26: take 2\.97s, slot 5\.06s, existing take 4\.56s — fits \(slowed to 0\.95x; 1\.93s of silence after it; voice-free gap over 1s/);
+  assert.match(retakeFitMessage("l3", 4.8, slot, planRetakeFit(4.8, slot)), /fits \(sped up 1\.05x/);
+  assert.match(retakeFitMessage("l7", 6.2, slot, planRetakeFit(6.2, slot)), /refused: needs 1\.23x to fit its slot \(limit 1\.1x\), not installed/);
 });

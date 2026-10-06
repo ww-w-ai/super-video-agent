@@ -50,21 +50,26 @@ export function stripCaptionBreaks(text) {
     .join(" ");
 }
 
-// Quote marks of any language. Double-style marks are always quotes; a single straight or curly
-// quote is an apostrophe (don't, l'été) when a letter or digit sits on both sides, and stays.
+// Quote marks of any language. Double-style marks are always quotes. A single straight or curly
+// quote that touches a letter or digit is an apostrophe (don't, dogs' bones, rock 'n' roll, 'tis)
+// and stays; it goes only when it opens and closes a quoted span ('ship it', ‘quoted’) or touches
+// no letter or digit at all.
 const DOUBLE_QUOTES = /["“”„‟«»‹›「」『』﹁﹂﹃﹄｢｣〝〞〟＂]/gu;
-const SINGLE_QUOTES = /(?<![\p{L}\p{N}])['‘’‚‛＇]|['‘’‚‛＇](?![\p{L}\p{N}])/gu;
+const ISOLATED_SINGLE = /(?<![\p{L}\p{N}])['‘’‚‛＇](?![\p{L}\p{N}])/gu;
+// An opener (not after a letter) to the nearest closer (not before a letter). The span holds no
+// other single mark and at least two letters or digits, so the n in rock 'n' roll is not a span.
+const QUOTED_SPAN = /(?<![\p{L}\p{N}])['‘’‚‛＇](?=[\p{L}\p{N}])([^'‘’‚‛＇\n]*?[\p{L}\p{N}][^'‘’‚‛＇\n]*?[\p{L}\p{N}.,!?;:…])['‘’‚‛＇](?![\p{L}\p{N}])/gu;
 
 /**
  * `text` without quote marks (straight, curly, guillemets, CJK corner brackets), for the voice
  * only: no engine should read them, and some read them as a pause or a word. Captions keep them.
- * An apostrophe inside a word stays.
+ * An apostrophe that touches a letter stays; a single quote goes only around a quoted span.
  * @param {string} text
  * @returns {string}
  */
 export function stripQuoteMarks(text) {
   const src = String(text ?? "");
-  const out = src.replace(DOUBLE_QUOTES, "").replace(SINGLE_QUOTES, "");
+  const out = src.replace(DOUBLE_QUOTES, "").replace(QUOTED_SPAN, "$1").replace(ISOLATED_SINGLE, "");
   // « bonjour » leaves a space on each side; close the gap a removed mark opened.
   return out === src ? src : out.replace(/ {2,}/g, " ").trim();
 }

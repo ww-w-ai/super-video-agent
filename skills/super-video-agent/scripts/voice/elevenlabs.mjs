@@ -63,6 +63,8 @@ const BATCH_MAX_CHARS = 2500;
 // a closing [pause] tag lets the last line finish (0 of 25). It is billed like text (8 characters),
 // so it closes a request of several lines, never each line.
 const CLOSING_PAUSE = " [pause]";
+// The text a batch may hold: the request limit less the closing pause one batch appends.
+const REQUEST_MAX_CHARS = BATCH_MAX_CHARS - CLOSING_PAUSE.length;
 // Tags that make no sound; every other tag ([laughs], [sighs]) is part of its line's audio.
 const SILENT_TAG = /^\[(?:short |long )?paus(?:e|es)\]$/i;
 
@@ -174,10 +176,20 @@ async function speakAndCut(items, cfg) {
  * @param {{voiceCfg?:{voiceId?:string, model?:string}}} ctx
  */
 export async function synthBatch(items, ctx) {
+  refuseOversize(items);
   const cfg = settings(null, ctx && ctx.voiceCfg);
   const results = [];
-  for (const group of groupByChars(items, BATCH_MAX_CHARS - CLOSING_PAUSE.length, sentLength)) results.push(...(await speakAndCut(group, cfg)));
+  for (const group of groupByChars(items, REQUEST_MAX_CHARS, sentLength)) results.push(...(await speakAndCut(group, cfg)));
   return results;
+}
+
+/** A single line past the limit cannot be split by batching; name it before any request is sent. */
+function refuseOversize(items) {
+  for (const it of items) {
+    const sent = sentLength(it) - 1;
+    if (sent <= REQUEST_MAX_CHARS) continue;
+    throw new Error(`elevenlabs: line "${it.id}" is ${sent} characters as sent; one request takes at most ${REQUEST_MAX_CHARS}. Split the line in plan.json.`);
+  }
 }
 
 /**

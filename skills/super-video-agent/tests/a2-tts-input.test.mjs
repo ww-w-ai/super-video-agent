@@ -32,8 +32,8 @@ test("1: quote marks of every kind are stripped from the spoken text, the captio
     ["他说『你好』。", "他说你好。"],
     ["Il dit « bonjour » à l'ami.", "Il dit bonjour à l'ami."],
     ["Er sagte „Hallo“ und ‹ging›.", "Er sagte Hallo und ging."],
-    ["She said 'no' and it's fine, the dogs' bowls.", "She said no and it's fine, the dogs bowls."],
-    ["‘quoted’ and ’tis", "quoted and tis"],
+    ["She said 'no' and it's fine, the dogs' bowls.", "She said no and it's fine, the dogs' bowls."],
+    ["‘quoted’ and ’tis", "quoted and ’tis"],
   ];
   for (const [text, want] of cases) {
     const line = { id: "l", text };
@@ -93,8 +93,8 @@ test("14: a single line past the limit is refused with its id before any request
   const sent = [];
   const dir = stubTypecast(t, sent);
   await assert.rejects(
-    typecast.synthBatch([{ id: "big", text: "x".repeat(2001), outPath: path.join(dir, "big.wav") }], { voiceCfg: { voiceId: "tc_1" } }),
-    /line "big" is 2001 characters/,
+    typecast.synthBatch([{ id: "big", text: "x".repeat(2000), outPath: path.join(dir, "big.wav") }], { voiceCfg: { voiceId: "tc_1" } }),
+    /line "big" is 2001 characters as sent/,
   );
   assert.equal(sent.length, 0);
 });

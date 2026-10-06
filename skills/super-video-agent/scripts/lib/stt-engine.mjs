@@ -252,18 +252,20 @@ async function runGroq(ctx, group, code) {
   if (!key) return { skipped: "groq engine selected but GROQ_API_KEY is not set" };
   const results = new Map();
   const words = new Map();
+  const models = new Map();
+  const model = `groq:${ctx.env.SVA_STT_GROQ_MODEL || "whisper-large-v3-turbo"}`;
   for (const entry of group) {
     try {
       const one = await groqOne(ctx, key, entry, code);
       results.set(entry.id, one.heard);
       words.set(entry.id, one.words);
-      if (ctx.deps.onProgress) await ctx.deps.onProgress({ results, words, code });
+      models.set(entry.id, model);
+      if (ctx.deps.onProgress) await ctx.deps.onProgress({ results, words, models, code });
     } catch (e) {
-      return { results, words, failed: `groq request failed (${safeMessage(e, key)})` };
+      return { results, words, models, failed: `groq request failed (${safeMessage(e, key)})` };
     }
   }
-  const model = ctx.env.SVA_STT_GROQ_MODEL || "whisper-large-v3-turbo";
-  return { results, words, models: new Map([...results.keys()].map((id) => [id, `groq:${model}`])) };
+  return { results, words, models };
 }
 
 const ENGINES = { mlx: runMlx, groq: runGroq };

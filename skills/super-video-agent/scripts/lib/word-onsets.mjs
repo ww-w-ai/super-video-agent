@@ -80,6 +80,75 @@ export function measureWordOnsets(timings, samples, sampleRate, opts = {}) {
   };
 }
 
+/** A word is "after a pause" when its recorded start is this far (s) past the previous word's end. */
+export const PAUSE_BEFORE_WORD_SEC = 0.12;
+/** A start moves only when the sound begins at least this much (s) later. */
+export const MIN_SNAP_SEC = 0.02;
+/** Sound = a 10 ms window above this share of the line's loud level (amplitude), as stt_check's trim_to_sound. */
+const SOUND_FLOOR_SHARE = 0.1;
+/** How far past a recorded start the sound may begin (s), never past the next word's start. */
+const SNAP_REACH_SEC = 0.6;
+const SNAP_END_MARGIN_SEC = 0.03;
+
+function rmsFrames(samples, sampleRate) {
+  const win = Math.max(1, Math.round(sampleRate * RMS_WIN_SEC));
+  const frames = new Float64Array(Math.floor(samples.length / win));
+  for (let f = 0; f < frames.length; f++) frames[f] = rmsWindow(samples, f * win, win);
+  return frames;
+}
+
+function soundFloor(frames) {
+  const sorted = Float64Array.from(frames).sort();
+  return SOUND_FLOOR_SHARE * sorted[Math.min(sorted.length - 1, Math.floor(0.95 * (sorted.length - 1)))];
+}
+
+/** First frame in [from, to) at or above `floor`, or -1. */
+function firstLoud(frames, floor, from, to) {
+  for (let f = Math.max(0, from); f < Math.min(frames.length, to); f++) if (frames[f] >= floor) return f;
+  return -1;
+}
+
+/**
+ * N16: a word after a pause is timed early by the speech-to-text pass (it starts inside the
+ * pause), so a caption changes before the voice. Moves such a word's start to where its sound
+ * begins in the line's own energy envelope — one 10 ms RMS pass, no second recognition. Only ever
+ * later: a start the pause leaves untouched, a word already on its sound, a pause with a breath
+ * above the floor, and a sound that is not found before the next word stay as they are. A word
+ * that sat wholly inside the pause keeps its duration at the new start.
+ * @param {{w:string, start:number, end:number}[]} words on the clip's clock plus `offsetSec`
+ * @param {Float32Array} samples the line's clip, mono
+ * @param {number} sampleRate
+ * @param {number} [offsetSec] the clip's start on the words' clock (the line's start)
+ * @returns {{words:{w:string,start:number,end:number}[], moved:{index:number, w:string, from:number, to:number}[]}}
+ */
+export function snapStartsToSound(words, samples, sampleRate, offsetSec = 0) {
+  const out = words.map((w) => ({ ...w }));
+  const frames = rmsFrames(samples, sampleRate);
+  if (!frames.length) return { words: out, moved: [] };
+  const floor = soundFloor(frames);
+  const at = (sec) => Math.round(sec / RMS_WIN_SEC);
+  const moved = [];
+  out.forEach((word, i) => {
+    if (typeof word.start !== "number" || typeof word.end !== "number") return;
+    const start = word.start - offsetSec;
+    const prevEnd = i === 0 ? 0 : out[i - 1].end - offsetSec;
+    if (i > 0 && start - prevEnd < PAUSE_BEFORE_WORD_SEC) return;
+    if (firstLoud(frames, floor, at(Math.max(0, prevEnd)), at(start)) >= 0) return;
+    const next = i < out.length - 1 && typeof out[i + 1].start === "number" ? out[i + 1].start - offsetSec : Infinity;
+    const limit = Math.min(next - SNAP_END_MARGIN_SEC, start + SNAP_REACH_SEC);
+    const onset = firstLoud(frames, floor, at(start), at(limit));
+    if (onset < 0) return;
+    const sound = onset * RMS_WIN_SEC;
+    if (sound - start < MIN_SNAP_SEC) return;
+    const endRel = word.end - offsetSec;
+    const newEnd = sound + SNAP_END_MARGIN_SEC <= endRel ? endRel : Math.min(sound + (endRel - start), next);
+    word.start = round3(sound + offsetSec);
+    word.end = round3(Math.max(newEnd, sound + SNAP_END_MARGIN_SEC) + offsetSec);
+    moved.push({ index: i, w: word.w, from: round3(words[i].start), to: word.start });
+  });
+  return { words: out, moved };
+}
+
 /** One line per reported word: off by more than the threshold, or with no clear onset. */
 export function formatWordOnsets(report) {
   const lines = report.words

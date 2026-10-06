@@ -153,8 +153,9 @@ export async function synthBatch(items, ctx) {
 /** A single line past the limit cannot be split by batching; name it before any request is sent. */
 function refuseOversize(items) {
   for (const it of items) {
-    if (it.text.length <= BATCH_MAX_CHARS) continue;
-    throw new Error(`typecast: line "${it.id}" is ${it.text.length} characters; one request takes at most ${BATCH_MAX_CHARS}. Split the line in plan.json.`);
+    const sent = sentLength(it) - 1;
+    if (sent <= BATCH_MAX_CHARS) continue;
+    throw new Error(`typecast: line "${it.id}" is ${sent} characters as sent; one request takes at most ${BATCH_MAX_CHARS}. Split the line in plan.json.`);
   }
 }
 
