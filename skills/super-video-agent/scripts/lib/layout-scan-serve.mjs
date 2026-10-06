@@ -7,6 +7,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { serveDir } from "./server.mjs";
+import { sameLanguageTag } from "./lang-tag.mjs";
 
 /**
  * URL path -> file for each caption-layer file the base language lacks.
@@ -17,7 +18,8 @@ import { serveDir } from "./server.mjs";
  * @returns {Record<string,string>}
  */
 export function captionLayerAliases(dir, { code, baseCode }) {
-  if (code !== baseCode) return {};
+  // `--dub ko` names the base language `ko-KR`; zh-Hans and zh-Hant stay different languages.
+  if (code !== baseCode && sameLanguageTag(code, baseCode) !== true) return {};
   const wanted = {
     [`/dub/${code}/timings.placed.json`]: path.join(dir, "voice", "timings.json"),
     [`/dub/${code}/plan.json`]: path.join(dir, "plan.json"),

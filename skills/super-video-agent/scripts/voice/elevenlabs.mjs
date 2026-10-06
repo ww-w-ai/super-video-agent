@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "../lib/wav.mjs";
-import { spokenRange, cutSpans, withQuietTail, withSentenceEnd, groupByChars, sentLength } from "../lib/line-split.mjs";
+import { spokenRange, cutSpans, withQuietTail, withSentenceEnd, groupByChars, sentLength, refuseOversize } from "../lib/line-split.mjs";
 import { wordsFromCharAlignment } from "../lib/timing.mjs";
 import { tagSpans } from "../lib/tags.mjs";
 
@@ -176,20 +176,11 @@ async function speakAndCut(items, cfg) {
  * @param {{voiceCfg?:{voiceId?:string, model?:string}}} ctx
  */
 export async function synthBatch(items, ctx) {
-  refuseOversize(items);
+  refuseOversize(items, { limit: REQUEST_MAX_CHARS, provider: "elevenlabs" });
   const cfg = settings(null, ctx && ctx.voiceCfg);
   const results = [];
   for (const group of groupByChars(items, REQUEST_MAX_CHARS, sentLength)) results.push(...(await speakAndCut(group, cfg)));
   return results;
-}
-
-/** A single line past the limit cannot be split by batching; name it before any request is sent. */
-function refuseOversize(items) {
-  for (const it of items) {
-    const sent = sentLength(it) - 1;
-    if (sent <= REQUEST_MAX_CHARS) continue;
-    throw new Error(`elevenlabs: line "${it.id}" is ${sent} characters as sent; one request takes at most ${REQUEST_MAX_CHARS}. Split the line in plan.json.`);
-  }
 }
 
 /**

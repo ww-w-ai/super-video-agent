@@ -1,4 +1,4 @@
-// A12: plan schema and contracts — pauseBefore (30), doc/schema mismatch facts (L8/78), sayWhy / stale-say threshold,
+// A12: plan schema and contracts — pauseBeforeMs (30), doc/schema mismatch facts (L8/78), sayWhy / stale-say threshold,
 // line notes, page-contract mirror, style.fonts, the overlay-key scan, and the A3 review fixes in voice.mjs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -39,12 +39,12 @@ async function quiet(fn) {
 
 // --- schema --------------------------------------------------------------------------------
 
-test("30 / carry a: pauseBefore, sayWhy and notes validate; wrong shapes are named", () => {
-  const ok = plan([{ id: "a", text: "Hello there", say: "Hello thar", sayWhy: "dialect", pauseBefore: 1200, notes: [{ at: "start", text: "n" }, { at: "word:there", text: "m", corner: "bl", holdSec: 2 }] }]);
+test("30 / carry a: pauseBeforeMs, sayWhy and notes validate; wrong shapes are named", () => {
+  const ok = plan([{ id: "a", text: "Hello there", say: "Hello thar", sayWhy: "dialect", pauseBeforeMs: 1200, notes: [{ at: "start", text: "n" }, { at: "word:there", text: "m", corner: "bl", holdSec: 2 }] }]);
   assert.deepEqual(validate(ok, SCHEMA).errors, []);
-  const bad = plan([{ id: "a", text: "Hi", pauseBefore: -1, sayWhy: "", notes: [{ at: "middle", text: "x", corner: "center" }, { at: "start" }] }]);
+  const bad = plan([{ id: "a", text: "Hi", pauseBeforeMs: -1, sayWhy: "", notes: [{ at: "middle", text: "x", corner: "center" }, { at: "start" }] }]);
   const errors = validate(bad, SCHEMA).errors.join("\n");
-  assert.match(errors, /lines\[0\]\.pauseBefore: -1 < minimum 0/);
+  assert.match(errors, /lines\[0\]\.pauseBeforeMs: -1 < minimum 0/);
   assert.match(errors, /lines\[0\]\.sayWhy: string shorter than minLength/);
   assert.match(errors, /lines\[0\]\.notes\[0\]\.at: "middle" does not match pattern/);
   assert.match(errors, /lines\[0\]\.notes\[0\]\.corner: value "center" not in enum/);
@@ -167,14 +167,14 @@ test("L8/78: validate-plan on a plan with a rejected field still fails, with the
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("30: --estimate counts pauseBefore in the pauses and moves the line's start", () => {
+test("30: --estimate counts pauseBeforeMs in the pauses and moves the line's start", () => {
   const base = estimateLength(plan([{ id: "a", text: "one two three" }, { id: "b", text: "four five six" }]), { rate: 3, leadSec: 0 });
-  const withPause = estimateLength(plan([{ id: "a", text: "one two three" }, { id: "b", text: "four five six", pauseBefore: 2000 }]), { rate: 3, leadSec: 0 });
+  const withPause = estimateLength(plan([{ id: "a", text: "one two three" }, { id: "b", text: "four five six", pauseBeforeMs: 2000 }]), { rate: 3, leadSec: 0 });
   assert.ok(Math.abs(withPause.totalSec - base.totalSec - 2) < 1e-9);
   assert.ok(Math.abs(withPause.lines[1].start - base.lines[1].start - 2) < 1e-9);
 });
 
-// --- voice.mjs: pauseBefore -------------------------------------------------------------------
+// --- voice.mjs: pauseBeforeMs -------------------------------------------------------------------
 
 const BASE = { providerName: "none", voiceCfg: { levelLines: false }, lang: "ko-KR", gapMs: 250, sttEnabled: false };
 const A_TEXT = "가나다라마바사아자차카타파하"; // none.mjs: 7 characters per second, 14 = 2.0 s
@@ -191,8 +191,8 @@ async function firstRun(lines) {
   return { dir, paths, args, first, out };
 }
 
-test("30: pauseBefore puts that much silence before the line; narration and timings agree", async (t) => {
-  const lines = [{ id: "a", text: "가나다라마바사" }, { id: "b", text: "하나 둘 셋 넷", pauseBefore: 1500 }];
+test("30: pauseBeforeMs puts that much silence before the line; narration and timings agree", async (t) => {
+  const lines = [{ id: "a", text: "가나다라마바사" }, { id: "b", text: "하나 둘 셋 넷", pauseBeforeMs: 1500 }];
   const plain = await firstRun(lines.map(({ id, text }) => ({ id, text })));
   const { dir, paths, first } = await firstRun(lines);
   t.after(() => [dir, plain.dir].forEach((d) => fs.rmSync(d, { recursive: true, force: true })));
@@ -207,18 +207,18 @@ test("30: pauseBefore puts that much silence before the line; narration and timi
 });
 
 test("30: a pause before the first line comes after the head; the silence gate lists the stretch as planned", async (t) => {
-  const lines = [{ id: "a", text: "가나다라마바사", pauseBefore: 2000 }, { id: "b", text: "하나 둘 셋 넷", pauseBefore: 2500 }];
+  const lines = [{ id: "a", text: "가나다라마바사", pauseBeforeMs: 2000 }, { id: "b", text: "하나 둘 셋 넷", pauseBeforeMs: 2500 }];
   const { dir, first, out } = await firstRun(lines);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   assert.ok(first.timings.lines[0].start >= 2.0, `a starts ${first.timings.lines[0].start}`);
   assert.match(out, /silence gate: no unplanned gap over 1 s/);
-  const folded = foldPauseBefore([{ id: "a" }, { id: "b", pauseBefore: 2500 }], 700);
+  const folded = foldPauseBefore([{ id: "a" }, { id: "b", pauseBeforeMs: 2500 }], 700);
   assert.equal(folded[0].pauseAfterMs, 3200);
   assert.equal(folded[1].pauseAfterMs, undefined);
 });
 
-test("30: re-making the line before a pauseBefore line leaves that line where it was", async (t) => {
-  const lines = [{ id: "a", text: A_TEXT }, { id: "b", text: "다음 줄", pauseBefore: 1000 }];
+test("30: re-making the line before a pauseBeforeMs line leaves that line where it was", async (t) => {
+  const lines = [{ id: "a", text: A_TEXT }, { id: "b", text: "다음 줄", pauseBeforeMs: 1000 }];
   const { dir, args, first } = await firstRun(lines);
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   let run;

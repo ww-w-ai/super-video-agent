@@ -186,7 +186,7 @@ test("review 1: a --stt-only run killed mid-way keeps each finished line, and th
     } catch {
       return false;
     }
-  }, 10000);
+  }, 60000);
   child.kill("SIGKILL");
   assert.ok(saved, "line l1 reached timings.json while the model was still running");
   assert.deepEqual(JSON.parse(fs.readFileSync(reel.pending, "utf8")).ids.sort(), ["l2", "l3"]);

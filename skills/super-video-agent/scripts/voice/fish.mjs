@@ -4,7 +4,7 @@ import path from "node:path";
 import { ffmpeg } from "../lib/ffmpeg.mjs";
 import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "../lib/wav.mjs";
-import { planCuts, cutClips, withSentenceEnd, groupByChars, sentLength } from "../lib/line-split.mjs";
+import { planCuts, cutClips, withSentenceEnd, groupByChars, sentLength, refuseOversize } from "../lib/line-split.mjs";
 
 export const name = "fish";
 
@@ -84,21 +84,12 @@ async function requestSpeech({ apiKey, referenceId }, text, voiceCfg) {
  */
 export async function synthBatch(items, ctx) {
   const voiceCfg = ctx && ctx.voiceCfg;
-  refuseOversize(items);
+  refuseOversize(items, { limit: BATCH_MAX_CHARS, provider: "fish" });
   const results = [];
   for (const group of groupByChars(items, BATCH_MAX_CHARS, sentLength)) {
     results.push(...(await speakAndCut(group, voiceCfg)));
   }
   return results;
-}
-
-/** A single line past the limit cannot be split by batching; name it before any request is sent. */
-function refuseOversize(items) {
-  for (const it of items) {
-    const sent = sentLength(it) - 1;
-    if (sent <= BATCH_MAX_CHARS) continue;
-    throw new Error(`fish: line "${it.id}" is ${sent} characters as sent; one request takes at most ${BATCH_MAX_CHARS}. Split the line in plan.json.`);
-  }
 }
 
 async function speakAndCut(items, voiceCfg) {

@@ -16,6 +16,7 @@ import { excludeEndHold, splitIntendedHolds } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
 import { captionLayerAliases, placedDuration, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
 import { markOnsetOffset } from "./lib/sync-marks.mjs";
+import { sameLanguageTag } from "./lib/lang-tag.mjs";
 import { extractGrayFrames, analyzeMotion, FREEZE_SCAN_WIDTH } from "./lib/frame-diff.mjs";
 import { loudnessSpread } from "./lib/join-report.mjs";
 import {
@@ -32,6 +33,7 @@ import {
   SILENCE_THRESHOLD_DB,
 } from "./lib/audio-analysis.mjs";
 import { gapsFromPcm } from "./lib/silence-gate.mjs";
+import { describeDefects } from "./voice/take-check.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
@@ -41,7 +43,9 @@ const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
 Reviews a rendered reel: builds a contact sheet (one frame per shot's
 readAt, with timestamps), scans for dead air, compares audio/video
 duration, and collects layout issues(). Writes
-<reel-dir>/out/review.json and prints a human summary.
+<reel-dir>/out/review.json and prints a human summary. The summary also lists
+the voice clip facts voice.mjs stored in timings.json (HEAD, DIP, PAUSE per
+line: facts, never a pass or fail).
 
 --mp4   path to an already-rendered video (default: out/final.mp4, or
         out/preview.mp4, or render a preview now if neither exists).
@@ -56,7 +60,8 @@ duration, and collects layout issues(). Writes
         page draws only its overlays (captions, labels) and skips the
         scene, so every frame can be scanned quickly. Default step is one
         frame (1/fps). <code> is --dub, or plan.json meta.lang when --dub
-        is not given. For the base language (plan.json meta.lang) a
+        is not given. --dub ko names the base language ko-KR (region
+        is ignored; zh-Hans and zh-Hant stay different). For the base language (plan.json meta.lang) a
         missing dub/<code>/timings.placed.json is served from
         voice/timings.json and a missing dub/<code>/plan.json from
         plan.json; nothing is written into the reel.
@@ -317,7 +322,7 @@ export function reviewLayers(dir, paths, only) {
   }
   const wanted = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : [...layers.keys()];
   return wanted.map((code) => {
-    const l = layers.get(code);
+    const l = layers.get(code) || (sameLanguageTag(code, baseCode) === true ? layers.get(baseCode) : undefined);
     if (!l) return { code, skip: `no such language layer (have: ${[...layers.keys()].join(", ")})` };
     if (!l.mp4) return { code, skip: "no existing encode (out/final[-<code>].mp4 or preview): render it first, a review copy never renders" };
     if (!l.timings) return { code, skip: "no timings (voice/timings.json or dub/<code>/timings.placed.json)" };
@@ -625,6 +630,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           silencePass,
           silenceGaps: { unplanned: silenceGaps.unplanned, planned: silenceGaps.planned },
           marks: markResults,
+          voiceClipFacts: voiceClipFacts(timings),
           onsetSourceNote:
             "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
           duckingNote:
@@ -640,6 +646,25 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     if (session) await session.close();
     await server.close();
   }
+}
+
+/**
+ * HEAD / DIP / PAUSE facts voice.mjs stored per line (`clipFacts` in timings.json) as report lines.
+ * Facts only: never a pass or a fail. Lines made before the facts were stored have none, and are counted.
+ * @returns {{lines:{id:string, facts:string[]}[], measured:number, unmeasured:number}}
+ */
+export function voiceClipFacts(timings) {
+  const all = (timings && timings.lines) || [];
+  const measured = all.filter((l) => l.clipFacts);
+  const lines = measured.map((l) => ({ id: l.id, facts: describeDefects(l.clipFacts) })).filter((l) => l.facts.length);
+  return { lines, measured: measured.length, unmeasured: all.length - measured.length };
+}
+
+function voiceClipFactLines({ lines, measured, unmeasured }) {
+  const out = lines.map((l) => `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (the STT check cannot hear these; listen before keeping)`);
+  if (measured === 0) return ["voice clip facts: none stored in timings.json (voice.mjs stores HEAD, DIP and PAUSE when it makes a line); not checked here."];
+  if (unmeasured) out.push(`voice clip facts: ${unmeasured} line(s) have none stored (made before voice.mjs stored them, or silent).`);
+  return out;
 }
 
 /** pass is true / false, or null when the check looked at nothing: null is never a pass and never a fail. */
@@ -658,6 +683,7 @@ function printSummary(report) {
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}`),
     ...(report.facts || []),
+    ...voiceClipFactLines(c.audio.voiceClipFacts),
     report.note,
   ];
   process.stdout.write(lines.join("\n") + "\n");

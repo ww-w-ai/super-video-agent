@@ -238,7 +238,7 @@ export function estimateLength(plan, opts = {}) {
   const lead = opts.leadSec != null ? opts.leadSec : leadSec(meta);
   const headSec = HEAD_SILENCE_SEC + lead;
   const pauses = plan.lines.map((l, i) => (i === plan.lines.length - 1 ? 0 : (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000));
-  const befores = plan.lines.map((l) => (l.pauseBefore || 0) / 1000);
+  const befores = plan.lines.map((l) => (l.pauseBeforeMs || 0) / 1000);
   let at = headSec;
   const perLine = lines.map((l, i) => {
     const sec = l.units / (baseRate * l.speed);

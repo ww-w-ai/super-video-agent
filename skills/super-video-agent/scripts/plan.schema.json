@@ -206,7 +206,7 @@
             "description": "Optional spoken-form override for TTS (e.g. '엠씨피' for 'MCP'). May carry delivery marks in curly braces (e.g. {confident}, {pause}); each provider translates them into its own model tags or drops them (references/voice.md \"Delivery marks\"). Captions and timings.json `text` always show `text`; voice.mjs synthesizes `say ?? text`. validate-plan.mjs warns when `say` still differs from `text` after numbers, pronounce respellings, punctuation and marks are folded (character error rate > 0.3): a say left from an older text. Write the reason in `sayWhy` when it differs on purpose."
           },
           "sayWhy": { "type": "string", "minLength": 1, "description": "Why `say` differs from `text` on purpose (e.g. \"brand name read by letter\"). Never spoken or shown; validate-plan.mjs leaves a line with a sayWhy out of its stale-say warning." },
-          "pauseBefore": {
+          "pauseBeforeMs": {
             "type": "integer",
             "minimum": 0,
             "description": "Silence before this line in ms, after the previous line's pause: the picture plays this long before the line starts (first line: after the head). Recorded in timings.json as pauseBeforeSec."

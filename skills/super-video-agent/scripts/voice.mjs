@@ -563,7 +563,7 @@ export async function synthesizeAll({
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // The picture plays this long before the line starts (plan line `pauseBefore`).
+    // The picture plays this long before the line starts (plan line `pauseBeforeMs`).
     const beforeSec = pauseBeforeSec(line);
     if (beforeSec > 0) {
       const beforePath = path.join(paths.voiceDir, `_silence-before-${i}.wav`);
@@ -657,6 +657,7 @@ export async function synthesizeAll({
     if (reused && prevLine && prevLine.estimated) lineOut.estimated = true;
     if (reused && prevLine && prevLine.voiceFlag) lineOut.voiceFlag = prevLine.voiceFlag;
     if (reused && prevLine && prevLine.stt) lineOut.stt = prevLine.stt;
+    if (reused && prevLine && prevLine.clipFacts) lineOut.clipFacts = prevLine.clipFacts;
     if (!reused && synthResult.estimated) lineOut.estimated = true;
     if (!reused && synthResult.flag && synthResult.flag !== "OK") {
       lineOut.voiceFlag = synthResult.flag;
@@ -1436,19 +1437,19 @@ async function fitRetake(id, wavPath, slot, { borrow }) {
 /** timings start moves under this (s) are rounding, not a shifted line. */
 const MOVED_TOLERANCE_SEC = 0.001;
 
-/** Seconds of silence a plan line asks for before it (`pauseBefore`, ms). */
+/** Seconds of silence a plan line asks for before it (`pauseBeforeMs`, ms). */
 function pauseBeforeSec(line) {
-  return line && line.pauseBefore > 0 ? line.pauseBefore / 1000 : 0;
+  return line && line.pauseBeforeMs > 0 ? line.pauseBeforeMs / 1000 : 0;
 }
 
 /**
- * Plan lines with the next line's `pauseBefore` added to each line's pause after it, so the silence
+ * Plan lines with the next line's `pauseBeforeMs` added to each line's pause after it, so the silence
  * gate lists that stretch as planned, not as dead air.
  */
 export function foldPauseBefore(planLines, gapMs) {
   return planLines.map((l, i) => {
     const next = planLines[i + 1];
-    return next && next.pauseBefore > 0 ? { ...l, pauseAfterMs: (l.pauseAfterMs ?? gapMs) + next.pauseBefore } : l;
+    return next && next.pauseBeforeMs > 0 ? { ...l, pauseAfterMs: (l.pauseAfterMs ?? gapMs) + next.pauseBeforeMs } : l;
   });
 }
 
@@ -1524,7 +1525,9 @@ async function inspectMadeLines(paths, freshLines) {
     const clip = readLineClip(paths, lineOut.id);
     if (!clip) continue;
     snapLineWords(lineOut, clip);
-    const defects = describeDefects(findClipDefects(clip.samples, clip.sampleRate));
+    const found = findClipDefects(clip.samples, clip.sampleRate);
+    if (found) lineOut.clipFacts = found; // timings.json keeps them for review.mjs
+    const defects = describeDefects(found);
     if (defects.length) process.stdout.write(`line "${lineOut.id}": ${defects.join("; ")} — facts the STT check cannot hear; listen before keeping\n`);
   }
 }

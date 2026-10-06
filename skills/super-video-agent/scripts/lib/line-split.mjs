@@ -156,6 +156,20 @@ export function groupByChars(items, maxChars, measure = (it) => it.text.length +
   return out;
 }
 
+/**
+ * A single line past the provider's request limit cannot be split by batching: throw naming it
+ * before any request is sent. The length counted is what is sent (see sentLength), not the raw text.
+ * @param {{id:string, text:string}[]} lines
+ * @param {{limit:number, provider:string}} opts
+ */
+export function refuseOversize(lines, { limit, provider }) {
+  for (const it of lines) {
+    const sent = sentLength(it) - 1;
+    if (sent <= limit) continue;
+    throw new Error(`${provider}: line "${it.id}" is ${sent} characters as sent; one request takes at most ${limit}. Split the line in plan.json.`);
+  }
+}
+
 const unspaced = (s) => String(s).replace(/\s+/g, "");
 
 /**

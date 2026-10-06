@@ -340,8 +340,12 @@
   // directly and reports which cards it could not measure. `id` is the
   // cue's own `id` when SFX_CUES sets one (recommended, so it matches a
   // sound card's id exactly); otherwise "<kind>@<at>".
+  // Only cues flagged `card: true` are rendered (all of them when none is
+  // flagged), so a film with hundreds of cues does not hand hundreds of
+  // stems to sfx-cards.mjs.
   function sfxStems(sampleRate) {
-    var out = SFX_CUES.map(function (cue) {
+    var flagged = SFX_CUES.filter(function (cue) { return cue.card === true; });
+    var out = (flagged.length ? flagged : SFX_CUES).map(function (cue) {
       var gen = ReelAudio.sfx[cue.kind];
       if (!gen) return null;
       var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
