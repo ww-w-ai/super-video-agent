@@ -29,7 +29,7 @@ in the page, shaped from what is on screen (the object's size and material, how 
 the film's music key). The fit check includes the film's world because the kit's effects and the
 library are starting points, not a palette to repeat: measured, one library pop sat in 27 cues
 across recent films, and every film's kit sfx sounded like the first film made (a basketball
-promo, because every kind's default seed was the literal kind name). `reel-audio.js` now gives
+promo, because every kind's default seed was the literal kind name). `reel-audio.js` gives
 each kind's default seed a film key, so the same kind carries a character of its own per film —
 but that alone does not make a sound fit a *different* film's world, which is what the fit check
 catches.
@@ -90,11 +90,32 @@ sfx cue times are measured from the film's t = 0, lead included.
   scaffold's `renderSfx` masters its own (bed + cues) mix to **-15 dBFS peak** by default, so with
   no cues the ducked bed alone sits around **-28 LUFS short-term during narration windows** —
   well under a -16 LUFS voice.
-- **Ducked under the voice**: library cue sounds dip by `meta.sound.sfxDuckDb` (default **-6dB**)
-  while a narration line speaks, ~80ms ramps in and out, untouched in the gaps
-  (`scripts/lib/duck.mjs`, shared by `render.mjs` and `dub.mjs`) — set it to `0` to turn ducking
-  off. The music bed keeps its own, deeper **-10dB** duck (`reel-audio.js` `duck()`, unchanged):
-  words stay clear, effects stay audible, the bed all but disappears under speech.
+- **Ducked under the voice**: library cue sounds dip by `meta.sound.sfxDuckDb` (default **-2.5 dB**)
+  while a narration line speaks, with **0.8 s** ramps in and out (`scripts/lib/duck.mjs`, shared by
+  `render.mjs` and `dub.mjs`) — set it to `0` to turn ducking off. Gaps between lines shorter than
+  **1.5 s** stay ducked: the windows merge, so the sound rises only in a real pause, never in the
+  breath between two lines (a bed that rises and drops again there is heard as pumping). The
+  music bed keeps its own, deeper **-10 dB** duck inside the page (`reel-audio.js` `duck()`, 120 ms
+  ramps): words stay clear, effects stay audible, the bed all but disappears under speech.
+- **Two ducks stack on a dubbed bed.** The page's duck follows the base language's lines. `dub.mjs`
+  then ducks the whole bed again against the dubbed language's own lines, so where the two
+  narrations differ the bed drops by both. `dub.mjs` prints one `bed duck:` line: the dub's dB, the
+  deepest combined drop and when, and how many seconds are ducked deeper than the page's duck alone.
+  It reports only; the dub's depth is `meta.sound.sfxDuckDb` in that language's `plan.json`, so a
+  large drop can be eased there.
+- **Repeated effects sit below the main one.** A sound that returns many times (a tick, a step, a
+  click) is texture; the effect that marks a scene's event is the main one. Give the repeated kind
+  a lower `gain` than the main effect so it never competes with it, and settle the difference by
+  comparing two short A/B clips of the same few seconds at two gains. The model cannot hear: give
+  the owner both clips to listen to, and report the measured peak of each (`sfx-cards.mjs
+  measure`).
+- **A film with little or no narration.** `render.mjs` masters the whole mix with one static gain
+  to -16 LUFS integrated, so the page's own mix sets how loud the film is. The scaffold's
+  `renderSfx` masters (bed + cues) to -15 dBFS peak; in a sparse mix the master gain that reaches
+  -16 LUFS rises, and the loudest event can come near or over the true-peak limit. Mix the page
+  against a reference: measure the page's mix against a leveled narration line
+  (`voice/line-<id>.wav`, -16 LUFS), set the page's level from that, and read `review.mjs`'s
+  integrated loudness and true peak after the render.
 - `master` soft-clips with tanh; if the review shows true peak over the limit, lower the effect
   gain, not the voice.
 
@@ -136,6 +157,10 @@ keeps the file's own length, and `measure`, `report` and the judge prompt all na
 "0.00-3.00s of a 10.25s file". Spectral features average frames across the whole span and read
 noisiness over 60 Hz–12 kHz, so a library file's leading encoder silence or its 16 kHz low-pass
 does not read as brightness 0 Hz or as a pure tone.
+
+A film with hundreds of cues does not need a card for each. Flag the cues that get a card with
+`card: true` in `SFX_CUES`: the scaffold's `sfxStems()` then renders only those (every cue when
+none is flagged), so `measure` does not receive every cue's samples at once.
 
 The judge never hears the sound. It scores a text card — event, intent, world, recipe and the
 measured numbers — so a wrong number (a 10 s length for a 3 s cue) moves the score as much as a

@@ -17,6 +17,40 @@ Read every line in every pass. Fix what the pass finds, then move to the next pa
 
 Repeat pass 6 until a full read changes nothing. Then synthesize.
 
+## Fact checks (pass 1)
+
+A source states a claim; it does not prove it. For every claim that carries the film:
+
+- **"Only", "first", "biggest", "never".** Try to disprove it. Put the comparable items in a table
+  (item, figure, where you found it) and keep the claim only while no row beats it. If the table
+  cannot be filled, soften the claim ("one of the first") or cut it.
+- **Second-hand sources.** A figure a page quotes from another page is second-hand. Find the
+  original. If you cannot, word the line as reported ("according to …", "about").
+- **Computable claims.** Recompute every total, ratio, percentage, difference, rank and duration
+  from its inputs with a tool (a short script), not in your head. Write the result and the inputs
+  in `FILM.md`.
+- **A separate reviewer.** The writer does not clear the script. A second reader, an agent or a
+  fresh session that did not write it, gets the script and the source files and lists every claim
+  the sources do not state.
+- **Remembered anecdotes.** A story, quote, date or detail that came from memory is unverified
+  until it is found in a source file. Find it or cut it.
+- **Names.** Search how people in each language and region commonly call the subject (a work, a
+  product, a place, a person) and write that form. Do not avoid a real title or proper name out of
+  caution: a film about a real thing names it, and a vague stand-in loses the viewer.
+
+## Story structures (pass 2)
+
+Structures that work for many scripts, as examples only:
+
+- **Follow one person** through the events, so each fact happens to someone.
+- **A reversal**: set the expectation first, then show what happened instead.
+- **Montage chapters**: a run of short, parallel pieces under one heading each.
+- **The user's thesis as the spine**: when the user brought a point of view, every scene argues it.
+
+These are examples, not a menu. Look for other structures that fit this content and this viewer,
+and choose the one that serves the content best, listed or not. A listed structure taken without
+comparing it with another is a weak choice.
+
 ## Caption breaks (pass 6)
 
 A caption breaks only where the meaning breaks, in every language. A break inside a phrase is a
@@ -50,7 +84,7 @@ becomes a pause, and every line boundary gets the same silence.
   ending or the same sentence shape.
 - **The caption can be shorter than the speech.** Put the natural sentence in `say` and the
   compact version in `text` when the picture needs a short caption. Keep the key words the same
-  in both, so the viewer reads what they hear.
+  in both, so the viewer reads what they hear, and write why in the line's `sayWhy` (below).
 - **Set the pause per line** (`pauseAfterMs` in `plan.json`; the default is `meta.gapMs`):
 
 | The next line | `pauseAfterMs` |
@@ -107,6 +141,15 @@ Rewrite for the listener and keep the facts. The same holds in every language.
 Follow `references/readout.md`: it names the file for the film's language and the checklist that
 applies to every language.
 
+**A `say` left from an older `text`.** Edit a line's `text` and its `say` can keep the old
+sentence, so the voice reads words the caption no longer shows. `validate-plan.mjs` prints a
+warning for each line whose `say` differs from its `text` by a character error rate above 0.3,
+after numbers, names from `meta.pronounce`, punctuation and delivery marks are folded the same
+way on both sides. A respelling or a number spelled out stays under that rate and is not warned.
+When `say` differs on purpose (a shorter caption, a brand read by letter), write the reason in the
+line's `sayWhy`: it is never spoken or shown, it silences the warning for that line, and it tells
+the next reader the difference is meant. The warning never changes the exit code.
+
 Record in `FILM.md`: the source location of each fact (pass 1) and the lines changed in each
 pass, so a later reader can see why a line reads the way it does.
 
@@ -135,3 +178,10 @@ This is a length check, nothing more. The measured voice still sets the clock: n
 from the estimate.
 
 After synthesis, change a line only for a real error — an STT flag, a misread name or number.
+
+## A film with no narration
+
+A wordless film has no script to translate and no `dub/` folder to make. Its language versions
+are the title and the description, written once per language. A wordless film that still draws
+text in the picture (a label, a sign) needs that text per language, which is a picture layer, not
+a dub.

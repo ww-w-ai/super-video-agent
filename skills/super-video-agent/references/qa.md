@@ -17,13 +17,40 @@
 
 A failing gate prints a DIAGNOSIS line naming the time or element. Fix the cause, not the threshold.
 
+**A check that looked at nothing has not passed.** `review.mjs` gives such a check the verdict
+`CHECKED NOTHING` (in `review.json` its `pass` is `null`, listed under `checkedNothing` with the
+reason): neither PASS nor FAIL. Other tools print `checked nothing: <reason>` the same way: a
+`verify.mjs` scan with no scene code, `cue-check.mjs` with no word cue, `validate-plan.mjs
+--breaks` when every line is one piece, a safe area set to `none`, a language with no named
+font. Zero targets is a true pass only if the film really has nothing for that check to look at.
+So ask whether the film needs it. If it does, make what the check looks at (a word cue, a `|`
+break, a safe area, a named font) and run only that check again; if it does not, write in
+`FILM.md` that it did not apply.
+
+**Show a gate fail before you trust it pass.** A check that has never failed is unproven. Before
+relying on a new or changed check, run it on an old output that is known to be wrong (a render
+that has the defect, a copy with the defect put back, a deliberately wrong input) and see it
+fail; run it on the fixed output and see it pass. A check that passes both, or that finds no
+target, says nothing. Delete the probe afterwards and rebuild anything made from it.
+
 A frame that changes with the seek history usually carries state from an earlier frame: a
 texture built lazily on the first seek, or a blur or glow drawn with soft transparent edges over
 whatever the canvas held before. Draw blur and glow over an opaque copy of the frame first.
 
 A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...]`
 reviews it directly: audio and video stream lengths, integrated loudness of the whole file and of
-each part, dead air and black frames (`references/bookends.md`).
+each part, dead air and black frames (`references/bookends.md`). A picture that is meant to move
+slowly or hold (a deliberate still, a slow push) reads as dead air: name those spans with `--holds
+12.5-15,40-44` (seconds) and they are listed as intended holds, not flagged. In a reel review the
+page declares them itself: `window.__reel.holds = [{from, to}]`. The freeze test reads 320-px
+frames, because 64-px frames read slow movement as frozen.
+
+To show a film to a reviewer, `review.mjs <reel-dir> --copy [--lang <code,code>] [--out <dir>]`
+writes one `review-copy-<code>.mp4` per language layer that has an `out/final-<code>.mp4`. The
+existing encode (picture, voice and bed) is stream-copied, nothing is rendered, and a subtitle
+track carries one cue per line as `<line id> <text>`, so a reviewer can name the line they mean.
+A layer with no encode or no timings is skipped with the reason; the run exits 1 only when no
+copy could be built. Show the reviewer a copy with its voice and line ids, never a silent picture.
 
 ## Reading the contact sheet
 
@@ -62,7 +89,8 @@ with `?captions=0` as in `render.mjs --no-captions`, and the file is `still-<at>
 
 ## Check tools that report facts (a model judges)
 
-None of these fails a reel; each prints what it measured and exits 0. Boil, motion, flicker and blink
+None of these fails a reel; each prints what it measured and exits 0 (one exception, `langglyphs`
+below: a character the language's font lacks is definitely wrong and exits 1). Boil, motion, flicker and blink
 are judged from the source and the page state, never from frames: a screenshot shows one frame, and
 these defects live between frames. **Source review first, state scan second**: the source review
 points at the line that causes it, the state scan confirms it in the rendered timeline.
@@ -79,14 +107,29 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   `cue-word-not-heard` (the speech-to-text transcript lacks it), `cue-word-uncertain` (interpolated
   word times, or no clear onset), `cue-word-moved` (the waveform puts the word elsewhere).
   Without `narration.wav` only the text checks run. Writes `out/cue-check.json`.
-- **Text overlap, glyph fallback, one-frame flicker** — `scripts/state-checks.mjs <dir> [--only
-  overlap,glyphs,flicker] [--step <frames>]`. It wraps the canvas text calls while the page seeks
-  every frame, so a reel needs no change. *overlap*: text boxes sharing area with another text box
-  (a string drawn twice, as a shadow or outline, is one element). *glyphs*: characters a font in
-  use lacks, so a fallback font drew them (a script missing from the chosen font); a family that is
-  not loaded shows every character. *flicker*: texts, and any layer listed by the optional page hook
-  `window.__reel.visibleAt(t)` → `[{id, opacity?}]`, visible for one sampled frame with neither
-  neighbour showing it. Writes `out/state-checks.json`.
+- **Text overlap, glyph fallback, one-frame flicker, covered content, language glyphs** —
+  `scripts/state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--step
+  <frames>] [--range <t0>-<t1>] [--outline-em <n>]`. It wraps the canvas text calls while the page
+  seeks every frame, so a reel needs no change; `--range` reads the frame checks only between
+  those seconds, and progress goes to stderr. *overlap*: text boxes sharing area with another text
+  box (a string drawn twice, as a shadow or outline, is one element). *glyphs*: characters a font
+  in use lacks, so a fallback font drew them (a script missing from the chosen font); a family
+  that is not loaded shows every character. *flicker*: texts, and any layer listed by the
+  optional page hook `window.__reel.visibleAt(t)` → `[{id, opacity?}]`, visible for one sampled
+  frame with neither neighbour showing it. *covers*: a label or always-on overlay that covers key
+  content; it checks only the regions the page declares, `window.__reel.regions = [{id, kind:
+  "key"|"label"|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]` (canvas px; no `from`/`to`
+  = the whole film), reports the shared px² and times, and is a judgement for the reviewer.
+  *langglyphs*: every character of every language's captions (`plan.json` and each
+  `dub/<code>/plan.json`) against the font that language uses (`window.__reel.captionFonts =
+  {"<lang>": "<font-family list>", "*": "…"}`, else the plan's `style.fonts`). `--outline-em <n>`
+  says the captions are drawn with an outline n times the font size wide, and glyph shapes are
+  compared after growing them by half of it. Exit contract: exit 1 only when `langglyphs` finds
+  a character the language's font does not have (it would draw in a fallback font), and for
+  unusable arguments or an unreadable reel; a font that is declared but not loaded prints `not
+  checked: font not loaded` and does not exit 1; every other finding exits 0. `--only
+  overlap,glyphs,flicker,covers` runs without the one check that can exit 1. Writes
+  `out/state-checks.json`.
   - Flicker, source first: the same command first reads `reel.html`, its scripts and `src/*.js` for
     show/hide windows under 2 frames at the film's fps, a one-frame gap or overlap between
     neighbouring windows, one condition on two clocks (base and dub, shot-local and global), a
@@ -104,6 +147,30 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   `[{character, closed: 0..1}]` is sampled every frame (`references/3d.md`). `--glb` reads a clip's
   own morph-weight keyframes for the blink targets, with no page. A screenshot cannot catch a
   blink that lasts two frames; this does.
+- **Caption contrast** — `dub.mjs` (`--no-contrast` skips it). For up to three frames per line it
+  compares the caption layer's drawn colour with the picture behind the text box as a WCAG
+  contrast ratio, from pixels already drawn, with no screenshot. It works in both directions: light
+  text on a bright picture, and dark text on a dark one. Under 3:1 is `LOW`, under 4.5:1
+  `marginal`, per line id and time; the full rows go to `dub/<code>/contrast.json`. The grade is
+  a number for the reviewer to act on; it never stops a run. It says `checked nothing` when no
+  sampled frame has a caption over a measurable picture.
+- **Waveform cut check** — `dub.mjs` lists each placed line whose start or end is still loud in
+  the final narration, an abrupt cut the silence gate cannot see. A report, not a stop. After
+  the cut is found, re-make the line or give it room (`references/voice.md` "Fixing one line").
+- **Voice clip facts** — `review.mjs` prints the `HEAD`, `DIP` and `PAUSE` facts `voice.mjs`
+  stored per line (`references/voice.md`), as facts, never a pass or fail.
+- **Engine notes and facts** — `review.mjs` and `verify.mjs` print `note: …` when the page's
+  safe area is `none` (no text can fall outside it, so a clean layout report proves nothing), and
+  `fact: …` lines for what the engine knows but cannot judge: a label with no string in the
+  language (`picture-string-missing`), a corner note with no counterpart (`overlay-text-missing`,
+  `note-*`). The page may mean them; read each and decide.
+- **WebGL errors and warnings** — Chromium logs a failed WebGL draw as a console warning, so an
+  errors-only listener passes a frame that drew nothing. `verify.mjs`, `still.mjs`, `state-checks.mjs`
+  and `render.mjs` read both and print `GL error: …` for an error code, a lost context or
+  out-of-memory, and `GL warning: …` for any other GL message. A GL error means the frames are
+  wrong: `render.mjs` fails the segment before it is published, `verify.mjs` fails its probe and
+  `still.mjs` exits 1 with a DIAGNOSIS line. A GL warning is printed for you to read and does not
+  stop anything, and `state-checks.mjs` prints both without changing its exit code.
 
 ## Round limit
 

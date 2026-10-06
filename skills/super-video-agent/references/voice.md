@@ -102,13 +102,19 @@ disables the option. It only shortens pauses. Provider timestamps already includ
 processing. For audio you already have, use [audio editing guide](../guides/audio-editing.md) to shorten
 or lengthen pauses without a paid request or local model inference.
 
-`meta.voice.removeSilenceMs` optionally caps Typecast's detected pauses at 0–1000 ms.
-It is the silence to **retain**, not remove; `0` removes detected silence and omission
-disables the option. It only shortens pauses. Provider timestamps already include this
-processing. For audio you already have, use [audio editing guide](../guides/audio-editing.md) to shorten
-or lengthen pauses without a paid request or local model inference.
+Record in `FILM.md` the provider, model and voice used. Every synthesis request is also appended
+to `tts-usage.jsonl` in the voice folder it writes to (`voice/`, or `dub/<code>/voice/`): one JSON object per request with
+`ts`, `provider`, `model`, `voiceId`, `chars` (the text sent), `audioSec` (the audio that came
+back), `lineIds` and `cost` (what the provider reported, else `null`). No key and no request
+body is written, a failed request records nothing, and a log that cannot be written is a note,
+never a stop. `scripts/runner/cost-report.mjs <film-dir>` reads these logs and prints syntheses,
+characters, seconds and known cost per provider for the final report.
 
-Record in `FILM.md` the provider, model and voice used.
+Mixing engines (or voices) inside one film changes the texture of the narration from one line to
+the next, and an engine's read at its own speed differs from another's. Making one film in one
+engine and one voice avoids it; the model decides when a mix is wanted (a second speaker, an
+aside). When some lines are re-recorded later, keep their speed the same as the rest of the film
+(the film's `rate`), so the new lines do not sound faster or slower than the old ones.
 
 ## Delivery marks
 
@@ -207,8 +213,8 @@ one call.
 
 Duration and tail-RMS checks catch a clip that's too short or cut off, but not a clip that's the
 *wrong* length and cleanly finished — a mispronounced word, a dropped clause, a misread name. After
-synthesis, `voice.mjs` transcribes every synthesized line back to text (`faster-whisper`, offline,
-local) and compares it against the intended line:
+synthesis, `voice.mjs` transcribes every synthesized line back to text (speech-to-text engines
+below) and compares it against the intended line:
 
 - **SHORT** — the qwen3 provider's own duration gate: shorter than the text could plausibly take.
 - **TAIL** — the qwen3 provider's own tail-RMS gate: still sounding in the final ~30ms, a cut
@@ -221,13 +227,24 @@ local) and compares it against the intended line:
   take, babble or words never in the script). Error rate is taken as the *minimum* over `text`
   (caption) and `say` (spoken, if it differs).
 
-Before the error rate, numbers on both sides are written one way by the line's language rules
-(`scripts/lib/stt-numbers.mjs`), so "2 nm" heard as "two nanometers" is not an error. Covered
-now: English — number words to digits ("twenty-five" → 25, "five point two" → 5.2), a number
-before thousand/million/billion, "$5" → "5 dollars", "%" → "percent", long unit names after a
-number to the short form ("nanometers" → nm, also mm, cm, km, m, mg, kg, g, KB/MB/GB/TB, MHz/GHz)
-and no space between a number and its unit. Every other language is compared as before; add a
-language there only with rules that read one way.
+Before the error rate, both sides are folded to one spelling, so a correct reading that is
+written another way is not an error. The folded text is used only for the comparison; the diff
+report shows it.
+
+- **Numbers** (`scripts/lib/stt-numbers.mjs`, `stt-numbers-cjk.mjs`). English: number words to
+  digits ("twenty-five" → 25, "five point two" → 5.2), a number before thousand/million/billion,
+  "$5" → "5 dollars", "%" → "percent", long unit names after a number to the short form
+  ("nanometers" → nm, also mm, cm, km, m, mg, kg, g, KB/MB/GB/TB, MHz/GHz), and no space between a
+  number and its unit. Korean: Sino-Korean and native numbers before a counter, and mixed digits
+  ("2억 5000만" = "이억 오천만"). Chinese and Japanese: hanzi and kanji numerals, "百分之N".
+- **Scripts** (`scripts/lib/stt-script-fold.mjs`). Traditional and Simplified Chinese are folded
+  to one, katakana to hiragana, and a few kanji words with one reading to kana. Names in the
+  `meta.pronounce` dictionary fold to their written form.
+- **Limits.** The folding is a table of common characters and words, not a converter: a
+  character or word not in it stays as written and counts as a difference. A lone number
+  character with no counter or place word ("이", "一") is left alone, since it is usually a
+  particle or part of a word. A language without a rule table is compared exactly. Add a
+  language only with rules that read one way.
 
 Every synthesized line gets `stt: {advisory, target, against, heard, cer, diffs,
 grossMismatch, tailMatched}` in `timings.json`. These measurements are evidence for the
@@ -247,14 +264,60 @@ so a clean check does not prove a name or a homophone was read the intended way
   after the check up to `N` more times, keeping whichever take has the lower error rate. Skipped
   for deterministic providers (`say`, `file`, `none`) — regenerating gives the same result.
   Prefer selecting confirmed problem lines with `--lines` after inspecting the evidence.
-- `--no-stt` — skips the check entirely (drafts, or when `faster-whisper` isn't installed).
-- `--stt-only` — re-runs just the STT check against a reel's existing `voice/line-*.wav` files
-  without synthesizing anything; updates `timings.json` in place. Useful to re-verify a reel after
-  the fact, or as a lighter-weight check inside the skill. It transcribes in the language
-  `timings.json` records in `lang` (written by every voice run), falling back to
-  `plan.meta.lang`.
-- Missing Python or `faster-whisper` never fails the voice step — it prints `STT check skipped:
+- `--no-stt` — skips the check entirely (drafts, or when no engine is set up).
+- `--stt-only [--lines id,id]` — re-runs just the STT check against a reel's existing
+  `voice/line-*.wav` files without synthesizing anything; updates `timings.json` in place and
+  does not touch `narration.wav`. Lines are compared with `plan.json`'s current text, so it
+  re-verifies a reel after an edit. It transcribes in the language `timings.json` records in
+  `lang` (written by every voice run), falling back to `plan.meta.lang`. With `--lines` only
+  those lines are checked. The model loads once and each line is saved as soon as it is checked;
+  `voice/stt-pending.json` lists the lines not yet checked. A killed run, started again with
+  the same command, resumes with those lines only; delete the file to check every line. A full
+  voice run (no `--lines`) deletes it.
+- Missing Python or a missing model never fails the voice step — it prints `STT check skipped:
   <reason>` and continues.
+
+**Speech-to-text engines** (facts; the tool does not rank them).
+
+| Setting | Meaning |
+|---|---|
+| `SVA_STT_ENGINE` | `mlx` (default; the mlx-whisper Python package) or `groq` (a hosted Whisper API) |
+| `SVA_STT_PYTHON` | the Python that has mlx-whisper installed (engine `mlx`) |
+| `SVA_STT_MODEL` | the first-pass model (default `small`) |
+| `SVA_STT_MODEL_RECHECK` | the second-pass model (default `turbo`), run only on lines whose first transcript is doubtful |
+| `SVA_STT_DOUBT_CER` | the error rate against the plan text above which a line is doubtful (default 0.15) |
+| `SVA_STT_GROQ_MODEL` | the hosted model (default `whisper-large-v3-turbo`) |
+| `GROQ_API_KEY` | the key for engine `groq`; read from the environment and never printed; no key = the check is skipped |
+
+Audio leaves the machine only when `SVA_STT_ENGINE=groq` is set. A line the second model answers
+keeps the transcript with the lower error rate, and the model that gave it is recorded in the
+line's `stt.model`. A model that is not downloaded skips the check with a note;
+`node scripts/setup.mjs --stt-models` downloads the two mlx-whisper models into the Hugging Face
+cache (several hundred MB to a few GB), and `setup.mjs` lists the engines it can use.
+Compare takes at equal loudness: `--takes` and `--pick-by stt` transcribe leveled copies, the
+loudness an installed line gets, because the same take scored differently before and after
+leveling.
+
+## What the transcript cannot hear
+
+A line can pass the transcript check and still sound wrong. After each line is made, `voice.mjs`
+reads the line's own audio and prints facts, stores them in `timings.json` (`clipFacts`), and
+`review.mjs` lists them. They are facts, never a pass or fail; listen before keeping the line.
+
+| Fact | Means |
+|---|---|
+| `HEAD` | the first 150 ms of the voiced span is cut or swallowed: it starts at nearly full level, or its loudest 10 ms sits far under the body of the line |
+| `DIP` | a 150 ms stretch 15 dB under the line's median level, with sound on both sides |
+| `PAUSE` | 0.35 s or more of silence inside the voiced span |
+
+`voice.mjs <reel> --pitch [--lines id,id] [--words]` reports where the pitch goes in each
+installed line, and only reports: the voiced share, the median and range, and the end contour (a
+rise, fall or level, in semitones against the voiced stretch before it). `--words` adds the shape
+of each word (rising, falling, level, dipping, peaking, unvoiced; one word is one syllable in
+Vietnamese and Chinese). A line whose text ends in a question mark is listed with its measured end
+contour. It writes `out/pitch.json`. It measures pitch; it cannot judge whether a rise, a fall or
+a tone is the right one in that language (a question's rise, a lexical tone, a Vietnamese tone
+contour). That judgement is the reader's, for the language of the line.
 
 ## Comparing takes
 
@@ -280,8 +343,18 @@ gets take 1 installed so the reel is complete.
 
 Hosted voices can read the same text at quite different lengths from take to take. When a line
 has to fit a slot (a dub line, a fixed picture beat), make a few takes and let the tool pick:
-`--pick-by length:<sec>` installs the take closest to that length, `--pick-by stt` the one with
-the lowest STT error rate. Either prints the take table first.
+`--pick-by length:<sec>` installs the take closest to that length (at the film's speed),
+`--pick-by stt` the one with the lowest STT error rate. Either prints the take table first,
+with the chosen take marked. With `--takes` it installs the choice at once; alone it reads the
+takes already in `voice/takes/` for the `--lines` ids (default: every line in
+`voice/takes/manifest.json`).
+
+- The take installed now is a row of its own (`installed`) and wins ties, so a better existing
+  take is never replaced by a worse new one; when it scores best, nothing is installed.
+- The `slot` column shows each take against the line's slot. A take that runs over the slot is
+  never chosen, and when no take fits, that line is refused and the run ends with an error.
+- The `end` column (pitch at the line's end) and the `defects` column (`HEAD`, `DIP`, `PAUSE`)
+  appear when the audio shows any. They are facts for you to weigh, not part of the choice.
 
 A line made somewhere else — tone variants in a scratch reel, another provider, the other version
 of an A/B, a recording — goes in with `--use <id>=<wav>[,<id>=<wav>]` (add `--retime` when its
@@ -348,10 +421,20 @@ reads that language natively is a good choice.
 
 Before synthesis, rewrite the spoken text (not the caption) for names, numbers and English terms
 the voice will misread: `MCP` → `엠씨피`, `2026년` stays, `D-day` → `디데이`. Keep the caption text as
-written. `plan.json` lines may carry `say` (spoken) alongside `text` (caption) when they differ.
+written. `plan.json` lines may carry `say` (spoken) alongside `text` (caption) when they differ;
+write why in the line's `sayWhy` when the difference is on purpose (never spoken or shown), or
+`validate-plan.mjs` warns that a `say` above 0.3 character error rate from its `text` may be
+left over from an older text (`references/script-review.md`).
 A word that recurs goes in the `meta.pronounce` dictionary once (respelling, or IPA for engines
 that read SSML phoneme tags). Numbers, names, the sounds the spelling hides, and the three ways
 to fix a stubborn word, per language: `references/readout.md`.
+
+**Quote marks are not sent to the voice.** In every language, quote marks (straight and curly
+double quotes, guillemets, CJK corner brackets) are removed from the spoken text before synthesis,
+because an engine can read one as a pause or a word. Captions keep them. A single quote that
+touches a letter is an apostrophe and stays (`don't`, `dogs' bones`, `rock 'n' roll`); a single
+quote goes only when it opens and closes a quoted span (`'ship it'`) or touches no letter or
+digit. The same applies to a `|` caption break, which is never spoken.
 
 ## Fixing one line
 
@@ -364,19 +447,28 @@ edit the line's `say` in plan.json (spacing and commas steer the reading: 사 �
 node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 ```
 
-- In a dub folder (`dub/<code>/`) there is no old-slot fit: a re-made take keeps its natural
-  length and is re-measured, as with `--retime` (no flag needed). The line's real limit is the
-  base-language slot on the picture, which `dub.mjs` fits (trim, then atempo up to 1.1×, then at least 0.5 s of breath, then the voice-free gap up to 1.0 s; `--min-gap`).
-  `voice.mjs` prints one line saying so. The rest of this list is the base reel.
-- The new take is fitted to the old slot: padded if shorter, sped up by at most 1.1× if longer.
-  The picture needs no change. `voice.mjs` prints one line per fitted take, so a padded take is
-  not mistaken for the wrong one: `<id>: take 2.97s fitted to its slot 4.56s (+1.59s silence)`
-  or `(sped up 1.04x)`. The same applies to a take installed with `--pick` or `--use`.
-- A take more than 1.1× longer keeps its own length and moves every later line; `voice.mjs`
-  says so on that take's line (`keeps its own length … later lines shift +0.64s`) and lists the
-  moved lines ("lines with shifted start"). Re-render those shots, or pass `--retime` on purpose. In a dub folder
-  (`dub/<code>/`) nothing re-renders: the picture does not move, and `dub.mjs` re-places the
-  lines; `voice.mjs` says so there.
+- A re-made take is fitted to the old line's slot, in the order `dub.mjs` fits a language:
+  1. trim the clip's edges to its voiced span;
+  2. speed it up by at most 1.1× if it is longer than the slot (`atempo`, pitch kept);
+  3. keep at least 0.5 s of breath after it;
+  4. leave a voice-free gap of at most 1.0 s (a much shorter take is slowed by at most 0.95×,
+     then reported);
+  5. a take that still does not fit is **refused**: the old clip stays, the take is kept at
+     `voice/takes/<id>/refused-<stamp>.wav`, the other lines install, and the run ends with an
+     error naming the line. Make that voice again: shorten the line's `text` or `say`, or run
+     `--lines <id>` again for a new take. No take moves the lines after it, so the picture
+     needs no change.
+  `voice.mjs` prints one line per take with its length against the slot and against the take it
+  replaces, plus its STT error rate against the old one, so a padded take is not mistaken for the
+  wrong one: `<id>: take 2.97s fitted to its slot 4.56s (+1.59s silence)` or `(sped up 1.04x)`.
+  The same fit applies to a take installed with `--pick` or `--use`.
+- `--retime` is the opt-in to let a re-made line keep its own length: later lines move and their
+  shots re-render. Use it for a wording change, not a pronunciation fix. `voice.mjs` lists the
+  moved lines ("lines with shifted start").
+- In a dub folder (`dub/<code>/`) a re-made take keeps its natural length (as with `--retime`, no
+  flag needed). The line's real limit is the base-language slot on the picture, which `dub.mjs`
+  fits by the same steps (`--min-gap`); the picture does not move, and `dub.mjs` re-places the
+  lines. `voice.mjs` prints one line saying so.
 - The lines you did not touch keep their measured word times (shifted with their start), with
   `--lines`, `--pick` and `--use` alike.
 - A finished take that needs a breath inside it gets one without re-synthesis:
@@ -392,7 +484,10 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - Head 0.4 s, gap `meta.gapMs` (default 700 ms) between lines, tail 0.4 s. A line's own
   `pauseAfterMs` replaces the gap after it: short when the next line continues the thought, long
   at a scene change (`references/script-review.md`, "Narration that flows"). Changing pauses
-  needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips.
+  needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips. A line's
+  `pauseBeforeMs` adds silence before it, after the previous line's pause: the picture plays that
+  long before the line starts (a first line: after the head). It is recorded as `pauseBeforeSec`
+  in `timings.json`, the silence gate lists it as planned, and a re-take is not charged for it.
 - Line start/end are measured from the synthesized audio. Word times are measured too, and always
   carry the caption's words (`text`, "MCP를"), even where the voice read a respelling ("엠씨피를"):
   ElevenLabs reports its own; for every other engine the speech-to-text check reports when each
@@ -410,6 +505,13 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - Without `SVA_STT_PYTHON` (or with `--no-stt`) word times fall back to an even spread by letters
   across the line (`wordsMeasured: 0`), which has been up to ~0.4 s off the sound and misses
   pauses. Word ends inside continuous speech are less exact than word starts; land beats on starts.
+  After a pause inside a line, a caption word starts where its sound begins, not where the
+  speech-to-text pass put it (`voice.mjs` snaps it to the audio after each line is made;
+  `--stt-only` does the same).
+- **Do not cut a line's audio at a word end.** A word end is the least exact time, and a cut there
+  clips the first sound of the next word. To split speech after a word, synthesize the two parts
+  as separate lines and put the pause between them (`pauseAfterMs`, or `--insert-pause` on a
+  finished line); never trim one take at a word end.
 - Shorts pacing: the user picks 1.0–1.2× at the start (SKILL.md Flow 1); unanswered, a Short speaks at `meta.voice.rate` 1.1 in every language (ffmpeg atempo, clamped
   0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
   `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather
