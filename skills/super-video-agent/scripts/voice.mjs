@@ -239,6 +239,10 @@ STT engine (env): SVA_STT_PYTHON  python with mlx-whisper installed.
 const PROVIDERS = ["say", "fish", "elevenlabs", "typecast", "file", "none", "qwen3", "melotts", "fishspeech"];
 
 async function loadProviderModule(name) {
+  // Only names from the fixed list reach the import path.
+  if (!PROVIDERS.includes(name)) {
+    throw new Error(`unknown voice provider "${name}" (known: ${PROVIDERS.join(", ")})`);
+  }
   try {
     return await import(`./voice/${name}.mjs`);
   } catch (e) {
