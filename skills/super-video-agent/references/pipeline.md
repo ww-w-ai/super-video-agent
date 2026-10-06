@@ -37,6 +37,30 @@ Randomness goes through keyed RNG (`Reel.rng(key)`), and time-varying jitter thr
 limit) and then stop with an error that names the step and lists the page's errors, so a page
 that never finishes loading fails instead of hanging.
 
+### Optional page fields
+
+Each is optional; the scripts read it when present. A field of the wrong shape throws when read
+(`Reel.checkRegions`, `checkHolds`, `checkLangSpans` name the entry), because a wrong declaration
+is definitely wrong.
+
+| Field | Shape | Read by |
+|---|---|---|
+| `preload` | a Promise, or a function returning one (decoded bitmaps, textures built lazily) | every script that opens the page awaits it after `ready`, before the first seek, the cold page in `verify.mjs` included; a rejection or timeout fails the open and names the step |
+| `regions` | `[{id, kind: "key"\|"label"\|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]` in canvas px, or a function returning it; no `from`/`to` = the whole film | `state-checks.mjs --only covers` |
+| `holds` | `[{from, to, id?, reason?}]` seconds where the film holds or moves slowly on purpose | `review.mjs`: a freeze inside a hold is listed as intended, not flagged |
+| `captionFonts` | `{"<lang>": "<css font-family list>", "*": "<fallback list>"}` | the caption layer; `state-checks.mjs --only langglyphs`. Without it, `plan.json` `style.fonts` (`<lang>`, `caption`, `body` or `default`) |
+| `langSpans` | `[{start, end, in?: "layer"\|"scene"}]` seconds | `dub.mjs` ("Shared language-neutral spans") |
+| `visibleAt` | `function(t)` returning `[{id, opacity?: 0..1}]` | `state-checks.mjs` flicker |
+| `segments` | `[{from, to, key}]`, one entry per world | `verify.mjs --world <key>` |
+
+A line's `notes` in `plan.json` (`[{at: "start" | "word:<text>", text, corner?: "tl"|"tr"|"bl"|"br",
+holdSec?}]`) are corner notes: the caption step draws them (`Reel.cornerNotes`, `Reel.drawCornerNotes`),
+the wording from that language's plan line, the time from that language's word times. A note whose word
+is not found starts at the line start and records `note-word-not-found`.
+
+The page's top-level script may use `await`; the scripts wait for `window.__reel` to appear before
+they read it.
+
 ## Timeline
 
 `voice.mjs` writes `voice/timings.json`: each line's measured start/end, and word times (from
@@ -153,11 +177,13 @@ those non-tiling shots merge into one bigger segment with a warning.
 
 ```
 render.mjs <dir> [--preview]           # normal render: probes every segment, reuses what matches
-render.mjs <dir> [--preview] --plan    # print REUSE/RENDER per segment, render nothing
+render.mjs <dir> [--preview] --plan    # print REUSE/RENDER per segment, render nothing; the answer is
+                                       # cached in out/plan-cache.json (--no-plan-cache probes again)
 render.mjs <dir> [--preview] --only id,id   # force-render exactly these segments, skip
                                              # probing everything else (fast path for "fix
                                              # scene X"); refuses if a segment outside --only
                                              # no longer matches its stored frame range
+render.mjs <dir> --span 12.5-15,40-44        # only these seconds (+0.5 s each side); see below
 ```
 
 A first render can go part by part, so no single call has to hold the whole film: `--only a,b`
@@ -229,6 +255,81 @@ cuts exactly the slot frames out of the clip (re-encoded, no page render) and sp
 the slot start through the `--insert` path, with the same frame-count and framemd5 checks. Use
 the same `--preview` setting for the draft and for `--use-draft`.
 
+### Render reuse
+
+Render reuse is the base principle of this stage: render and encode only what changed, stream-copy
+the rest, and build what several versions share once. The tools below follow it; use the smallest
+one that covers the change.
+
+Every segment is encoded with a keyframe every `round(fps)` frames (one second), so a later cut
+copies whole GOPs and re-encodes only the frames up to the next keyframe. A segment from an older
+render has keyframes further apart: a splice still works, and prints one note.
+
+An encode goes to a temporary name (`<name>-<microseconds>-<pid>`) and is renamed on success, so an
+interrupted encode never leaves a truncated mp4 under a cached name. At the start of a render the
+temporary names whose pid is no longer running are removed and listed. A GL error (`GL_INVALID_*`,
+lost context) while a segment draws fails that segment before it is published; other GL messages are
+printed once.
+
+`--plan` caches its answer in `out/plan-cache.json`, keyed by the options, every file of the reel
+folder outside `out/` (size and modified time), the segment cache folders, the skill version and
+`render.mjs`'s modified time. Asking again with nothing changed prints the same lines with
+`page opens: 0`. A real render never reads the cache. `--no-plan-cache` probes again.
+
+### Re-rendering only some seconds
+
+`--span <from>-<to>[,<from>-<to>...]` (seconds) renders only the frames between them, widened by
+0.5 s on each side and snapped to the frame grid, and splices them into the cached segments at exact
+frame cuts. Everything else is reused from the cache without probing. Use it when a few seconds
+changed; it never re-renders a whole shot. Each touched segment's cache (mp4 and probe hashes) is
+updated, so a later full render reuses it.
+
+- It needs every segment rendered once, with its stored frame range unchanged; otherwise it stops
+  and names the segments and the command that fixes it.
+- Not with `--only`, `--insert`, `--use-draft`, `--handle` or `--probe-all`.
+- With `--no-captions --lang <code>` it redraws spans of that language's picture
+  (`out/segments-<code>/`, which must hold every segment once: render `--lang` first). Use it for
+  text drawn inside the scene (`langSpans` entries with `in: "scene"`): only those seconds are drawn
+  again, and a rebuilt segment keeps the strings its cached frames read and adds the ones the new
+  frames read.
+- `--plan --span` prints the span plan and exits.
+
+### Cuts and joins without re-encoding
+
+A cut of frames `[from, to)` packet-copies the whole closed GOPs between clean keyframes and
+re-encodes only the frames from `from` to the next clean keyframe and from the last clean keyframe to
+`to`. When a re-encoded piece's encoder headers differ from the copied piece's, the whole range is
+re-encoded: a join that does not decode is never made. Parts on different time bases are re-labelled
+before the join. `--span`, `--insert`, `--use-draft` and `--assemble` all cut this way. Frame counts
+are read from packets, and only the changed span and the seams are hashed (framemd5), never the whole
+film. `join.mjs` keeps the video stream by packet copy when the parts share codec, size and fps, and
+says why when it re-encodes (a variable frame rate, a rate the grid cannot hold).
+
+### Assembling a film from existing runs
+
+```
+render.mjs <dir> --assemble <edl.json> [--no-captions] [--plan]
+```
+
+`{"entries": [...]}` in film order; an entry is `{"segment": "<id>"}` (a cached segment of this
+quality) or `{"src": "<clip.mp4>"}` (relative to the reel dir), optionally with `"from"`/`"to"`
+(frames of that clip) and `"new": true` for frames that did not exist before (default for a clip under
+`out/drafts/`). The entries must add up to the page's timeline, else the run stops and prints both
+lengths. Use it when the timeline shifted: old segments are copied to their new place and new drafts
+are put in, with no page frame rendered. The gate hashes only new frames, re-encoded frames and the
+first and last two frames of every copied run. Afterwards the segment cache is rewritten at the new
+places (the page is opened once, three frames per segment), so the next render, `--span` or `--only`
+sees every segment current. A missing clip, an fps mismatch, a range past the clip, an EDL that does
+not tile, or a count or hash mismatch stops the run and publishes nothing. Not with `--only`,
+`--insert`, `--use-draft`, `--handle`, `--span`, `--lang` or `--stub`.
+
+### Splitting a film into short scenes from the start
+
+Split even a film with no narration into short scenes from the start: give `shots` one entry per
+scene, render each scene with `--only` and mark it done (a done marker per scene, `references/unattended.md`)
+before the next. A first render can go part by part this way ("A first render can go part by part"
+above). Then an error in a long render costs one scene, not the whole film.
+
 ## Picture first and language versions
 
 When the picture is slow to render (WebGL/3D on CPU, heavy particles) or several languages share
@@ -247,6 +348,33 @@ The picture's own clock comes from the base language's voice — the user's lang
 as always (`voice.mjs <dir>`); other languages follow as variations over that picture; `--no-captions` loads the page with `?captions=0` so `Reel.caption()` (and
 any scene code that checks `Reel.captionsOn()`) draws nothing, and the segments go to
 `out/segments/<final|preview>-nocap/` — separate from a captioned render's, so the two never mix.
+
+### The picture, its bed and its timings are one set
+
+`out/picture.mp4`, `out/picture.bed.wav` and `out/picture.timings.json` (the `picture-<code>` trio
+for a language picture) must come from one render and share one length. Each render writes the trio
+under one stamp, checks it, and only then points the plain names at it; a mismatch throws and nothing
+is pointed. The timings file is written atomically (temporary name, then rename).
+
+```
+render.mjs <dir> --check-pair [--lang <code>]   # exits non-zero on a mismatch; dub.mjs runs the same check first
+render.mjs <dir> --no-captions --fix-picture-duration
+render.mjs <dir> --no-captions [--lang <code>] --bed-only
+```
+
+- `--check-pair` compares the stamps, the picture and bed durations, and the picture and timings
+  durations (50 ms). An interrupted render can leave a mismatched set: render again before laying a
+  dub over it.
+- A picture render compares the picture's length (frames / fps, the page's clock) with the timings
+  `duration`. More than 50 ms apart stops the render and says which value is right (the picture
+  length). `--fix-picture-duration` writes the picture length into `out/picture.timings.json` and
+  continues; it needs `--no-captions` and is refused with `--stub`. The captioned A/V gate names the
+  page length as the right value in the same way.
+- `--bed-only` (with `--no-captions`) rebuilds only the sound bed: the page opens once for `renderSfx`
+  and the sound cues, no frame is captured, the picture file is linked under a fresh stamp, and its
+  video stream md5 must equal the old one's (else the render stops). Use it when only sound changed.
+  It stops when the picture's frame count is not the page's timeline, and refuses a voiced film
+  (`dub.mjs` owns that mix).
 
 ### Strings drawn into the picture
 
@@ -272,7 +400,11 @@ dub.mjs <dir> --lang <code>                    # uses out/picture-<code>.mp4 whe
 ```
 
 The page gets `Reel.lang` (the code; the plan's own language in a base render) and the strings
-before `ready`. A key missing from `meta.overlay.picture` draws its fallback. Segments go to
+before `ready`. A key missing from `meta.overlay.picture` draws its fallback and, when the language
+supplied other strings, records `picture-string-missing` (a fact: the fallback may be intended).
+`Reel.overlayText(overlay, key, fallback, {dub, base})` does the same for 2D layer labels
+(`overlay-text-missing`), silent for the base language. `validate-plan.mjs <dir>/dub/<code>` lists the
+keys that `reel.html` and `src/` read and the dub's `meta.overlay` lacks. Segments go to
 `out/segments-<code>/`, so the base picture's cache is never touched. A segment whose three probe
 hashes equal the base segment's is copied from it, so only shots that draw a changed string render.
 The probe sees three frames: a string that shows only between them is not noticed, so name such a
@@ -325,7 +457,10 @@ and `voice/`.
 runs the same four steps for a language's voice lines against a video's timing reference and
 writes one mono 48 kHz track of exactly the video's length (the length of `--video` when given,
 else the timings' `duration`). It prints the same fill and gap warnings and the silence gate, and
-writes no track when a line needs more than `--max-speed`.
+writes no track when a line needs more than `--max-speed`. With `--draft` it writes the track anyway:
+a line that needs more than `--max-speed` is placed at `--max-speed`, runs past its slot, and is
+listed as `DRAFT: <id> needs <x>x`. A draft is for listening to; reword the listed lines before the
+final. A failure with no factor (a missing clip or line) still stops.
 
 The mix is stereo and runs the picture's full length. The bed (`picture.bed.wav`) keeps its own
 channels, so each cue's pan survives; the voice sits centred at full level in both channels. Both
@@ -374,7 +509,8 @@ safe area. Both are optional; without them nothing changes.
 
 Caption breaks differ per language, so it helps to check a translation for them, e.g. once after the
 language's lines are written and before the final render: run `validate-plan.mjs <reel-dir>
---breaks --dub <code>` and read the whole table, looking at where each caption breaks. A break inside a phrase (a word cut from its particle, auxiliary or
+--breaks --dub <code>` and read the whole table, looking at where each caption breaks (when every line
+is one piece it prints "checked nothing"). A break inside a phrase (a word cut from its particle, auxiliary or
 bound noun; an article from its noun; `can / not`; a Vietnamese two-syllable word) is fixed by
 putting a standalone `|` in that line of `dub/<code>/plan.json` — a Korean line `이렇게 할 | 수
 밖에 없다` becomes `이렇게 | 할 수 밖에 없다`, an English one `We can | not` becomes `We cannot |
@@ -402,6 +538,31 @@ base one. Captions read `tl`; a label or word-keyed animation drawn in that laye
 dub there is one clock and `clk.base` equals `tl`. The picture render itself (`--no-captions`)
 always runs on the base clock. A string that must change per language is a picture string
 (`Reel.pictureText`), not a caption.
+
+### Shared language-neutral spans
+
+The picture is cut into language spans and language-neutral spans. A language span is each placed
+caption line's `[start, end]` (the last line holds to the film's end, as the caption layer does), plus
+every `{start, end}` the page lists in `window.__reel.langSpans`; neutral gaps under 1 s fold into the
+language span. A neutral span is encoded once into `out/shared-spans/<key>-<a>-<b>.mp4` and reused by
+every later language (the key covers the picture's path, size and modified time, the fps and the
+encoder arguments); only the language spans are captured and encoded per language, and everything is
+joined by stream copy with the frame count gated. A film with no neutral span of 1 s or more encodes
+whole, as before.
+
+Each neutral span is probed for pixels the caption layer drew (every frame in a span under 10 s, else
+every 0.25 s); a span that has some becomes a language span and is reported. The run prints how many
+frames were probed. Where the page draws a label that is not a caption, list it in `langSpans` so it
+never depends on the probe; the run prints one advice line when a probe promoted a span and the page
+declares none.
+
+`langSpans` entries are `{start, end, in: "layer" | "scene"}` (default `"layer"`). Text drawn inside
+the scene (a sign or screen in a 3D world) cannot come from the caption layer: list it as
+`in: "scene"`. For a language other than the base one, `dub.mjs` then needs that language's own
+picture (`render.mjs <dir> --no-captions --lang <code>`, and `--span` for only those seconds); with
+the base picture it stops, because the base language's text would stay in the picture. The check
+compares language and script (`zh-Hans` against `zh-Hant` stops; a region-only difference does not;
+`zh` against `zh-Hant`, or an unreadable base language, is not stopped and the note says so).
 
 ### Judging a dub line: the silence after it
 
@@ -455,6 +616,157 @@ review.mjs <dir> --scan [stepSec] --layer captions [--dub <code>]
 For the base language, which has no `dub/<base>/timings.placed.json` outside a dub run, the scan
 falls back to `voice/timings.json`. The scan runs to the language's own length, the `duration` in
 `dub/<code>/timings.placed.json`, so the tail that `--min-gap` added is scanned too.
+
+### More dub reports and operations
+
+All reports below print facts and never stop the run; a stop is only for a definite wrong.
+
+- **Bed duck.** Library cue sounds dip under narration by -2.5 dB by default, with 0.8 s ramps and
+  gaps under 1.5 s merged into one dip (`scripts/lib/duck.mjs`, shared by `render.mjs` and `dub.mjs`;
+  `meta.sound.sfxDuckDb` overrides it, `0` turns it off). The page's own music bed keeps its deeper
+  duck (assumed -10 dB, 0.12 s ramps). `dub.mjs` prints the summed swing of the two ducks where they
+  overlap, so a stacked dip is visible; it is a report.
+- **Silence and short translations.** `dub.mjs` and `fit-track.mjs` pass `meta.gapMs` and each
+  line's `pauseAfterMs` to the silence gate, so planned pauses are listed as planned. After an
+  unplanned gap or a sparse line, `dub.mjs` prints how to judge a short translation (see "Judging a
+  dub line").
+- **Waveform cut check.** The placed narration is checked at each line's start and end: a span's first
+  or last 5 ms still within 20 dB of the span's loudest 10 ms is listed as an abrupt cut. `dub.mjs`
+  and `fit-track.mjs` print it.
+- **Caption contrast.** For up to three frames per line, the caption layer's drawn colour is compared
+  with the picture behind the text as a WCAG contrast ratio, in both directions (light text on a
+  bright picture, dark text on a dark one); a note panel is composited over the picture first. Under
+  3:1 is `LOW`, under 4.5:1 `marginal`, per line id, time and region. The rows go to
+  `dub/<code>/contrast.json`. `--no-contrast` skips it.
+- **Audio only.** `dub.mjs <dir> --lang <code> --audio-only [--audio-format m4a|wav]` writes only that
+  language's track (`out/audio-<code>-<stamp>.m4a`, AAC 192k, or 48 kHz PCM wav, plus
+  `out/audio-<code>.<ext>` pointing at the newest): the same trim, fit, place and mix, no caption
+  capture, no video. Its length is checked against the picture timings' `duration`; when the picture
+  file exists, the picture, bed and timings pair check runs too. Use it to add a language to a video
+  that is already uploaded. `--replace-audio` cannot (it needs the frozen caption text to equal the
+  dub's); `--audio-only` does not combine with `--min-gap`.
+- **Time insert.** `dub.mjs <dir> --insert-time <sec> --seconds <n>` (a title-card hold, say) shifts
+  every `dub/<code>/timings.placed.json` and every `.srt` under `out/` and `dub/<code>/` by `<n>`
+  after `<sec>`, all computed before any write. A line or cue that straddles `<sec>` stops the run
+  with nothing written. It prints each language's old and new length and whether all languages are
+  the same length. It touches no picture, bed or audio: re-render the picture with the hold, then dub
+  each language again. Use it before upload only; a track already attached to a published video would
+  stop matching.
+- **Fresh outputs.** Every dub output is written under a unique hidden temporary name
+  (the name plus a timestamp and the pid), checked (exists, non-empty, modified in this run, length within
+  tolerance; else deleted and the step throws), then renamed to its stamped name. An existing name
+  gets a `-2` suffix instead of being overwritten.
+- **Termination.** SIGTERM and SIGINT stop `dub.mjs`: child processes end, this run's temporary files
+  are removed, and the exit code is 143 or 130.
+- **Splicing audio.** `scripts/audio-edit.mjs in.wav --splice take.wav --at <sec> --out new.wav`
+  replaces a span of a track with a mono take of exactly the span's length; the output length equals the
+  input's, samples outside the span are untouched, and each edge has a 20 ms equal-power crossfade.
+
+## Checks and reports
+
+Each script below reports facts and exits 0 unless its line says otherwise. A check that looked at
+nothing prints `checked nothing` and the reason; that is never a pass.
+
+### Looking at frames: `still.mjs`
+
+```
+still.mjs <dir> --at <t|shotId>[,...] [--out <png> | --out-dir <dir>] [--no-captions] [--no-warm]
+still.mjs <dir> --at <t> --dub <code>
+```
+
+`still.mjs` warms only the shots the `--at` times fall in (`--no-warm` skips even that). `--out-dir`
+writes the files elsewhere. A GL error in the page (`GL_INVALID_*`, lost context) means the frames
+are wrong: the files are still written, the error is printed and the exit code is 1; other GL
+warnings do not change it.
+
+`--dub <code>` previews that language's caption layer (`?layer=captions&dub=<code>`: captions, labels
+and corner notes from `dub/<code>/plan.json`) over the picture at that second (`out/picture-<code>.mp4`,
+else `out/picture.mp4`, else flat grey) and writes `still-<at>-dub-<code>.png`. Before the language is
+dubbed, the base clock serves that plan's text with proportional word times, and the output says so;
+nothing is written into the reel. Not with `--no-captions` or `--stub`.
+
+### Determinism: `verify.mjs`
+
+`verify.mjs <dir> [--range <t0>-<t1> | --only <shotIds> | --world <key>]` runs the static scan, the
+warm determinism probe and the cold probe. `--only a,b` warms and probes exactly those shots (an
+unknown id fails and lists the page's ids); `--range` and `--world` narrow it by time or by world
+(`window.__reel.segments`); give at most one. The scan covers `reel.html` and every script under
+`src/`, skips bundled libraries (`src/vendor/`, `src/lib/three*`, `*.min.js`, `node_modules`) and lists
+what it skipped; with nothing to scan it prints `checked nothing`. A definite WebGL error fails the
+step with a DIAGNOSIS line (warnings print only). It also prints `Reel.safeAreaNote()` when there is
+one (for example "checked nothing" under `setSafeArea("none")`) and the engine's facts
+(`note-*`, `picture-string-missing`, `overlay-text-missing`) as `note:` and `fact:` lines.
+
+### Text, glyphs, flicker, regions: `state-checks.mjs`
+
+`state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--range <t0>-<t1>] [--step <frames>] [--outline-em <n>]`
+
+- `--range <t0>-<t1>` reads the frame checks (overlap, glyphs, flicker) only between those seconds;
+  progress goes to stderr about every 10 s.
+- `covers` checks only the regions the page declares (`regions` above); a label or overlay over key
+  content is a judgement for the reviewer.
+- `langglyphs` checks every character of every language's captions (`plan.json` and each
+  `dub/<code>/plan.json`) against the font that language uses (`captionFonts`, else
+  `style.fonts`), in the page. A missing glyph is definitely wrong for that language: it is listed with
+  code points and line ids, and this is the one check that exits 1. `--outline-em <n>` compares glyph
+  shapes after growing them by half the outline width (n times the font size). When the font did not
+  load or cannot be told from a generic family, it prints `not checked: font not loaded`.
+- Flicker is read in the source first (show/hide windows under 2 frames, one-frame gaps, two clocks),
+  with file:line; `--source-only` and `--no-source` choose.
+- Writes `out/state-checks.json`.
+
+### Reviewing: `review.mjs`
+
+`review.mjs <dir>` builds the contact sheet and reports dead air, A/V sync, loudness and layout
+facts. Intended slow spans declared in `holds` are listed as intended holds; `review.mjs --file
+<mp4> --holds a-b,c-d` takes them by hand, and its freeze test reads 320-px frames. Facts from the
+engine (`note-*`, `picture-string-missing`, `overlay-text-missing`, the safe-area note) are listed
+under `facts` apart from the layout hits and never change a verdict. A check with nothing to look at
+(no audio stream, no shots, too few samples) prints `checked nothing` instead of 0.
+
+`review.mjs <dir> --copy [--lang a,b] [--out <dir>]` makes a review copy for a human reviewer: for
+each language layer (the base language, and each `dub/<code>/` that has `out/final-<code>.mp4`) the
+existing encode is stream-copied, with its picture, voice and bed, into
+`out/review-copy-<code>.mp4`, and one subtitle track is muxed whose cues read `<line id> <text>`
+(the text from that language's plan, `|` marks removed). Nothing is rendered or re-encoded. A layer
+with no encode or no timings is skipped with the reason; exit 1 only when no copy could be built.
+
+### Subtitles: `srt.mjs`
+
+```
+srt.mjs build <dir> [--base | --dub <code>] [--line-chars <n>] [--max-lines <n>] [--out-dir <dir>]
+srt.mjs align <media> --script <file> --lang <code> [--out <file.srt>]
+srt.mjs compare <a.srt> <b.srt> [...] [--tolerance <ms>]
+```
+
+- `build` writes one SRT per language to `out/srt/<code>.srt` from `voice/timings.json` and every
+  `dub/<code>/timings.placed.json`. Cues break where the on-screen caption breaks (a `|` or a newline
+  wins, a number stays with its unit, no row ends on an article, nothing breaks inside a parenthesis or
+  quote). At most `--max-lines` rows per cue (default 2); `--line-chars` sets the row length (default
+  by language: Japanese and Chinese 16, Korean 22, others 42). With two or more languages it reports
+  cue count and time equality per line and writes `srt-report.json`. Findings: too many rows, row too
+  long, glued break, overlap, no duration, proportional times.
+- `align` makes an SRT for a video that already exists: speech-to-text times the words, the text is your
+  script (`plan.json` / `timings.json` `lines[].text`, or plain text one line per row). A script line
+  with under half its words found gets no cue and is listed as `low match`. It uses the same engine as
+  `voice.mjs` (`SVA_STT_ENGINE`, `SVA_STT_MODEL`; `references/voice.md`).
+- `compare` reports cue count and time equality across SRT files; the first file is the reference.
+- Exit is non-zero only when an input cannot be read or the speech-to-text step cannot run.
+
+### Setup: `setup.mjs`
+
+`setup.mjs [--check] [--dir <reel>] [--stt-models]`. Both modes report the Playwright browser cache
+folder (`PLAYWRIGHT_BROWSERS_PATH` or the OS default), its free disk, and the free disk where renders
+write: under 0.8 GB at the cache blocks the Chromium install, under 5 GB where renders write warns.
+`--dir <reel>` measures `<reel>/out`; without it the current folder is measured and the output says
+so. `SVA_MIN_CACHE_GB` and `SVA_MIN_WORK_GB` (GB) change the two limits; a bad value stops setup and
+names the variable. It also reports whether rendering uses a real GPU or a software renderer
+(SwiftShader), from a WebGL probe in the render browser: `SVA_GPU=default|gpu|swiftshader` picks the
+mode and `SVA_CHROME_ARGS` adds raw Chromium flags (a value starting with `[` is a JSON array of
+strings). `--check` installs nothing. `--stt-models` downloads the speech-to-text models into the
+local cache with the Python in `SVA_STT_PYTHON` and is the only step that fetches them (several
+hundred MB to a few GB); it is ignored with `--check`. Both modes list the speech-to-text engines and
+which models are present, and report an API key as set or not set, never printing it.
 
 ## Asset library
 
@@ -533,7 +845,7 @@ them, marked `(k/n words)`.
   cue on a spoken word measures the narration's onset, not the effect's.
 - A sound-only file's head silence (up to 0.3 s) is skipped, so the effect is heard on the cue.
   A clip keeps its own lead so its sound stays on its picture.
-- Every cue dips by `meta.sound.sfxDuckDb` (default -6dB, ~80ms ramps) while a narration line
+- Every cue dips by `meta.sound.sfxDuckDb` (default -2.5dB, 0.8 s ramps) while a narration line
   speaks, untouched in the gaps (`scripts/lib/duck.mjs`, shared with `dub.mjs`); the music bed
   keeps its own, deeper -10dB duck. `references/sound.md` "Mix".
 
