@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
 Super Video Agent STT round-trip check — transcribes synthesized narration lines back
-to text with faster-whisper, so voice.mjs can verify a generated line
+to text with mlx-whisper, so voice.mjs can verify a generated line
 actually says what it was supposed to say (references/voice.md "Did the
-voice say the line?"). Model is loaded ONCE for every line in the batch.
+voice say the line?"). The model is loaded ONCE for every line in the batch.
 
 Usage:
   python stt_check.py <voiceDir> <linesJson>
@@ -12,10 +12,12 @@ Usage:
 `wav` may be relative to <voiceDir> or absolute.
 
 Env:
-  SVA_STT_MODEL  faster-whisper model name (default "small")
-  SVA_STT_LANG   transcription language code (default "ko")
-  HF_HUB_OFFLINE=1    set by the caller to force offline model loading;
-                      this script does not set it itself.
+  SVA_STT_MODEL     "small" (default), "turbo", or an mlx-whisper repo / local folder
+  SVA_STT_LANG      transcription language code (default "ko")
+  SVA_STT_PROGRESS  path of a JSON file rewritten after every line with the results so
+                    far, so a run that dies midway still leaves the finished lines
+  HF_HUB_OFFLINE=1  set by the caller; a model that is not in the local cache then
+                    ends the run with exit code 3 instead of downloading it.
 
 Prints a single JSON array to STDOUT:
   [{"id": "l1", "heard": "...", "words": [{"w": "...", "start": 0.21, "end": 0.78}, ...]}, ...]
@@ -25,13 +27,50 @@ Prints a single JSON array to STDOUT:
 import sys
 import os
 import json
+import subprocess
+
+MODEL_NOT_DOWNLOADED_EXIT = 3
+SAMPLE_RATE = 16000
+FRAME_SEC = 0.01
+
+MODELS = {
+    "small": "mlx-community/whisper-small-mlx",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
 
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-FRAME_SEC = 0.01
+def resolve_model(name):
+    return MODELS.get(name, name)
+
+
+def ensure_cached(repo):
+    """Fail with MODEL_NOT_DOWNLOADED_EXIT when the model is not already on disk."""
+    if os.path.isdir(repo):
+        return True
+    from huggingface_hub import snapshot_download
+
+    try:
+        snapshot_download(repo, local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
+def decode_audio(wav_path):
+    """Mono float32 samples at 16 kHz, through ffmpeg."""
+    import numpy as np
+
+    raw = subprocess.run(
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", wav_path, "-f", "s16le", "-ac", "1", "-ar", str(SAMPLE_RATE), "-"],
+        capture_output=True,
+        check=True,
+    ).stdout
+    return np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
 
 def trim_to_sound(wav_path, words):
@@ -41,11 +80,9 @@ def trim_to_sound(wav_path, words):
     if not words:
         return words
     import numpy as np
-    from faster_whisper.audio import decode_audio
 
-    sr = 16000
-    audio = decode_audio(wav_path, sampling_rate=sr)
-    hop = int(sr * FRAME_SEC)
+    audio = decode_audio(wav_path)
+    hop = int(SAMPLE_RATE * FRAME_SEC)
     n = len(audio) // hop
     if n == 0:
         return words
@@ -63,44 +100,66 @@ def trim_to_sound(wav_path, words):
     return out
 
 
+def save_progress(path, results):
+    """Rewrite the progress file whole, so a reader never sees half a file."""
+    if not path:
+        return
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(results, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def transcribe_one(mlx_whisper, repo, wav_path, language):
+    out = mlx_whisper.transcribe(
+        wav_path,
+        path_or_hf_repo=repo,
+        language=language,
+        word_timestamps=True,
+        condition_on_previous_text=False,
+    )
+    heard = (out.get("text") or "").strip()
+    words = [
+        {"w": w["word"].strip(), "start": w["start"], "end": w["end"]}
+        for seg in out.get("segments", [])
+        for w in (seg.get("words") or [])
+        if w.get("word", "").strip()
+    ]
+    return heard, trim_to_sound(wav_path, words)
+
+
 def main():
     if len(sys.argv) < 3:
         log("usage: stt_check.py <voiceDir> <linesJson>")
         return 2
     voice_dir, lines_json_path = sys.argv[1], sys.argv[2]
-    lines = json.load(open(lines_json_path, encoding="utf-8"))
+    with open(lines_json_path, encoding="utf-8") as f:
+        lines = json.load(f)
 
     if not lines:
         print(json.dumps([]))
         return 0
 
-    model_name = os.environ.get("SVA_STT_MODEL") or "small"
+    repo = resolve_model(os.environ.get("SVA_STT_MODEL") or "small")
     language = os.environ.get("SVA_STT_LANG") or "ko"
+    progress = os.environ.get("SVA_STT_PROGRESS")
 
-    from faster_whisper import WhisperModel
+    import mlx_whisper
 
-    log(f"[stt_check] loading model once ({model_name})...")
-    model = WhisperModel(model_name, device="cpu", compute_type="int8")
-    log(f"[stt_check] model ready. {len(lines)} line(s), language={language}")
+    if not ensure_cached(repo):
+        log(f"[stt_check] model {repo} is not in the local cache")
+        return MODEL_NOT_DOWNLOADED_EXIT
+    log(f"[stt_check] {len(lines)} line(s), model={repo}, language={language}")
 
     results = []
     for entry in lines:
         lid = entry["id"]
         wav = entry["wav"]
         wav_path = wav if os.path.isabs(wav) else os.path.join(voice_dir, wav)
-        segments, _ = model.transcribe(wav_path, language=language, beam_size=5, word_timestamps=True)
-        segments = list(segments)
-        heard = "".join(seg.text for seg in segments).strip()
-        # When each word was said, in seconds from the start of the clip: the caption's word
-        # timings for engines that report none.
-        words = trim_to_sound(wav_path, [
-            {"w": w.word.strip(), "start": w.start, "end": w.end}
-            for seg in segments
-            for w in (seg.words or [])
-            if w.word.strip()
-        ])
+        heard, words = transcribe_one(mlx_whisper, repo, wav_path, language)
         log(f"[stt_check] {lid} -> {heard}")
         results.append({"id": lid, "heard": heard, "words": words})
+        save_progress(progress, results)
 
     print(json.dumps(results, ensure_ascii=False))
     log("[stt_check] done")

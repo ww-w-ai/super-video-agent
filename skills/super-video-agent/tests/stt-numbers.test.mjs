@@ -1,5 +1,6 @@
-// Number rules before the STT comparison (V9): English only; every other
-// language is compared exactly as before.
+// Number rules before the STT comparison (V9): English, Korean, Chinese and
+// Japanese (a1-stt.test.mjs covers the last three); every other language is
+// compared exactly as before.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { normalizeNumbers, enWordsToDigits, NUMBER_RULE_LANGUAGES } from "../scripts/lib/stt-numbers.mjs";
@@ -29,9 +30,9 @@ test("normalizeNumbers en: number words, units, dollars and percent written one 
   assert.equal(normalizeNumbers("metropolitan", "en"), "metropolitan");
 });
 
-test("normalizeNumbers: other languages and no language are unchanged", () => {
-  assert.deepEqual(NUMBER_RULE_LANGUAGES, ["en"]);
-  for (const lang of ["ko", "ja", "zh", "de", "fr", null, undefined]) {
+test("normalizeNumbers: languages without rules and no language are unchanged", () => {
+  assert.deepEqual(NUMBER_RULE_LANGUAGES, ["en", "ko", "zh", "ja"]);
+  for (const lang of ["de", "fr", null, undefined]) {
     assert.equal(normalizeNumbers("two 2 nanometers 50%", lang), "two 2 nanometers 50%");
   }
   assert.equal(normalizeNumbers("two", "en-US"), "2");

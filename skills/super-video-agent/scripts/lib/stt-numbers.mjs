@@ -5,7 +5,11 @@
 // raises the rate. Rules exist only where they are unambiguous; a language
 // without a rule table is compared exactly as before.
 //
-// Covered: English (en, en-*). Every other language: unchanged.
+// Covered: English (en, en-*); Korean (Sino-Korean and native numbers with a
+// counter, mixed digits such as "2억 5000만"); Chinese and Japanese (hanzi/kanji
+// numerals, "百分之N"). Every other language: unchanged.
+
+import { normalizeKorean, normalizeChinese, normalizeJapanese } from "./stt-numbers-cjk.mjs";
 
 const EN_SMALL = {
   zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
@@ -161,7 +165,7 @@ function normalizeEnglish(s) {
 }
 
 /** Rule table: primary language subtag -> rules. Add a language only with rules that are unambiguous. */
-const NUMBER_RULES = { en: normalizeEnglish };
+const NUMBER_RULES = { en: normalizeEnglish, ko: normalizeKorean, zh: normalizeChinese, ja: normalizeJapanese };
 
 /** Languages whose numbers are normalized before the comparison. */
 export const NUMBER_RULE_LANGUAGES = Object.keys(NUMBER_RULES);
@@ -169,7 +173,8 @@ export const NUMBER_RULE_LANGUAGES = Object.keys(NUMBER_RULES);
 /**
  * Writes the numbers of `s` the way that language's rules say (English:
  * number words to digits, "$5" -> "5 dollars", "%" -> "percent", "2
- * nanometers" -> "2nm"). Any other or missing language returns `s` as is.
+ * nanometers" -> "2nm"). Korean, Chinese and Japanese numerals are written as digits
+ * too (stt-numbers-cjk.mjs). Any other or missing language returns `s` as is.
  * @param {string} s
  * @param {string|null|undefined} lang BCP 47 code or STT language name ("en", "en-US", "english")
  */
@@ -178,9 +183,11 @@ export function normalizeNumbers(s, lang) {
   return rules ? rules(String(s ?? "")) : String(s ?? "");
 }
 
-function primaryLang(lang) {
+/** Primary language subtag of a BCP 47 code or an STT language name ("zh-Hant" -> "zh"); null when none. */
+export function primaryLang(lang) {
   if (!lang) return null;
   const l = String(lang).toLowerCase();
-  if (l === "english") return "en";
+  const names = { english: "en", korean: "ko", chinese: "zh", japanese: "ja" };
+  if (names[l]) return names[l];
   return l.split(/[-_]/)[0];
 }

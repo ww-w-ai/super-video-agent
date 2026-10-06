@@ -82,7 +82,7 @@ export function carriedWords(prevLine, timedText, newStart, strip = (s) => s) {
   }));
 }
 
-/** meta.lang ("ko-KR", "en-US", ...) -> a faster-whisper language code. */
+/** meta.lang ("ko-KR", "en-US", ...) -> a Whisper language code. */
 export function sttLangCode(lang) {
   const s = String(lang || "ko").toLowerCase();
   return s.slice(0, 2) || "ko";
