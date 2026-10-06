@@ -19,10 +19,20 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
 import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr } from "./lib/duck.mjs";
-import { fitFrozenLines, buildPlacedTimings, computeSlots } from "./lib/dub-timing.mjs";
+import {
+  fitFrozenLines,
+  buildPlacedTimings,
+  computeSlots,
+  planCaptionSpans,
+  langFrameRanges,
+  promoteSharedSpan,
+  shiftPlacedTimings,
+  shiftSrt,
+  formatTimeInsertReport,
+} from "./lib/dub-timing.mjs";
 import { reportLineFill, formatFillWarnings, formatFillTable, GAP_MIN_SEC, GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "./lib/dub-fill.mjs";
 import { measureEdgeEnvelope } from "./lib/clip-trim.mjs";
 import {
@@ -45,12 +55,16 @@ import {
   buildSpaceFilterGraph,
   buildSpaceFfmpegArgs,
   formatSpaceReport,
+  buildPlainSpanArgs,
+  buildCaptionSpanArgs,
 } from "./lib/dub-space.mjs";
-import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan } from "./render.mjs";
+import { gateAvSync, pointLatest, timestamp, sfxDuckDbFromPlan, concatMp4 } from "./render.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>] [--table]
+       dub.mjs <reel-dir> --lang <code> --audio-only [--audio-format m4a|wav] [--max-speed <x>]
+       dub.mjs <reel-dir> --insert-time <sec> --seconds <n>
 
 Lays a language version over a picture-first render (render.mjs
 --no-captions). <reel-dir>/dub/<code>/ holds plan.json (same line ids as
@@ -91,7 +105,34 @@ frames are unchanged.
 Picture: out/picture-<code>.mp4 (render.mjs --no-captions --lang <code>) when
 it exists, else out/picture.mp4. The output says which one it used.
 
-Writes out/final-<code>-<YYYYMMDD-HHMMSS>.mp4 + out/final-<code>.mp4.
+Writes out/final-<code>-<YYYYMMDD-HHMMSS>.mp4 + out/final-<code>.mp4. An output is
+written under a unique temporary name first and only counts as the result after it
+exists, is new, and has the picture's length; otherwise the run fails and nothing is
+reported as written.
+
+Shared spans: the picture is cut into language spans (a caption chunk, the last
+caption's hold to the end, and any {start,end} the page lists in __reel.langSpans)
+and language-neutral spans. A neutral span is encoded ONCE into out/shared-spans/
+and reused by every language (stream-copied into the final); only the language
+spans are captured and encoded per language. Samples inside neutral spans are
+checked for language-drawn pixels; a span that has some is made a language span.
+The run prints the split. A film with no neutral span of at least 1 s encodes whole.
+
+--audio-only: write only the language's audio track, no caption capture and no video:
+out/audio-<code>-<stamp>.m4a (AAC 192k; --audio-format wav for 48 kHz PCM) plus
+out/audio-<code>.<ext> pointing at the newest. Its length is checked against the
+picture's. Use it to add a language to a video that was already uploaded
+(--replace-audio cannot: it requires the frozen caption text to be unchanged). Cannot
+combine with --min-gap.
+
+--insert-time <sec> --seconds <n>: a time insert (e.g. a title-card hold) at film
+second <sec>. Moves every dub/<code>/timings.placed.json (lines, words, length) and
+every .srt under out/ and dub/<code>/ later by <n> at once, then prints each
+language's old -> new length and whether all languages are the same length. A line
+or cue that straddles <sec> stops the run before anything is written. It does not
+touch pictures, beds or audio: re-render the picture with the hold, then run dub
+again per language. Use it before upload only — tracks already attached to a
+published video would no longer match.
 
 --replace-audio <final.mp4> --timings <frozen.json> --bed <clean-bed.wav>:
 copy an existing captioned video's stream and replace only its audio.
@@ -105,11 +146,13 @@ and timing sidecar; preserves the source video and frozen timings.
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
   if (typeof flags.table === "string") positional.unshift(flags.table);
-  if (flags.help || flags.h || positional.length === 0 || typeof flags.lang !== "string") {
+  const inserting = flags["insert-time"] !== undefined;
+  if (flags.help || flags.h || positional.length === 0 || (!inserting && typeof flags.lang !== "string")) {
     printHelpAndExit(HELP, flags.help || flags.h ? 0 : 1);
     return;
   }
   const dir = abs(positional[0]);
+  if (inserting) return runTimeInsert(dir, flags);
   const lang = flags.lang;
   let minGap = null;
   if (flags["min-gap"] !== undefined) {
@@ -126,9 +169,13 @@ export async function main(argv) {
     if (replacing && (minGap != null || !["replace-audio", "timings", "bed"].every(k => typeof flags[k] === "string"))) {
       throw new Error("--replace-audio requires --timings and --bed; --min-gap cannot change a frozen picture");
     }
+    const audioOnly = flags["audio-only"] !== undefined;
+    if (audioOnly && (replacing || minGap != null)) throw new Error("--audio-only cannot combine with --replace-audio or --min-gap");
+    const audioFormat = flags["audio-format"] === undefined ? "m4a" : flags["audio-format"];
+    if (!["m4a", "wav"].includes(audioFormat)) throw new Error(`--audio-format must be m4a or wav, got "${audioFormat}"`);
     const result = replacing
       ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed), maxSpeed })
-      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined });
+      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined, audioOnly, audioFormat });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -165,6 +212,7 @@ export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
 /** Replace narration in an already-captioned final video. All source files remain immutable. */
 export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPath, maxSpeed = MAX_SPEED_DEFAULT }) {
   if (typeof lang !== "string" || !/^[\w-]+$/.test(lang)) throw new Error("invalid language code");
+  const startedMs = Date.now();
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
@@ -197,6 +245,7 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
       duckDb: sfxDuckDbFromPlan(plan), durationSec: frozen.duration, outPath: audioPath });
     const outPath = path.join(paths.outDir, `revoice-${lang}-${timestamp()}-${crypto.randomBytes(4).toString("hex")}.mp4`);
     await muxVideoAudio({ videoPath, audioPath, durationSec: videoDuration, outPath });
+    await verifyFreshOutput({ filePath: outPath, startedMs, expectedSec: videoDuration, toleranceSec: tolerance + 0.05 });
     writeJson(`${outPath}.json`, { sourceVideo: videoPath, frozenTimings: timingsPath, cleanBed: bedPath,
       videoMode: "stream-copy", ...buildPlacedTimings(fit.lines, frozen.duration, lang) });
     return { outPath, lineCount: fit.lines.length, seconds: videoDuration, captionNote: "Original captioned video stream copied; no browser render." };
@@ -216,7 +265,8 @@ async function verifyReplacementDurations(lines, clips) {
   }
 }
 
-export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false }) {
+export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false, audioOnly = false, audioFormat = "m4a" }) {
+  const startedMs = Date.now();
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
@@ -226,7 +276,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
   const pictureTimingsJson = picked.timingsJson;
   const dubTimingsPath = path.join(dubVoiceDir, "timings.json");
 
-  requireFile(pictureMp4, `no ${pictureMp4} — run render.mjs ${dir} --no-captions first`);
+  if (!audioOnly) requireFile(pictureMp4, `no ${pictureMp4} — run render.mjs ${dir} --no-captions first`);
   requireFile(pictureBedWav, `no ${pictureBedWav} — run render.mjs ${dir} --no-captions first`);
   requireFile(pictureTimingsJson, `no ${pictureTimingsJson} — run render.mjs ${dir} --no-captions first`);
   process.stdout.write(
@@ -288,13 +338,6 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     // __reel.layers) has this file ready to load.
     writeJson(path.join(dubDir, "timings.placed.json"), buildPlacedTimings(fit.lines, baseTimings.duration, dubPlan.meta.lang || null, baseTimings.lead));
 
-    const meta = await probeVideoInfo(pictureMp4);
-    const fps = nominalFps(meta.fps);
-    // A picture from an older render may sit a few ticks off the frame grid
-    // with its last frame held long; the overlay would then add a frame.
-    // Re-stamping is lossless (-c copy), so it runs on every picture.
-    const gridPictureMp4 = path.join(workDir, "picture-grid.mp4");
-    await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
     const placedClips = await placeLineClips({ fit, trims, workDir, maxSpeed });
 
     // Silence gate on the placed narration alone (the bed would hide a voice gap).
@@ -306,51 +349,36 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       process.stdout.write(formatLeadReport({ meta: { ...dubPlan.meta, lead: baseTimings.lead }, lines: dubPlan.lines }));
     }
 
-    const captionsDir = path.join(workDir, "captions");
-    ensureDir(captionsDir);
-    const ownLayer = await tryOwnCaptionLayer({
-      reelDir: dir,
-      lang,
-      duration: baseTimings.duration,
-      fps,
-      framesDir: captionsDir,
-    });
-    let captionNote;
-    if (ownLayer.ok) {
-      captionNote = null;
-    } else {
-      captionNote = await renderCaptionLayer({
-        reelDir: dir,
-        reelHtmlPath: paths.reelHtml,
-        lines: fit.lines,
-        duration: baseTimings.duration,
-        width: meta.width,
-        height: meta.height,
-        fps,
-        framesDir: captionsDir,
-      });
-      if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
-    }
-
-    const videoNoAudioPath = path.join(workDir, "video-captioned.mp4");
-    await overlayCaptions({ pictureMp4: gridPictureMp4, captionsDir, fps, outPath: videoNoAudioPath });
-
     const audioPath = path.join(workDir, "audio-final.wav");
-    const sfxDuckDb = sfxDuckDbFromPlan(dubPlan);
     await mixDubAudio({
       placedClips,
       bedPath: pictureBedWav,
       narrationWindows: fit.lines.map((l) => ({ start: l.start, end: l.end })),
-      duckDb: sfxDuckDb,
+      duckDb: sfxDuckDbFromPlan(dubPlan),
       durationSec: baseTimings.duration,
       outPath: audioPath,
+    });
+    if (audioOnly) {
+      return await writeAudioTrack({ audioPath, outDir: paths.outDir, lang, format: audioFormat, startedMs, durationSec: baseTimings.duration, lineCount: fit.lines.length });
+    }
+
+    const meta = await probeVideoInfo(pictureMp4);
+    const fps = nominalFps(meta.fps);
+    // A picture from an older render may sit a few ticks off the frame grid
+    // with its last frame held long; the overlay would then add a frame.
+    // Re-stamping is lossless (-c copy), so it runs on every picture.
+    const gridPictureMp4 = path.join(workDir, "picture-grid.mp4");
+    await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
+    const { videoPath: videoNoAudioPath, captionNote } = await buildCaptionedVideo({
+      dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir,
     });
 
     const expectedFrames = Math.round(baseTimings.duration * fps);
     await gateAvSync({ videoOnlyPath: videoNoAudioPath, narrationPath: audioPath, expectedFrames });
 
-    const stampedPath = path.join(paths.outDir, `final-${lang}-${timestamp()}.mp4`);
-    await muxVideoAudio({ videoPath: videoNoAudioPath, audioPath, durationSec: baseTimings.duration, outPath: stampedPath });
+    const tempPath = uniqueTempPath(paths.outDir, `final-${lang}`, ".mp4");
+    await muxVideoAudio({ videoPath: videoNoAudioPath, audioPath, durationSec: baseTimings.duration, outPath: tempPath });
+    const stampedPath = await publishFresh({ tempPath, outDir: paths.outDir, stem: `final-${lang}-${timestamp()}`, ext: ".mp4", startedMs, expectedSec: baseTimings.duration, toleranceSec: 1 / fps + 0.05 });
     const outPath = pointLatest(paths.outDir, `final-${lang}.mp4`, stampedPath);
 
     return { outPath, stampedPath, lineCount: fit.lines.length, seconds: baseTimings.duration, captionNote };
@@ -390,6 +418,268 @@ async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit,
   return out;
 }
 
+/** A temp name no earlier run can own: hidden, with a microsecond clock and the pid. */
+export function uniqueTempPath(dir, stem, ext) {
+  const micros = process.hrtime.bigint() / 1000n;
+  return path.join(dir, `.${stem}.${Date.now()}-${micros}-${process.pid}${ext}`);
+}
+
+/**
+ * An output counts only when it exists, is non-empty, was written during
+ * this run and has the expected length. Anything else is deleted and fails
+ * the step, so an older file at the same place is never reported as success.
+ */
+export async function verifyFreshOutput({ filePath, startedMs, expectedSec, toleranceSec }) {
+  try {
+    const st = fs.statSync(filePath);
+    if (st.size === 0) throw new Error(`${filePath} is empty`);
+    if (st.mtimeMs < startedMs - 1000) throw new Error(`${filePath} is older than this run; an old file is not a result`);
+    const seconds = await probeDuration(filePath);
+    if (Math.abs(seconds - expectedSec) > toleranceSec) {
+      throw new Error(`${filePath} is ${seconds.toFixed(3)}s, expected ${expectedSec.toFixed(3)}s`);
+    }
+    return seconds;
+  } catch (e) {
+    fs.rmSync(filePath, { force: true });
+    throw e.code === "ENOENT" ? new Error(`the encoder reported success but ${filePath} was not written`) : e;
+  }
+}
+
+/** Verifies a temp output, then moves it to its final name (a -2, -3 … suffix when that name is taken). */
+export async function publishFresh({ tempPath, outDir, stem, ext, startedMs, expectedSec, toleranceSec }) {
+  await verifyFreshOutput({ filePath: tempPath, startedMs, expectedSec, toleranceSec });
+  let finalPath = path.join(outDir, `${stem}${ext}`);
+  for (let n = 2; fs.existsSync(finalPath); n++) finalPath = path.join(outDir, `${stem}-${n}${ext}`);
+  fs.renameSync(tempPath, finalPath);
+  return finalPath;
+}
+
+/** --audio-only: the language's mixed narration + bed as its own track (AAC .m4a or 48 kHz PCM .wav). */
+async function writeAudioTrack({ audioPath, outDir, lang, format, startedMs, durationSec, lineCount }) {
+  ensureDir(outDir);
+  const ext = `.${format}`;
+  const tempPath = uniqueTempPath(outDir, `audio-${lang}`, ext);
+  const codec = format === "wav" ? ["-c:a", "pcm_s16le"] : ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"];
+  await ffmpeg(["-y", "-i", audioPath, "-vn", ...codec, "-t", String(durationSec), tempPath]);
+  const stampedPath = await publishFresh({ tempPath, outDir, stem: `audio-${lang}-${timestamp()}`, ext, startedMs, expectedSec: durationSec, toleranceSec: 0.1 });
+  const outPath = pointLatest(outDir, `audio-${lang}${ext}`, stampedPath);
+  const measured = await probeDuration(stampedPath);
+  const note = `audio track only; length ${measured.toFixed(3)}s against the picture's ${durationSec.toFixed(3)}s`;
+  return { outPath, stampedPath, lineCount, seconds: durationSec, captionNote: note };
+}
+
+/** Frame numbers to sample inside a span: about every 2 s, plus its last frame. */
+function probeFramesOf(span, fps) {
+  const step = Math.max(1, Math.round(2 * fps));
+  const frames = [];
+  for (let f = span.startFrame; f < span.endFrame; f += step) frames.push(f);
+  frames.push(span.endFrame - 1);
+  return frames;
+}
+
+/** True when the caption PNG has any non-transparent pixel. */
+export async function pngDrawsPixels(png) {
+  const { stdout } = await ffmpeg(["-i", "pipe:0", "-vf", "format=rgba,alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1"], { input: png });
+  return stdout.some((b) => b !== 0);
+}
+
+async function captureRanges(page, framesDir, ranges, fps) {
+  for (const [from, to] of ranges) {
+    for (let frame = from; frame < to; frame++) {
+      fs.writeFileSync(path.join(framesDir, frameFileName(frame)), await captureFrame(page, frame / fps));
+    }
+  }
+}
+
+async function spanDrawsPixels(page, span, fps) {
+  for (const frame of probeFramesOf(span, fps)) {
+    if (await pngDrawsPixels(await captureFrame(page, frame / fps))) return true;
+  }
+  return false;
+}
+
+/**
+ * Samples every language-neutral span; one with a language-drawn pixel (a
+ * label the page did not list in __reel.langSpans) becomes a language span
+ * and its frames are captured. Reported, never silently dropped.
+ */
+async function settleSharedSpans({ page, framesDir, plan, fps }) {
+  const checked = new Set();
+  for (let i = 0; i < plan.spans.length; ) {
+    const span = plan.spans[i];
+    const key = `${span.startFrame}-${span.endFrame}`;
+    if (span.kind === "lang" || checked.has(key)) {
+      i++;
+      continue;
+    }
+    if (!(await spanDrawsPixels(page, span, fps))) {
+      checked.add(key);
+      i++;
+      continue;
+    }
+    process.stdout.write(`span ${span.startFrame}-${span.endFrame}: the caption layer draws here although no line or langSpans entry covers it; encoded per language\n`);
+    await captureRanges(page, framesDir, [[span.startFrame, span.endFrame]], fps);
+    plan = promoteSharedSpan(plan, i);
+    i = 0;
+  }
+  return plan;
+}
+
+/** The {start,end} spans a page lists in __reel.langSpans (language-drawn labels that are not captions). */
+async function declaredLangSpans(page) {
+  const raw = await page.evaluate(() => (Array.isArray(window.__reel && window.__reel.langSpans) ? window.__reel.langSpans : []));
+  return raw.filter((s) => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start);
+}
+
+/** One line: how the film splits into language and shared spans. */
+function formatSpanReport(plan, fps) {
+  const sec = (frames) => (frames / fps).toFixed(1);
+  const n = (kind) => plan.spans.filter((s) => s.kind === kind).length;
+  return (
+    `spans: ${n("lang")} language (${sec(plan.langFrames)}s captured and encoded for this language), ` +
+    `${n("shared")} shared (${sec(plan.sharedFrames)}s built once, stream-copied into every language)\n`
+  );
+}
+
+/** Caption layer + picture -> a video-only file; language-neutral spans come from the shared cache. */
+async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir }) {
+  const captionsDir = path.join(workDir, "captions");
+  ensureDir(captionsDir);
+  const duration = baseTimings.duration;
+  const planFor = (labelSpans) => planCaptionSpans({ lines: fit.lines, duration, fps, labelSpans });
+  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, fps, framesDir: captionsDir, planFor });
+  let plan = ownLayer.plan;
+  let captionNote = null;
+  if (!ownLayer.ok) {
+    plan = planFor([]);
+    captionNote = await renderCaptionLayer({
+      reelDir: dir, reelHtmlPath: paths.reelHtml, lines: fit.lines, duration, width: meta.width, height: meta.height,
+      fps, framesDir: captionsDir, ranges: langFrameRanges(plan),
+    });
+    if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
+  }
+  process.stdout.write(formatSpanReport(plan, fps));
+  const videoPath = path.join(workDir, "video-captioned.mp4");
+  if (plan.sharedFrames === 0) await overlayCaptions({ pictureMp4: gridPictureMp4, captionsDir, fps, outPath: videoPath });
+  else await assembleSpans({ plan, pictureMp4, gridPictureMp4, captionsDir, fps, workDir, outDir: paths.outDir, outPath: videoPath });
+  return { videoPath, captionNote };
+}
+
+/** Identity of the picture plus the encoder settings: a shared span built from other input or settings is never reused. */
+function sharedSpanKey(pictureMp4, fps) {
+  const st = fs.statSync(pictureMp4);
+  const settings = buildPlainSpanArgs({ pictureMp4: "", startFrame: 0, endFrame: 0, fps, outPath: "" });
+  return crypto.createHash("sha1").update(JSON.stringify([path.resolve(pictureMp4), st.size, st.mtimeMs, fps, settings])).digest("hex").slice(0, 16);
+}
+
+/** One language-neutral span, from out/shared-spans/ when an earlier language already built it. */
+async function sharedSpanFile({ span, key, pictureMp4, gridPictureMp4, fps, sharedDir }) {
+  const frames = span.endFrame - span.startFrame;
+  const cached = path.join(sharedDir, `${key}-${span.startFrame}-${span.endFrame}.mp4`);
+  if (fs.existsSync(cached) && (await probeFrameCount(cached)) === frames) return { file: cached, reused: true };
+  const tempPath = uniqueTempPath(sharedDir, `span-${key}`, ".mp4");
+  try {
+    await ffmpeg(buildPlainSpanArgs({ pictureMp4: gridPictureMp4, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: tempPath }));
+    if ((await probeFrameCount(tempPath)) !== frames) throw new Error(`shared span ${span.startFrame}-${span.endFrame} came out with the wrong frame count`);
+    fs.renameSync(tempPath, cached);
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+  return { file: cached, reused: false };
+}
+
+/** Encodes language spans, takes shared spans from the cache, joins all without re-encoding. */
+export async function assembleSpans({ plan, pictureMp4, gridPictureMp4, captionsDir, fps, workDir, outDir, outPath }) {
+  const sharedDir = path.join(outDir, "shared-spans");
+  ensureDir(sharedDir);
+  const key = sharedSpanKey(pictureMp4, fps);
+  const files = [];
+  for (const [i, span] of plan.spans.entries()) {
+    if (span.kind === "lang") {
+      const file = path.join(workDir, `span-${i}.mp4`);
+      await ffmpeg(buildCaptionSpanArgs({ pictureMp4: gridPictureMp4, captionsDir, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: file }));
+      files.push(file);
+      continue;
+    }
+    const shared = await sharedSpanFile({ span, key, pictureMp4, gridPictureMp4, fps, sharedDir });
+    process.stdout.write(`shared span ${span.startFrame}-${span.endFrame}: ${shared.reused ? "reused" : "built"}\n`);
+    files.push(shared.file);
+  }
+  await concatMp4(files, outPath, fps);
+  const frames = await probeFrameCount(outPath);
+  if (frames !== plan.totalFrames) throw new Error(`joined spans have ${frames} frames, expected ${plan.totalFrames}`);
+}
+
+const SRT_NAME = /\.srt$/i;
+
+function srtFilesIn(dir) {
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir).filter((f) => SRT_NAME.test(f)).map((f) => path.join(dir, f));
+}
+
+/** Which language an .srt belongs to: its dub/<code>/ folder, else a "-<code>.srt" / ".<code>.srt" file name. */
+function srtLang(file, dubDir, codes) {
+  const parent = path.basename(path.dirname(file));
+  if (path.dirname(path.dirname(file)) === dubDir && codes.includes(parent)) return parent;
+  const base = path.basename(file).replace(SRT_NAME, "");
+  return codes.find((c) => base === c || base.endsWith(`-${c}`) || base.endsWith(`.${c}`) || base.endsWith(`_${c}`)) || null;
+}
+
+/**
+ * A time insert (a title-card hold, say) at film second `at` of `seconds`:
+ * every dub/<code>/timings.placed.json and every .srt under out/ and
+ * dub/<code>/ moves later together. All inputs are shifted in memory first;
+ * a straddling line or cue stops the run before anything is written.
+ * @returns {{text: string, equal: boolean, rows: object[], unassignedSrt: string[]}}
+ */
+export function insertTime({ dir, at, seconds }) {
+  const paths = reelPaths(dir);
+  const dubDir = path.join(dir, "dub");
+  const codes = fs.existsSync(dubDir)
+    ? fs.readdirSync(dubDir).filter((c) => fs.existsSync(path.join(dubDir, c, "timings.placed.json")))
+    : [];
+  if (!codes.length) throw new Error(`no dub/<code>/timings.placed.json under ${dir}; run dub.mjs for each language first`);
+  const writes = [];
+  const rows = codes.map((lang) => {
+    const file = path.join(dubDir, lang, "timings.placed.json");
+    const before = readJson(file);
+    let shifted;
+    try { shifted = shiftPlacedTimings(before, at, seconds); } catch (e) { throw new Error(`${lang}: ${e.message}`); }
+    writes.push([file, `${JSON.stringify(shifted, null, 2)}\n`]);
+    return { lang, before: before.duration, after: shifted.duration, lines: shifted.lines.filter((l, i) => l !== before.lines[i]).length, srt: 0 };
+  });
+  const unassignedSrt = [];
+  const srtFiles = [...srtFilesIn(paths.outDir), ...codes.flatMap((c) => srtFilesIn(path.join(dubDir, c)))];
+  for (const file of srtFiles) {
+    let result;
+    try { result = shiftSrt(fs.readFileSync(file, "utf8"), at, seconds); } catch (e) { throw new Error(`${file}: ${e.message}`); }
+    writes.push([file, result.text]);
+    const lang = srtLang(file, dubDir, codes);
+    if (lang) rows.find((r) => r.lang === lang).srt += result.shifted;
+    else unassignedSrt.push(`${file} (${result.shifted} cues moved)`);
+  }
+  for (const [file, text] of writes) {
+    const tmp = uniqueTempPath(path.dirname(file), path.basename(file), ".tmp");
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, file);
+  }
+  const report = formatTimeInsertReport(rows);
+  const extra = unassignedSrt.length ? `SRT files not tied to a language:\n${unassignedSrt.map((s) => `  ${s}`).join("\n")}\n` : "";
+  return { text: report.text + extra, equal: report.equal, rows, unassignedSrt };
+}
+
+function runTimeInsert(dir, flags) {
+  const at = typeof flags["insert-time"] === "string" ? Number(flags["insert-time"]) : NaN;
+  const seconds = typeof flags.seconds === "string" ? Number(flags.seconds) : NaN;
+  if (!Number.isFinite(at) || at < 0) fail("--insert-time needs the film second to insert at (0 or more)");
+  if (!Number.isFinite(seconds) || seconds <= 0) fail("--insert-time needs --seconds <n>, a positive number");
+  try {
+    process.stdout.write(`time insert: ${seconds}s at ${at}s\n${insertTime({ dir, at, seconds }).text}`);
+  } catch (e) {
+    fail(e.message);
+  }
+}
+
 function requireFile(p, message) {
   if (!fs.existsSync(p)) throw new Error(message);
 }
@@ -420,7 +710,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string}>}
  */
-async function tryOwnCaptionLayer({ reelDir, lang, duration, fps, framesDir }) {
+async function tryOwnCaptionLayer({ reelDir, lang, fps, framesDir, planFor }) {
   const server = await serveDir(reelDir);
   let session;
   try {
@@ -433,12 +723,11 @@ async function tryOwnCaptionLayer({ reelDir, lang, duration, fps, framesDir }) {
           'reel.html does not declare "captions" in __reel.layers — it cannot draw its own caption layer yet (references/pipeline.md "Picture first").',
       };
     }
-    const frameCount = Math.round(duration * fps);
-    for (let frame = 0; frame < frameCount; frame++) {
-      const png = await captureFrame(session.page, frame / fps);
-      fs.writeFileSync(path.join(framesDir, frameFileName(frame)), png);
-    }
-    return { ok: true };
+    // Only the language spans are drawn; a probe then checks the rest is blank.
+    let plan = planFor(await declaredLangSpans(session.page));
+    await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
+    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps });
+    return { ok: true, plan };
   } catch (e) {
     return { ok: false, note: `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.` };
   } finally {
@@ -457,7 +746,7 @@ async function tryOwnCaptionLayer({ reelDir, lang, duration, fps, framesDir }) {
  *   captions another way (the engine's default look is used instead), or
  *   null when reel.html calls Reel.caption() itself (same look).
  */
-async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir }) {
+async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir, ranges }) {
   const captionNote = sceneUsesEngineCaption(reelHtmlPath)
     ? null
     : "reel.html's scene code does not call Reel.caption() directly — the caption layer uses the engine's default caption look, which may not match this film's own captions.";
@@ -471,11 +760,7 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
   try {
     const session = await openReel(`${server.url}${pageName}`, { width, height });
     try {
-      const frameCount = Math.round(duration * fps);
-      for (let frame = 0; frame < frameCount; frame++) {
-        const png = await captureFrame(session.page, frame / fps);
-        fs.writeFileSync(path.join(framesDir, frameFileName(frame)), png);
-      }
+      await captureRanges(session.page, framesDir, ranges, fps);
     } finally {
       await session.close();
     }

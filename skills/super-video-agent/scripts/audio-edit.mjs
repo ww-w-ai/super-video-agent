@@ -6,12 +6,18 @@ import { pathToFileURL } from 'node:url';
 import { abs, parseArgs } from './lib/cli.mjs';
 import { run } from './lib/ffmpeg.mjs';
 import { decodeMonoPcm } from './lib/audio-analysis.mjs';
-import { inspectQuiet, applyAudioEdits } from './lib/audio-edit.mjs';
+import { inspectQuiet, applyAudioEdits, spliceSpan } from './lib/audio-edit.mjs';
 
 const RATE = 48000;
 const HELP = `Usage:
   node audio-edit.mjs input.wav --inspect
   node audio-edit.mjs input.wav --edits edits.json --out new.wav [--words words.json] [--report new.json]
+
+  node audio-edit.mjs input.wav --splice take.wav --at 12.5 --out new.wav [--report new.json]
+
+--splice: replace only the span starting at --at (seconds) with take.wav, which must already be the
+span's length (mono WAV). 20 ms equal-power crossfade at each edge; the output has exactly the
+input's sample count, so nothing after the span moves. The span must end inside the input.
 
 Edits: {"pauses":[{"start":0.4,"end":0.8,"duration":0.2}],"padStartSec":0,"padEndSec":0,"tempo":1}
 Pause times are input-relative seconds. Padding is final seconds after tempo.
@@ -28,7 +34,7 @@ function configFrom(argv) {
   const { positional, flags } = parseArgs(argv);
   if (flags.help) return { help: true };
   for (const key of Object.keys(flags)) {
-    if (!['inspect', 'edits', 'out', 'words', 'report'].includes(key)) throw new Error(`unknown flag: --${key}`);
+    if (!['inspect', 'edits', 'out', 'words', 'report', 'splice', 'at'].includes(key)) throw new Error(`unknown flag: --${key}`);
   }
   if (positional.length !== 1) throw new Error('one input WAV is required; use --help');
   const input = abs(positional[0]);
@@ -38,9 +44,18 @@ function configFrom(argv) {
   }
   const output = required(flags, 'out');
   if (path.extname(output).toLowerCase() !== '.wav') throw new Error('--out must end in .wav');
+  const report = flags.report === undefined ? `${output}.json` : required(flags, 'report');
+  if (flags.splice !== undefined) return spliceConfig(flags, { input, output, report });
+  if (flags.at !== undefined) throw new Error('--at belongs to --splice');
   return { input, output, edits: required(flags, 'edits'),
-    words: flags.words === undefined ? null : required(flags, 'words'),
-    report: flags.report === undefined ? `${output}.json` : required(flags, 'report') };
+    words: flags.words === undefined ? null : required(flags, 'words'), report };
+}
+
+function spliceConfig(flags, base) {
+  for (const key of ['edits', 'words']) if (flags[key] !== undefined) throw new Error(`--splice cannot be combined with --${key}`);
+  const at = typeof flags.at === 'string' ? Number(flags.at) : NaN;
+  if (!Number.isFinite(at) || at < 0) throw new Error('--splice needs --at <start seconds>');
+  return { ...base, splice: required(flags, 'splice'), at };
 }
 
 function identity(file) {
@@ -54,7 +69,7 @@ function prospectivePath(file) {
 }
 
 function validateDestinations(config) {
-  const sources = [config.input, config.edits, config.words].filter(Boolean).map(identity);
+  const sources = [config.input, config.edits, config.words, config.splice].filter(Boolean).map(identity);
   const outputs = [config.output, config.report];
   if (prospectivePath(outputs[0]) === prospectivePath(outputs[1])) throw new Error('audio and report paths alias');
   for (const file of outputs) {
@@ -129,6 +144,19 @@ function writeNewPair(output, wav, reportFile, report) {
   for (const entry of reserved) fs.closeSync(entry.fd);
 }
 
+/** --splice: replace one span of the input with a same-length take; the output keeps the input's exact length. */
+async function runSplice(config, samples) {
+  await probeInput(config.splice);
+  const replacement = await decodeMonoPcm(config.splice, RATE);
+  const { samples: spliced, report: spliceReport } = spliceSpan(samples, replacement, Math.round(config.at * RATE), RATE);
+  const { stdout: wav } = await convertPcm(spliced, RATE, ['-c:a', 'pcm_f32le', '-f', 'wav']);
+  const report = { ...spliceReport, input: config.input, replacement: config.splice, output: config.output };
+  validateDestinations(config);
+  writeNewPair(config.output, wav, config.report, report);
+  process.stdout.write(`${JSON.stringify({ output: config.output, report: config.report, samples: spliced.length, durationSec: spliced.length / RATE })}\n`);
+  return report;
+}
+
 /** Run the CLI; returns the report for local integration tests and callers. */
 export async function main(argv = process.argv.slice(2)) {
   const config = configFrom(argv);
@@ -141,6 +169,7 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     return report;
   }
+  if (config.splice) return runSplice(config, samples);
   const edits = JSON.parse(fs.readFileSync(config.edits, 'utf8'));
   const sidecar = config.words ? JSON.parse(fs.readFileSync(config.words, 'utf8')) : { words: [] };
   if (!sidecar || !Array.isArray(sidecar.words)) throw new Error('word sidecar must contain a words array');

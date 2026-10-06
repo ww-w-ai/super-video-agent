@@ -158,6 +158,38 @@ export function finishEdit(plan, tempoSamples = plan.samples) {
   return { samples, report };
 }
 
+export const SPLICE_FADE_SEC = 0.02;
+
+/**
+ * Replaces samples [startSample, startSample + replacement.length) of `base`
+ * with `replacement` and returns a new array of EXACTLY base's length, so
+ * nothing after the span moves. Each edge of the span crossfades with the
+ * base over `fadeSec` (equal power; the two sides are unrelated audio), and
+ * the base keeps its own samples outside the span. The replacement must
+ * already be the span's length: fitting a take to a slot is not done here.
+ * @returns {{samples: Float32Array, report: object}}
+ */
+export function spliceSpan(base, replacement, startSample, sampleRate, fadeSec = SPLICE_FADE_SEC) {
+  validatePcm(base, sampleRate);
+  validatePcm(replacement, sampleRate);
+  if (!Number.isSafeInteger(startSample) || startSample < 0) throw new Error('splice start must be a non-negative sample index');
+  const end = startSample + replacement.length;
+  if (end > base.length) throw new Error(`splice span ends at sample ${end}, past the input length ${base.length}`);
+  const fade = Math.round(finite(fadeSec, 'fadeSec') * sampleRate);
+  if (replacement.length < 2 * fade) throw new Error('splice span is shorter than two crossfades');
+  const out = new Float32Array(base);
+  for (let i = 0; i < replacement.length; i++) {
+    const intoStart = i < fade ? i / fade : 1;
+    const toEnd = i >= replacement.length - fade ? (replacement.length - 1 - i) / fade : 1;
+    const wet = Math.min(intoStart, toEnd);
+    const gainNew = Math.sin(wet * Math.PI / 2);
+    const gainOld = Math.cos(wet * Math.PI / 2);
+    out[startSample + i] = replacement[i] * gainNew + base[startSample + i] * gainOld;
+  }
+  return { samples: out, report: { sampleRate, startSample, endSample: end, startSec: startSample / sampleRate,
+    endSec: end / sampleRate, fadeSamples: fade, fadeSec: fade / sampleRate, inputSamples: base.length, outputSamples: out.length } };
+}
+
 /** Apply a prepared edit with an injected, pitch-preserving tempo function. */
 export async function applyAudioEdits({ samples, sampleRate, edits, words }, { tempoPcm } = {}) {
   const plan = editPcm(samples, sampleRate, edits, words);

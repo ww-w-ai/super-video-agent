@@ -188,7 +188,7 @@ export function fitFrozenLines(frozen, dubLines, clipDurations, maxAtempo = DEFA
     if (typeof slot.id !== "string" || !/^[\w-]+$/.test(slot.id) || seen.has(slot.id)) throw new Error("invalid or duplicate frozen line id");
     seen.add(slot.id);
     if (line.id !== slot.id || typeof slot.text !== "string" || slot.text !== line.text) {
-      throw new Error(`line ${slot.id}: frozen caption text or order changed; use normal dub for caption changes`);
+      throw new Error(`line ${slot.id}: frozen caption text or order changed; use normal dub for caption changes, or --audio-only to add this language as a separate audio track`);
     }
     if (![slot.start, slot.end, line.start].every(Number.isFinite) || slot.start < 0 || slot.end <= slot.start ||
         slot.end > frozen.duration || (i > 0 && slot.start < frozen.lines[i - 1].end)) {
@@ -245,3 +245,125 @@ export function trimEdgeSilence(windows, clipDurationSec, opts = {}) {
 
 export const TRIM_THRESHOLD_DB_DEFAULT = DEFAULT_TRIM_THRESHOLD_DB;
 export const TRIM_PAD_SEC_DEFAULT = DEFAULT_TRIM_PAD_SEC;
+
+/**
+ * Splits the film into language-dependent spans (a caption chunk or a
+ * page-declared label span is on screen) and language-neutral ones (nothing
+ * a language draws). Frames are the unit, so every boundary sits on the
+ * picture's grid. A neutral gap shorter than `minSharedSec` is folded into
+ * the language span: a tiny stream-copied piece costs more than it saves.
+ * The last caption holds on screen to the film's end (the engine's caption
+ * layer keeps it), so by default its span runs to the end.
+ * @param {{lines: {start:number,end:number}[], duration:number, fps:number,
+ *   labelSpans?: {start:number,end:number}[], minSharedSec?: number, lastLineHolds?: boolean}} o
+ * @returns {{totalFrames:number, spans:{startFrame:number,endFrame:number,kind:"shared"|"lang"}[],
+ *   langFrames:number, sharedFrames:number}}
+ */
+export function planCaptionSpans({ lines, duration, fps, labelSpans = [], minSharedSec = 1.0, lastLineHolds = true }) {
+  const totalFrames = Math.round(duration * fps);
+  const clampFrame = (f) => Math.max(0, Math.min(totalFrames, f));
+  const held = lines.map((l, i) => ({ start: l.start, end: lastLineHolds && i === lines.length - 1 ? duration : l.end }));
+  const intervals = [...held, ...labelSpans]
+    .map((s) => [clampFrame(Math.floor(s.start * fps)), clampFrame(Math.ceil(s.end * fps))])
+    .filter(([a, b]) => b > a)
+    .sort((x, y) => x[0] - y[0]);
+  const minShared = Math.round(minSharedSec * fps);
+  const lang = [];
+  for (const [a, b] of intervals) {
+    const last = lang[lang.length - 1];
+    if (last && a - last[1] < minShared) last[1] = Math.max(last[1], b);
+    else lang.push([a, b]);
+  }
+  // A neutral stretch at the very start or end is stream-copied only when long enough.
+  if (lang.length && lang[0][0] < minShared) lang[0][0] = 0;
+  if (lang.length && totalFrames - lang[lang.length - 1][1] < minShared) lang[lang.length - 1][1] = totalFrames;
+  const spans = [];
+  let at = 0;
+  for (const [a, b] of lang) {
+    if (a > at) spans.push({ startFrame: at, endFrame: a, kind: "shared" });
+    spans.push({ startFrame: a, endFrame: b, kind: "lang" });
+    at = b;
+  }
+  if (at < totalFrames) spans.push({ startFrame: at, endFrame: totalFrames, kind: "shared" });
+  return withTotals(totalFrames, spans);
+}
+
+function withTotals(totalFrames, spans) {
+  const sum = (kind) => spans.filter((s) => s.kind === kind).reduce((n, s) => n + s.endFrame - s.startFrame, 0);
+  return { totalFrames, spans, langFrames: sum("lang"), sharedFrames: sum("shared") };
+}
+
+/** Frame ranges [start, end) a caption layer must draw: the language spans only. */
+export function langFrameRanges(plan) {
+  return plan.spans.filter((s) => s.kind === "lang").map((s) => [s.startFrame, s.endFrame]);
+}
+
+/** Turns one shared span into a language span (a probe found a language-drawn pixel in it), merging neighbours. */
+export function promoteSharedSpan(plan, index) {
+  const merged = [];
+  plan.spans.forEach((s, i) => {
+    const next = i === index ? { ...s, kind: "lang" } : { ...s };
+    const last = merged[merged.length - 1];
+    if (last && last.kind === next.kind) last.endFrame = next.endFrame;
+    else merged.push(next);
+  });
+  return withTotals(plan.totalFrames, merged);
+}
+
+const SRT_TIME = "(\\d+):(\\d\\d):(\\d\\d)([,.])(\\d{3})";
+const SRT_CUE = new RegExp(`^${SRT_TIME} --> ${SRT_TIME}(.*)$`);
+
+function srtSeconds(h, m, s, ms) {
+  return Number(h) * 3600 + Number(m) * 60 + Number(s) + Number(ms) / 1000;
+}
+
+function srtStamp(sec, sep) {
+  const total = Math.round(sec * 1000);
+  const pad = (n, w) => String(n).padStart(w, "0");
+  return `${pad(Math.floor(total / 3600000), 2)}:${pad(Math.floor(total / 60000) % 60, 2)}:${pad(Math.floor(total / 1000) % 60, 2)}${sep}${pad(total % 1000, 3)}`;
+}
+
+/**
+ * Shifts every SRT cue that starts at or after `at` later by `seconds`.
+ * A cue that straddles `at` is a definite error: it cannot be both shifted
+ * and not shifted.
+ * @returns {{text: string, shifted: number}}
+ */
+export function shiftSrt(text, at, seconds) {
+  let shifted = 0;
+  const out = text.split(/\r?\n/).map((line, n) => {
+    const m = SRT_CUE.exec(line);
+    if (!m) return line;
+    const start = srtSeconds(m[1], m[2], m[3], m[5]);
+    const end = srtSeconds(m[6], m[7], m[8], m[10]);
+    if (start < at && end > at) throw new Error(`SRT line ${n + 1}: the cue straddles the insertion point ${at}s`);
+    if (start < at) return line;
+    shifted++;
+    return `${srtStamp(start + seconds, m[4])} --> ${srtStamp(end + seconds, m[9])}${m[11]}`;
+  });
+  return { text: out.join("\n"), shifted };
+}
+
+/**
+ * Shifts a dub's placed timings for a time insert at `at` (film seconds):
+ * lines (and their words) starting at or after `at` move later by
+ * `seconds`; the film grows by `seconds`. A line that straddles `at` is a
+ * definite error.
+ */
+export function shiftPlacedTimings(placed, at, seconds) {
+  const move = (x) => ({ ...x, start: x.start + seconds, end: x.end + seconds });
+  const lines = placed.lines.map((l) => {
+    if (l.start < at && l.end > at) throw new Error(`line "${l.id}" (${l.start}s-${l.end}s) straddles the insertion point ${at}s`);
+    if (l.start < at) return l;
+    return { ...move(l), ...(l.words ? { words: l.words.map(move) } : {}) };
+  });
+  return { ...placed, duration: placed.duration + seconds, lines };
+}
+
+/** Per-language length lines for a time insert, and whether every language now has the same length. */
+export function formatTimeInsertReport(rows) {
+  const equal = rows.every((r) => Math.abs(r.after - rows[0].after) < 0.0005);
+  const body = rows.map((r) => `  ${r.lang}: ${r.before.toFixed(3)}s -> ${r.after.toFixed(3)}s  (${r.lines} lines moved, ${r.srt} SRT cues moved)`);
+  const verdict = equal ? "all languages are the same length" : "LENGTHS DIFFER — a language was already off before the insert; decide which length is right";
+  return { equal, text: `${body.join("\n")}\nlength equality: ${verdict}\n` };
+}
