@@ -1,7 +1,7 @@
 // scripts/runner/: GPU probe, render slot lock, stale-queue lister/remover, cost report, stage runner.
 // Fakes: ioreg / nvidia-smi are small scripts on a private PATH; `claude` is a node script that
 // reads the prompt and writes (or does not write) the done-file. No real GPU, no real session.
-import { test } from "node:test";
+import { test as rawTest } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,17 +13,37 @@ import {
 } from "../scripts/runner/gpu-probe.mjs";
 import {
   acquireSlot, readSlot, readTickets, releaseDeadSlot, waitingOrder, killGroup, pidAlive,
-  defaultLockDir, assertSafeLockDir, safePgid, trustedOwner, procStartTime,
+  defaultLockDir, assertSafeLockDir, safePgid, trustedOwner, procStartTime, procState,
 } from "../scripts/runner/lock.mjs";
 import { listEntries, removeEntries } from "../scripts/runner/queue.mjs";
 import { rowOfFile, aggregate, formatReport, reportFor } from "../scripts/runner/cost-report.mjs";
 import { validatePlan } from "../scripts/runner/plan.mjs";
 import { runPlan } from "../scripts/runner/run.mjs";
 
+// Every test gets a time limit, and every process a test spawns is killed (whole group) when the test ends,
+// so a failed assertion never leaves a live child behind.
+const spawned = new Set();
+const track = (child) => {
+  spawned.add(child);
+  return child;
+};
+const killTracked = () => {
+  for (const c of spawned) {
+    for (const target of [-c.pid, c.pid]) {
+      try { process.kill(target, "SIGKILL"); } catch { /* already gone */ }
+    }
+  }
+  spawned.clear();
+};
+const test = (name, fn) => rawTest(name, { timeout: 180000 }, async (t) => {
+  t.after(killTracked);
+  return fn(t);
+});
+
 const RUNNER = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "runner");
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "a13-"));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const until = async (fn, ms = 5000) => {
+const until = async (fn, ms = 20000) => {
   const t0 = Date.now();
   while (!fn()) {
     if (Date.now() - t0 > ms) throw new Error("timed out waiting for condition");
@@ -128,7 +148,7 @@ test("gpu-probe CLI with a fake nvidia-smi", () => {
 
 // ---- lock ---------------------------------------------------------------------------------------
 
-const fastOpts = (dir, extra = {}) => ({ dir, pollMs: 10, gpu: false, ...extra });
+const fastOpts = (dir, extra = {}) => ({ dir, pollMs: 10, gpu: false, maxWaitMs: 30000, ...extra });
 
 test("one holder at a time; release frees the slot for the next", async () => {
   const dir = tmp();
@@ -163,7 +183,7 @@ test("waiting is fair: higher priority first, equal priority in arrival order", 
 
 test("a dead owner's slot is released by the next process, and its leftover child group is stopped", async () => {
   const dir = tmp();
-  const leftover = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+  const leftover = track(spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" }));
   const dead = deadPid();
   fs.mkdirSync(path.join(dir, "slot"), { recursive: true });
   fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: dead, uid: process.getuid(), label: "gone", since: Date.now(), childPgid: leftover.pid, childStart: procStartTime(leftover.pid) }));
@@ -172,6 +192,30 @@ test("a dead owner's slot is released by the next process, and its leftover chil
   assert.equal(readSlot(dir).owner.label, "next");
   await until(() => !pidAlive(leftover.pid));
   h.release();
+});
+
+test("a zombie (killed, not reaped by its parent) reads as dead, and a bounded wait gives up instead of hanging", async () => {
+  const dir = tmp();
+  const pidFile = path.join(dir, "zombie.pid");
+  // The parent spawns a child that exits at once, then blocks its event loop so it cannot reap the child.
+  const parentSrc = `const c = require("child_process").spawn(process.execPath, ["-e", ""], { stdio: "ignore" }); require("fs").writeFileSync(process.argv[1], String(c.pid)); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40000);`;
+  track(spawn(process.execPath, ["-e", parentSrc, pidFile], { stdio: "ignore" }));
+  await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8"));
+  const zombie = Number(fs.readFileSync(pidFile, "utf8"));
+  await until(() => procState(zombie) === "Z");
+  assert.doesNotThrow(() => process.kill(zombie, 0), "kill(pid, 0) alone still says it is there");
+  assert.equal(pidAlive(zombie, procStartTime(zombie)), false);
+  assert.equal(pidAlive(zombie), false);
+  fs.mkdirSync(path.join(dir, "slot"));
+  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: zombie, startTime: procStartTime(zombie), uid: process.getuid(), label: "zombie", since: Date.now() }));
+  assert.equal(readSlot(dir).ownerAlive, false);
+  const h = await acquireSlot(fastOpts(dir, { label: "next" }));
+  assert.equal(readSlot(dir).owner.label, "next");
+  h.release();
+  const holder = await acquireSlot(fastOpts(dir));
+  await assert.rejects(() => acquireSlot(fastOpts(dir, { maxWaitMs: 100 })), /could not get the render slot/);
+  assert.equal(readTickets(dir).length, 0, "the giving-up waiter leaves no ticket");
+  holder.release();
 });
 
 test("releaseDeadSlot leaves a live owner alone", async () => {
@@ -239,7 +283,7 @@ test("lock.mjs run: the command's exit code comes back, and killing the wrapper 
   assert.equal(ok.status, 7);
   const pidFile = path.join(dir, "child.pid");
   const child = "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(()=>{},1000)";
-  const wrapper = spawn(process.execPath, [lock, "run", "--dir", dir, "--no-gpu", "--poll", "0.01", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" });
+  const wrapper = track(spawn(process.execPath, [lock, "run", "--dir", dir, "--no-gpu", "--poll", "0.01", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" }));
   await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8"));
   const childPid = Number(fs.readFileSync(pidFile, "utf8"));
   assert.equal(readSlot(dir).owner.childPgid, childPid);
@@ -253,7 +297,7 @@ test("a SIGKILLed wrapper leaves a slot that reads as dead; the next waiter take
   const dir = tmp();
   const pidFile = path.join(dir, "child.pid");
   const child = "require('fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(()=>{},1000)";
-  const wrapper = spawn(process.execPath, [path.join(RUNNER, "lock.mjs"), "run", "--dir", dir, "--no-gpu", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" });
+  const wrapper = track(spawn(process.execPath, [path.join(RUNNER, "lock.mjs"), "run", "--dir", dir, "--no-gpu", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" }));
   await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8"));
   const childPid = Number(fs.readFileSync(pidFile, "utf8"));
   wrapper.kill("SIGKILL");
@@ -315,7 +359,7 @@ test("killGroup refuses 0, 1, negatives and non-integers (checked with signal 0,
 test("an owner record of another uid, or with no uid, never steers a kill", async () => {
   for (const uid of [process.getuid() + 1, undefined]) {
     const dir = tmp();
-    const bystander = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+    const bystander = track(spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" }));
     fs.mkdirSync(path.join(dir, "slot"));
     fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: deadPid(), uid, label: "planted", since: Date.now() - 5000, childPgid: bystander.pid }));
     assert.equal(trustedOwner(readSlot(dir).owner), false);
@@ -386,7 +430,7 @@ test("remove takes exactly the confirmed ids; unknown id or live pid stops it be
 
 test("a dead owner's slot is a removable entry and its child group goes with it", async () => {
   const dir = tmp();
-  const leftover = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
+  const leftover = track(spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" }));
   fs.mkdirSync(path.join(dir, "slot"), { recursive: true });
   fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: deadPid(), uid: process.getuid(), label: "gone", since: Date.now() - 5000, childPgid: leftover.pid, childStart: procStartTime(leftover.pid) }));
   const slot =listEntries({ dir }).find((e) => e.kind === "slot");

@@ -105,10 +105,24 @@ function readStartTime(pid) {
   }
 }
 
+/** First letter of the process state (`ps -o stat=`, else /proc/<pid>/stat): "Z" is a zombie. null when unreadable. */
+export function procState(pid) {
+  const r = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 5000 });
+  const text = r.status === 0 ? (r.stdout || "").trim() : "";
+  if (text) return text[0];
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2)[0] || null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Whether the process is there. With `startTime` (recorded when the owner or ticket was written), a pid that
- * now belongs to a process with a different start time is a recycled pid, so dead. A start time that cannot
- * be read now leaves the kill(pid, 0) answer standing.
+ * Whether the process is there. A zombie (killed, not yet reaped by its parent) still answers kill(pid, 0) and
+ * keeps its start time, but it can never release anything, so it counts as dead. With `startTime` (recorded when
+ * the owner or ticket was written), a pid that now belongs to a process with a different start time is a recycled
+ * pid, so dead. A start time that cannot be read now leaves the kill(pid, 0) answer standing.
  */
 export function pidAlive(pid, startTime = null) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -117,6 +131,7 @@ export function pidAlive(pid, startTime = null) {
   } catch (e) {
     return e.code === "EPERM";
   }
+  if (pid !== process.pid && procState(pid) === "Z") return false;
   if (!startTime) return true;
   const now = procStartTime(pid);
   return now === null || now === startTime;
@@ -260,7 +275,7 @@ function writeTicket(p, t) {
 
 /**
  * Wait for the slot. Resolves a handle {release(), waitedMs, gpu} once this process holds it.
- * opts: dir, priority, label, output, pid (default this process), pollMs, sleep,
+ * opts: dir, priority, label, output, pid (default this process), pollMs, maxWaitMs (default: no limit), sleep,
  *       gpu: false | {threshold, probe, maxWaitMs}, onEvent(type, text).
  * While the slot is free and this ticket is first, the GPU check runs; a busy GPU keeps the
  * ticket first and the slot free, so nobody overtakes. No GPU probe → the slot alone decides.
@@ -272,6 +287,7 @@ export async function acquireSlot(opts = {}) {
   const pid = opts.pid || process.pid;
   const sleep = opts.sleep || sleepMs;
   const pollMs = opts.pollMs ?? 5000;
+  const maxWaitMs = opts.maxWaitMs ?? Infinity; // default waits as long as it takes; tests bound it
   const emit = opts.onEvent || (() => {});
   const t0 = Date.now();
   const ticket = writeTicket(p, { pid, startTime: procStartTime(pid), priority: opts.priority || 0, label: opts.label || "", output: opts.output || null, createdUs: nowUs(), createdMs: Date.now() });
@@ -285,6 +301,7 @@ export async function acquireSlot(opts = {}) {
       if (ourTurn && (await gate())) {
         if (tryMkdirSlot(p, pid, opts.label, opts.output)) break;
       } else if (!ourTurn) gate.reset(); // idle samples must be consecutive polls of our own turn
+      if (Date.now() - t0 > maxWaitMs) throw new Error(`could not get the render slot within ${Math.round(maxWaitMs / 1000)} s`);
       await sleep(pollMs);
     }
   } catch (e) {
