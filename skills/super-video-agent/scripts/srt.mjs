@@ -10,8 +10,9 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson } from "./lib/reeldir.mjs";
 import {
   buildCues, checkCues, formatChecks, formatSrt, parseSrt, compareTracks, formatComparison,
-  parseScript, alignScript, defaultLineChars, DEFAULT_MAX_LINES,
+  parseScript, alignScript, defaultLineChars, DEFAULT_MAX_LINES, sttExtractArgs,
 } from "./lib/srt.mjs";
+import { ffmpeg } from "./lib/ffmpeg.mjs";
 
 const HELP = `usage:
   srt.mjs build <reel-dir> [--base | --dub <code>] [--line-chars <n>] [--max-lines <n>] [--out-dir <dir>]
@@ -27,7 +28,9 @@ build    One SRT per language from <reel-dir>/voice/timings.json (base) and ever
          count and time equality per line. Writes <out-dir>/srt-report.json.
 align    SRT for a video that already exists: speech-to-text on its audio times the words, the text
          is your script. --script is plan.json / timings.json (lines[].text) or plain text, one script
-         line per row ("|" marks a break). Needs faster-whisper (SVA_STT_PYTHON, SVA_STT_MODEL as in voice.mjs).
+         line per row ("|" marks a break). Uses the same STT engine as voice.mjs (SVA_STT_ENGINE, SVA_STT_MODEL).
+         A media file that is not a .wav (an .mp4, say) is first turned into mono 16 kHz PCM wav with
+         ffmpeg in a temp dir; if ffmpeg fails the step exits non-zero with its message.
          A script line with under half its words found in the audio gets no cue and is listed
          ("low match"): check it against the audio (a different wording, a cut, or music).
 compare  Cue count and time equality across SRT files (the first file is the reference).
@@ -131,7 +134,16 @@ async function heardWords(media, code) {
   const { sttTranscribe } = await import("./voice.mjs");
   const work = fs.mkdtempSync(path.join(os.tmpdir(), `sva-srt-${process.pid}-${Date.now()}${process.hrtime.bigint() % 1000000n}-`));
   try {
-    const stt = await sttTranscribe(work, [{ id: "all", wav: media }], code);
+    const wav = path.join(work, "audio-16k.wav");
+    const extract = sttExtractArgs(media, wav);
+    if (extract) {
+      try {
+        await ffmpeg(extract);
+      } catch (e) {
+        fail(`could not extract audio from ${media}: ${e.message}`);
+      }
+    }
+    const stt = await sttTranscribe(work, [{ id: "all", wav: extract ? wav : media }], code);
     if (stt.skipped) fail(`speech-to-text could not run: ${stt.skipped}`);
     return stt.words.get("all") || [];
   } finally {

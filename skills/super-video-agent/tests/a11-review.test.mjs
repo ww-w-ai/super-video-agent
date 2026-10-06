@@ -9,9 +9,9 @@ import { spawnSync } from "node:child_process";
 import { ffmpeg, ffprobe } from "../scripts/lib/ffmpeg.mjs";
 import { splitIntendedHolds } from "../scripts/lib/dead-air.mjs";
 import { analyzeMotion } from "../scripts/lib/frame-diff.mjs";
-import { regionCovers, checkedNothingReasons, fontForLang, captionChars, langGlyphPairs, langGlyphReport, formatStateChecks } from "../scripts/lib/state-checks.mjs";
+import { regionCovers, checkedNothingReasons, fontForLang, captionChars, langGlyphPairs, langGlyphReport, formatStateChecks, regionScope, coverNothingReason } from "../scripts/lib/state-checks.mjs";
 import { formatCueWarnings } from "../scripts/lib/cue-check.mjs";
-import { parseHolds, reviewCueText, buildReviewSrt, reviewCopy, reviewLayers, reviewFile } from "../scripts/review.mjs";
+import { parseHolds, reviewCueText, buildReviewSrt, reviewCopy, reviewLayers, reviewFile, reviewReel, verdict } from "../scripts/review.mjs";
 import { reelPaths } from "../scripts/lib/reeldir.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "a11-"));
@@ -157,7 +157,7 @@ test("reviewFile: a file with no audio says the silence check checked nothing", 
   assert.deepEqual(r.deadAir.intendedHolds, []);
 });
 
-test("state-checks.mjs in a browser: declared regions are checked, a missing language glyph exits 1, an empty page says checked nothing", () => {
+test("state-checks.mjs in a browser: declared regions are checked, a font that is not there is 'not checked' (exit 0), an empty page says checked nothing", () => {
   const dir = tmp();
   fs.writeFileSync(path.join(dir, "reel.html"), `<!doctype html><canvas id="c" width="300" height="200"></canvas><script>
 window.__reel = { width: 300, height: 200, fps: 10, duration: 1, ready: Promise.resolve(), shots: [], seek: function () {},
@@ -169,10 +169,96 @@ window.__reel = { width: 300, height: 200, fps: 10, duration: 1, ready: Promise.
   fs.writeFileSync(path.join(dir, "dub", "ko", "plan.json"), JSON.stringify({ meta: { lang: "ko" }, lines: [{ id: "l1", text: "안녕" }] }));
   const script = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "scripts", "state-checks.mjs");
   const r = spawnSync(process.execPath, [script, dir, "--no-source"], { encoding: "utf8" });
-  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stdout, /label or overlay over key content: 1\n  badge over chart: 0\.000–1\.000 s, 200 px²/);
-  assert.match(r.stdout, /glyphs ko: 2 of 2 characters are not in the font — definitely wrong for ko/);
+  assert.match(r.stdout, /glyphs ko: not checked: font not loaded/);
   assert.match(r.stdout, /glyphs en: checked nothing \(no named font/);
   assert.match(r.stdout, /text overlap: checked nothing/);
   assert.match(r.stdout, /glyph fallback: checked nothing/);
+});
+
+const STATE_SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "scripts", "state-checks.mjs");
+const SERIF_TTF = ["/System/Library/Fonts/Supplemental/Times New Roman.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"].find((f) => fs.existsSync(f));
+
+/** A one-page reel whose captions use a webfont served from the reel dir, plus plans for en and ko. */
+function fontReel({ fontUrl, regions = [], koText = "안녕", enText = "Hi" }) {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "reel.html"), `<!doctype html><style>@font-face { font-family: "SvaFace"; src: url("${fontUrl}"); }</style><canvas id="c" width="300" height="200"></canvas><script>
+window.__reel = { width: 300, height: 200, fps: 10, duration: 1, ready: Promise.resolve(), shots: [], seek: function () {},
+  regions: ${JSON.stringify(regions)}, captionFonts: { en: '"SvaFace"', ko: '"SvaFace"' } };
+</script>`);
+  fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify({ meta: { lang: "en" }, lines: [{ id: "l1", text: enText }] }));
+  fs.mkdirSync(path.join(dir, "dub", "ko"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "dub", "ko", "plan.json"), JSON.stringify({ meta: { lang: "ko" }, lines: [{ id: "l1", text: koText }] }));
+  if (SERIF_TTF) fs.copyFileSync(SERIF_TTF, path.join(dir, "face.ttf"));
+  return dir;
+}
+
+test("langglyphs: a loaded font that looks like the browser default is not a false stop; a character it lacks still exits 1",
+  { skip: !SERIF_TTF && "no serif system font to use as a fixture" }, () => {
+    const ok = spawnSync(process.execPath, [STATE_SCRIPT, fontReel({ fontUrl: "face.ttf", koText: "Hi" }), "--no-source", "--only", "langglyphs"], { encoding: "utf8" });
+    assert.equal(ok.status, 0, ok.stderr + ok.stdout);
+    assert.match(ok.stdout, /glyphs en: 2 characters, all in the font/);
+    assert.match(ok.stdout, /glyphs ko: 2 characters, all in the font/);
+    const bad = spawnSync(process.execPath, [STATE_SCRIPT, fontReel({ fontUrl: "face.ttf" }), "--no-source", "--only", "langglyphs"], { encoding: "utf8" });
+    assert.equal(bad.status, 1, bad.stderr + bad.stdout);
+    assert.match(bad.stdout, /glyphs ko: 2 of 2 characters are not in the font/);
+    assert.match(bad.stdout, /glyphs en: 2 characters, all in the font/);
+  });
+
+test("langglyphs: a declared font whose file did not load is 'not checked: font not loaded', exit 0", () => {
+  const r = spawnSync(process.execPath, [STATE_SCRIPT, fontReel({ fontUrl: "missing-face.ttf" }), "--no-source", "--only", "langglyphs"], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /glyphs en: not checked: font not loaded/);
+  assert.match(r.stdout, /glyphs ko: not checked: font not loaded/);
+});
+
+test("langGlyphReport: a null answer (font not loaded) is neither present nor missing", () => {
+  const langs = [{ lang: "ko", lines: [{ id: "l1", text: "안녕" }] }];
+  const plan = langGlyphPairs(langs, () => "Face");
+  const rep = langGlyphReport(plan, plan.entries.map(() => null), langs);
+  assert.equal(rep.definitelyWrong, false);
+  assert.equal(rep.languages[0].checkedChars, 0);
+  assert.match(formatStateChecks({ sampledFrames: 0, langGlyphs: rep }), /glyphs ko: not checked: font not loaded \(Face: /);
+});
+
+test("covers: says what it looked at, or why it looked at nothing", () => {
+  assert.deepEqual(regionScope([{ id: "k", kind: "key", box: [0, 0, 1, 1] }, { id: "l", kind: "label", box: [5, 5, 6, 6] }, { id: "bad", kind: "key" }]), { keys: 1, covering: 1 });
+  assert.match(coverNothingReason(regionScope([{ id: "l", kind: "label", box: [0, 0, 1, 1] }])), /no key region declared/);
+  assert.match(coverNothingReason(regionScope([{ id: "k", kind: "key", box: [0, 0, 1, 1] }])), /no label or overlay region declared/);
+  assert.match(coverNothingReason(regionScope([])), /declares no regions/);
+  assert.equal(coverNothingReason({ keys: 2, covering: 1 }), null);
+  const out = formatStateChecks({ sampledFrames: 0, covers: [], coverScope: { keys: 2, covering: 3 } });
+  assert.match(out, /checked 2 key regions against 3 label\/overlay regions, 0 covered/);
+});
+
+test("verdict: a null pass is 'checked nothing', never a pass or a fail", () => {
+  assert.equal(verdict({ pass: null }), "CHECKED NOTHING");
+  assert.equal(verdict({ pass: true }), "PASS");
+  assert.equal(verdict({ pass: false }), "FAIL");
+  assert.equal(verdict({ pass: true, checkedNothing: true }), "CHECKED NOTHING");
+});
+
+test("reviewReel: a video with no audio stream reports silence as checked nothing, and the audio check has no pass", async () => {
+  const dir = tmp();
+  makeReel(dir);
+  fs.writeFileSync(path.join(dir, "reel.html"), `<!doctype html><canvas id="c" width="64" height="64"></canvas><script>
+window.__reel = { width: 64, height: 64, fps: 10, duration: 2, ready: Promise.resolve(), shots: [], seek: function () {}, issues: function () { return []; } };
+window.Reel = { clearIssues: function () {} };
+</script>`);
+  const file = path.join(dir, "out", "silent.mp4");
+  await mp4(file, { audio: false });
+  const report = await reviewReel({ dir, paths: reelPaths(dir), mp4Flag: file });
+  const silence = report.checkedNothing.find((c) => c.check === "silence");
+  assert.match(silence.reason, /no audio stream/);
+  assert.equal(report.checks.audio.silenceCheckedNothing, true);
+  assert.equal(report.checks.audio.silencePass, null);
+  assert.equal(report.checks.audio.pass, null);
+  assert.equal(report.checks.layout.pass, null);
+});
+
+test("state-checks.mjs --help states which checks can exit 1", () => {
+  const r = spawnSync(process.execPath, [STATE_SCRIPT, "--help"], { encoding: "utf8" });
+  assert.match(r.stdout, /Exit contract/);
+  assert.match(r.stdout, /exit 1 {2}only when langglyphs finds a character/);
 });

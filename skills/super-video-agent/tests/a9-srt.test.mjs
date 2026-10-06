@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   srtTime, formatSrt, parseSrt, buildCues, checkCues, formatChecks, compareTracks, formatComparison,
-  parseScript, alignScript, defaultLineChars,
+  parseScript, alignScript, defaultLineChars, sttExtractArgs,
 } from "../scripts/lib/srt.mjs";
 import { alignCaptionWords, matchLetters } from "../scripts/voice/word-align.mjs";
 
@@ -221,4 +221,11 @@ test("srt.mjs build: one SRT per language from base + placed timings, report wri
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("sttExtractArgs: a video gets a mono 16 kHz wav extract, a wav is passed on as it is", () => {
+  const args = sttExtractArgs("/in/film.mp4", "/tmp/w/audio-16k.wav");
+  assert.deepEqual(args.slice(args.indexOf("-vn")), ["-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "/tmp/w/audio-16k.wav"]);
+  assert.equal(args[args.indexOf("-i") + 1], "/in/film.mp4");
+  assert.equal(sttExtractArgs("/in/voice.WAV", "/tmp/x.wav"), null);
 });

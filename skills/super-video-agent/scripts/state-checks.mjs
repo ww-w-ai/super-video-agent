@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Page-state checks: text boxes that overlap, glyphs drawn by a fallback font, and one-frame
 // flicker. Source review first (flicker only: show/hide windows in the reel's code), then a state
-// scan of every frame confirms in the rendered timeline. Facts only; exit 0 whatever it finds, except a glyph a language's font lacks (exit 1).
+// scan of every frame confirms in the rendered timeline. Facts only; exit 0 whatever it finds, except
+// langglyphs: a character a language's loaded font lacks exits 1 (see the exit contract in HELP).
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
@@ -10,7 +11,7 @@ import { serveDir } from "./lib/server.mjs";
 import { openReel, stubSeconds } from "./lib/browser.mjs";
 import { installTextProbe, collectFrameStates, glyphCoverage } from "./lib/page-probe.mjs";
 import { textOverlapSpans, glyphFallbacks, findFlicker, visibleKeys, formatStateChecks, namedFamilies, checkedNothingReasons,
-  regionCovers, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage } from "./lib/state-checks.mjs";
+  regionCovers, regionScope, coverNothingReason, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage } from "./lib/state-checks.mjs";
 import { gatherSources, visibilitySourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 
 const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--step <frames>] [--fps <n>]
@@ -36,15 +37,29 @@ no change; nothing is read from pixels.
               wrong for that language: listed with code points and line ids, and this step exits 1.
               --outline-em <n>: the captions are drawn with an outline n times the font size wide; glyph
               shapes are compared after growing them by half of it.
-A check that looked at nothing says "checked nothing" with the reason, never "none". Intended
-slow-motion spans are declared with window.__reel.holds = [{from, to}] and read by review.mjs.
+A check that looked at nothing says "checked nothing" with the reason, never "none"; covers says
+"checked N key regions against M label/overlay regions, 0 covered" when it looked and found nothing.
+Intended slow-motion spans are declared with window.__reel.holds = [{from, to}] and read by review.mjs.
+
+Exit contract (the default --only set runs all five checks):
+  exit 1  only when langglyphs finds a character that a language's font does not have. That is
+          definitely wrong for that language (it would draw in a fallback font), so it stops this step.
+          Missing = the character, drawn as "<font>, <generic>", looks exactly like plain monospace, serif or
+          sans-serif (what the browser draws when the font lacks it).
+          If the font was declared (@font-face / FontFace) but none of its faces loaded, or the font is not
+          installed or draws the letters "H" and "a" exactly like a generic family (so a glyph cannot be told
+          from a fallback), langglyphs prints "not checked: font not loaded" and does not exit 1.
+  exit 1  also for unusable arguments or an unreadable reel (nothing was checked).
+  exit 0  every other finding: overlap, glyphs, flicker, covers, "checked nothing". These are
+          judgements or facts for the reviewer; none stops the run. Use --only overlap,glyphs,flicker,covers
+          to run without the one check that can exit 1.
 
 Flicker is reviewed in the source first: show/hide windows in reel.html / src/*.js under 2 frames,
 one-frame gaps or overlaps between neighbouring windows, conditions on two clocks, boundaries rounded
 inside the test, and fades of 0 or 1 frame, each with file:line. --fps overrides the fps used there
 (default plan.json meta.fps, else the page's). --source-only stops after that source review;
 --no-source skips it.
-Writes <reel-dir>/out/state-checks.json. Exit 0 whatever it finds, except langglyphs (exit 1 on a missing glyph).
+Writes <reel-dir>/out/state-checks.json.
 `;
 
 const CHECKS = ["overlap", "glyphs", "flicker", "covers", "langglyphs"];
@@ -62,7 +77,10 @@ async function pageDeclared(page, name) {
 async function reportCovers(page, report, duration) {
   const regions = await pageDeclared(page, "regions");
   report.regionsDeclared = Array.isArray(regions) && regions.length > 0;
+  report.coverScope = regionScope(report.regionsDeclared ? regions : []);
   report.covers = report.regionsDeclared ? regionCovers(regions, { duration }) : [];
+  const reason = coverNothingReason(report.coverScope);
+  if (reason) report.nothing = [...(report.nothing || []), { check: "label over key content", reason }];
 }
 
 /** The base plan (plan.json meta.lang) and every dub/<code>/plan.json: [{lang, lines, fonts}]. */
@@ -173,9 +191,9 @@ export async function main(argv) {
       report.flickerHook = hook;
     }
     Object.assign(result, { state: report });
-    if (report.covers && !report.regionsDeclared) report.nothing = [...(report.nothing || []), { check: "label over key content", reason: "the page declares no regions (window.__reel.regions)" }];
     process.stdout.write(formatStateChecks({ overlaps: report.overlaps, glyphs: report.glyphs, flicker: report.flicker,
-      sampledFrames: frames.length, hooks: hook, nothing: report.nothing, covers: report.covers, langGlyphs: report.langGlyphs }));
+      sampledFrames: frames.length, hooks: hook, nothing: report.nothing, covers: report.covers, coverScope: report.coverScope,
+      langGlyphs: report.langGlyphs }));
     writeJson(outPath, result);
     process.stdout.write(`wrote ${outPath}\n`);
     // A character a language's font lacks is definitely wrong for that language: this step exits non-zero.

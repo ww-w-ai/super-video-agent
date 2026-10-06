@@ -521,11 +521,13 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     const checkedNothing = [];
     if (shots.length === 0) checkedNothing.push({ check: "layout", reason: "the page declares no shots, so no frame was read for issues()" });
     if (deadAirScan.times.length < 2) checkedNothing.push({ check: "deadAir", reason: "fewer than 2 samples" });
-    if (!(timings.lines && timings.lines.length)) checkedNothing.push({ check: "silence", reason: "timings.json has no lines, so there is no narration span to measure" });
+    const hasAudio = (await probeStreamDurations(mp4Path)).audioSec != null;
+    if (!hasAudio) checkedNothing.push({ check: "silence", reason: "the video has no audio stream" });
+    else if (!(timings.lines && timings.lines.length)) checkedNothing.push({ check: "silence", reason: "timings.json has no lines, so there is no narration span to measure" });
     const nothingOf = (name) => checkedNothing.some((c) => c.check === name);
 
-    const loudness = await measureLoudness(mp4Path);
-    const pcm = await decodeMonoPcm(mp4Path, AUDIO_SAMPLE_RATE);
+    const loudness = hasAudio ? await measureLoudness(mp4Path) : { integratedLufs: null, truePeakDb: null };
+    const pcm = hasAudio ? await decodeMonoPcm(mp4Path, AUDIO_SAMPLE_RATE) : new Float32Array(0);
     // Silence is measured only inside the narration span (first sound ->
     // last line's end) so an intended silent tail/end card (see
     // plan.json meta.tailSec) is not counted as a gap to flag.
@@ -559,7 +561,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
         (offsetMs != null && offsetMs >= SYNC_OFFSET_MIN_MS && offsetMs <= SYNC_OFFSET_MAX_MS);
       return { at: m.at, kind: m.kind, sync, offsetMs, source, duckedByNarration, pass };
     });
-    const silencePass = silenceGaps.unplanned.length === 0;
+    const silencePass = nothingOf("silence") ? null : silenceGaps.unplanned.length === 0;
     const marksPass = markResults.every((m) => m.pass);
 
     const report = {
@@ -596,7 +598,8 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           byShot: issuesByShot,
         },
         audio: {
-          pass: silencePass && marksPass,
+          // silence that checked nothing is neither a pass nor a fail; with no marks either, the audio check has no result.
+          pass: silencePass === null && markResults.length === 0 ? null : silencePass !== false && marksPass,
           silenceCheckedNothing: nothingOf("silence"),
           integratedLufs: loudness.integratedLufs,
           truePeakDb: loudness.truePeakDb,
@@ -621,7 +624,8 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
   }
 }
 
-const verdict = (check) => (check.checkedNothing ? "CHECKED NOTHING" : check.pass ? "PASS" : "FAIL");
+/** pass is true / false, or null when the check looked at nothing: null is never a pass and never a fail. */
+export const verdict = (check) => (check.checkedNothing || check.pass === null ? "CHECKED NOTHING" : check.pass ? "PASS" : "FAIL");
 
 function printSummary(report) {
   const c = report.checks;
@@ -632,7 +636,7 @@ function printSummary(report) {
     `A/V duration: video=${report.duration.video.toFixed(3)}s audio=${report.duration.audio.toFixed(3)}s delta=${report.duration.deltaMs.toFixed(1)}ms [${c.avSync.pass ? "PASS" : "FAIL"}]`,
     `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${verdict(c.deadAir)}]${c.deadAir.intendedHolds.map((h) => ` intended hold ${h.startSec.toFixed(2)}s+${h.durationSec.toFixed(2)}s (not flagged)`).join(";")}`,
     `layout issues: ${c.layout.issueCount} [${verdict(c.layout)}]`,
-    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${c.audio.silenceCheckedNothing ? "CHECKED NOTHING" : c.audio.silencePass ? "PASS" : "FAIL"}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
+    `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${verdict({ pass: c.audio.silencePass })}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}`),
     report.note,

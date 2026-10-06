@@ -150,7 +150,7 @@ export function glyphFallbacks(frames, covered, { fps }) {
 }
 
 /** Printable report of the three checks; each section says what it covered. */
-export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, langGlyphs }) {
+export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, coverScope, langGlyphs }) {
   let s = `sampled ${sampledFrames} frames\n`;
   const skip = new Set((nothing || []).map((n) => n.check));
   if (overlaps) {
@@ -180,6 +180,9 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
   if (covers && covers.length) {
     s += `label or overlay over key content: ${covers.length}\n`;
     for (const c of covers) s += `  ${c.label} over ${c.key}: ${c.from.toFixed(3)}–${c.to.toFixed(3)} s, ${c.sharePx} px² (${Math.round(c.shareOfKey * 100)}% of the key area)${c.alwaysOn ? ", always on" : ""}\n`;
+  }
+  else if (covers && coverScope && !coverNothingReason(coverScope)) {
+    s += `label or overlay over key content: checked ${coverScope.keys} key region${coverScope.keys === 1 ? "" : "s"} against ${coverScope.covering} label/overlay region${coverScope.covering === 1 ? "" : "s"}, 0 covered\n`;
   }
   if (langGlyphs) s += formatLangGlyphs(langGlyphs);
   return s;
@@ -211,6 +214,22 @@ const box = (r) => {
   return [r.box[0] - pad, r.box[1] - pad, r.box[2] + pad, r.box[3] + pad];
 };
 
+const validRegions = (regions) => (regions || []).filter((r) => r && Array.isArray(r.box) && r.box.length === 4);
+
+/** How many key regions and how many label/overlay regions the page declared (the two sides of the covers check). */
+export function regionScope(regions) {
+  const list = validRegions(regions);
+  return { keys: list.filter((r) => r.kind === "key").length, covering: list.filter((r) => r.kind === "label" || r.kind === "overlay").length };
+}
+
+/** Why the covers check looked at nothing, or null when both sides were declared. */
+export function coverNothingReason({ keys, covering }) {
+  if (!keys && !covering) return "the page declares no regions (window.__reel.regions)";
+  if (!keys) return "no key region declared";
+  if (!covering) return "no label or overlay region declared";
+  return null;
+}
+
 /**
  * Page-declared regions only (window.__reel.regions): every label or always-on overlay whose box
  * (grown by half its outline) shares area with a key region while both are on screen. Report only.
@@ -220,7 +239,7 @@ const box = (r) => {
  */
 export function regionCovers(regions, { duration }) {
   const norm = (r) => ({ ...r, from: Number.isFinite(r.from) ? r.from : 0, to: Number.isFinite(r.to) ? r.to : duration });
-  const list = (regions || []).filter((r) => Array.isArray(r.box) && r.box.length === 4).map(norm);
+  const list = validRegions(regions).map(norm);
   const keys = list.filter((r) => r.kind === "key");
   const out = [];
   for (const cover of list.filter((r) => r.kind === "label" || r.kind === "overlay")) {
@@ -279,7 +298,9 @@ export function langGlyphPairs(langs, fontOf) {
 export function langGlyphReport({ entries, noFont }, covered, langs) {
   const missing = new Map();
   const checked = new Map();
+  const notLoaded = new Map();
   entries.forEach((e, i) => {
+    if (covered[i] === null) { notLoaded.set(e.lang, e.font); return; }
     checked.set(e.lang, (checked.get(e.lang) || 0) + 1);
     if (covered[i]) return;
     const list = missing.get(e.lang) || [];
@@ -287,7 +308,8 @@ export function langGlyphReport({ entries, noFont }, covered, langs) {
     missing.set(e.lang, list);
   });
   return {
-    languages: langs.map((l) => ({ lang: l.lang, checkedChars: checked.get(l.lang) || 0, missing: missing.get(l.lang) || [], noFont: noFont.includes(l.lang) })),
+    languages: langs.map((l) => ({ lang: l.lang, checkedChars: checked.get(l.lang) || 0, missing: missing.get(l.lang) || [], noFont: noFont.includes(l.lang),
+      fontNotLoaded: notLoaded.get(l.lang) || null })),
     definitelyWrong: missing.size > 0,
   };
 }
@@ -296,10 +318,12 @@ function formatLangGlyphs(r) {
   let s = "";
   for (const l of r.languages) {
     if (l.noFont) s += `glyphs ${l.lang}: checked nothing (no named font for this language, a generic family cannot be told from the fallback: set window.__reel.captionFonts or plan style.fonts)\n`;
+    else if (l.fontNotLoaded && l.checkedChars === 0) s += `glyphs ${l.lang}: not checked: font not loaded (${l.fontNotLoaded}: not declared, not installed, or drawn like the browser default face)\n`;
     else if (l.checkedChars === 0) s += `glyphs ${l.lang}: checked nothing (no caption characters)\n`;
-    else if (!l.missing.length) s += `glyphs ${l.lang}: ${l.checkedChars} characters, all in the font\n`;
+    else if (!l.missing.length) s += `glyphs ${l.lang}: ${l.checkedChars} characters, all in the font${l.fontNotLoaded ? ` (the rest not checked: font not loaded: ${l.fontNotLoaded})` : ""}\n`;
     else {
       s += `glyphs ${l.lang}: ${l.missing.length} of ${l.checkedChars} characters are not in the font — definitely wrong for ${l.lang}\n`;
+      if (l.fontNotLoaded) s += `  (the rest not checked: font not loaded: ${l.fontNotLoaded})\n`;
       for (const m of l.missing) s += `  ${m.codepoint} "${m.char}" not in ${m.font}: lines ${m.lineIds.slice(0, 8).join(", ")}${m.lineIds.length > 8 ? ", …" : ""}\n`;
     }
   }
@@ -307,17 +331,34 @@ function formatLangGlyphs(r) {
 }
 
 /**
- * In the page: whether each [families, char] has a glyph in the named font. The glyph's mask (alpha > 8)
- * is dilated by outlineEm / 2 of the font size first, so a caption drawn with an outline is compared on the
- * shape it really draws; the same char in a font that does not exist is the fallback it is compared with.
+ * In the page: whether each [families, char] has a glyph in the named font. true = present, false = missing,
+ * null = not checked: the font is declared (@font-face / FontFace) and none of its faces loaded, or it draws
+ * the plain letters "H" and "a" exactly like a generic family (not installed, or the browser default face),
+ * so no glyph can be told from a fallback. Test: the char drawn as "<font>, <generic>" is compared with plain
+ * <generic> for monospace, serif and sans-serif; missing = it matches one of them (measured: the fallback for a
+ * char the font lacks depends on the font, so requiring a match on both monospace and serif misses real gaps).
+ * The glyph mask (alpha > 8) is dilated by outlineEm / 2 of the font size first, so a caption drawn with an
+ * outline is compared on the shape it draws.
  * @param {import("playwright-core").Page} page
  * @param {[string, string][]} pairs
  * @param {{outlineEm?:number}} [opts]
- * @returns {Promise<boolean[]>}
+ * @returns {Promise<(boolean|null)[]>}
  */
 export async function glyphMaskCoverage(page, pairs, { outlineEm = 0 } = {}) {
-  return page.evaluate(({ list, em }) => {
+  return page.evaluate(async ({ list, em }) => {
     const N = 96, FONT = 64, r = Math.round((em * FONT) / 2);
+    const bare = (f) => f.trim().replace(/^["']|["']$/g, "").toLowerCase();
+    await Promise.allSettled(list.map(([families, ch]) => document.fonts.load(`${FONT}px ${families}`, ch)));
+    await document.fonts.ready;
+    const notLoaded = new Map();
+    const fontNotLoaded = (families) => {
+      if (!notLoaded.has(families)) {
+        const want = new Set(families.split(",").map(bare));
+        const faces = [...document.fonts].filter((f) => want.has(bare(f.family)));
+        notLoaded.set(families, faces.length > 0 && !faces.some((f) => f.status === "loaded"));
+      }
+      return notLoaded.get(families);
+    };
     const mask = (family, ch) => {
       const c = document.createElement("canvas");
       c.width = c.height = N;
@@ -339,11 +380,21 @@ export async function glyphMaskCoverage(page, pairs, { outlineEm = 0 } = {}) {
       }
       return { w: x.measureText(ch).width, m: out };
     };
-    return list.map(([families, ch]) => {
-      const a = mask(families, ch), b = mask('"__sva_no_such_font__"', ch);
+    const differs = (a, b) => {
       if (a.w !== b.w) return true;
       for (let i = 0; i < a.m.length; i++) if (a.m[i] !== b.m[i]) return true;
       return false;
-    });
+    };
+    // Which font draws a char the first family lacks depends on that family, so the fallback of "<font>, monospace"
+    // is not always plain monospace: a missing glyph matches at least one of the three plain generics, a present
+    // one matches none. That also means a font drawn exactly like a generic cannot be told from it.
+    const matchesGeneric = (families, ch) =>
+      ["monospace", "serif", "sans-serif"].some((fb) => !differs(mask(`${families}, ${fb}`, ch), mask(fb, ch)));
+    const undecidable = new Map();
+    const cannotTell = (families) => {
+      if (!undecidable.has(families)) undecidable.set(families, fontNotLoaded(families) || ["H", "a"].some((c) => matchesGeneric(families, c)));
+      return undecidable.get(families);
+    };
+    return list.map(([families, ch]) => (cannotTell(families) ? null : !matchesGeneric(families, ch)));
   }, { list: pairs, em: outlineEm });
 }

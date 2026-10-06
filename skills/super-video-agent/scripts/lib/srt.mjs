@@ -283,6 +283,16 @@ export function formatComparison(cmp, { tolSec = TIME_TOL_SEC } = {}) {
 }
 
 /**
+ * ffmpeg arguments that turn a media file into the mono 16 kHz PCM wav the STT engine reads, or null
+ * when the input already is a .wav (it is passed on as it is).
+ * @returns {string[]|null}
+ */
+export function sttExtractArgs(media, wavOut) {
+  if (/\.wav$/i.test(media)) return null;
+  return ["-y", "-i", media, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavOut];
+}
+
+/**
  * Script lines [{id,text}] from a file's text: a JSON object with `lines[]` (plan.json,
  * timings.json) keeps its ids and `text`; anything else is plain text, one script line per
  * non-empty row, ids l1, l2, ....
