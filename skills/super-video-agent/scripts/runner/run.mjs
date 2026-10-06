@@ -18,7 +18,7 @@ Runs the stages of a film in dependency order, unattended. Plan file (all paths 
     "dir": "/abs/film",                       state, logs, results and status.txt live here
     "claude": "claude", "claudeArgs": [],     the command for session stages and its extra flags
     "maxParallel": 3,
-    "lock": { "dir": null, "gpu": true, "threshold": 50, "gpuWaitMaxSec": 5400, "pollMs": 5000 },
+    "lock": { "dir": null, "gpu": true, "threshold": 50, "gpuWaitMaxSec": 5400, "gpuIdleSamples": 3, "pollMs": 5000 },
     "stages": [
       { "name": "voice-xx", "kind": "session", "prompt": "/abs/prompts/voice-xx.txt",
         "done": "/abs/film/reel/dub/xx/voice/timings.json", "owns": ["/abs/film/reel/dub/xx"],
@@ -152,7 +152,7 @@ function lockOptions(ctx, stage) {
   const l = ctx.plan.lock;
   return {
     dir: ctx.lockDir, priority: stage.priority, label: stage.name, output: stage.done, pollMs: l.pollMs,
-    gpu: l.gpu === false ? false : { threshold: l.threshold ?? busyThreshold(), maxWaitMs: (l.gpuWaitMaxSec ?? 5400) * 1000 },
+    gpu: l.gpu === false ? false : { threshold: l.threshold ?? busyThreshold(), maxWaitMs: (l.gpuWaitMaxSec ?? 5400) * 1000, idleSamples: l.gpuIdleSamples },
     onEvent: (type, text) => ctx.log(`${stage.name}: ${text}`),
   };
 }

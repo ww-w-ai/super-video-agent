@@ -13,7 +13,7 @@ import {
 } from "../scripts/runner/gpu-probe.mjs";
 import {
   acquireSlot, readSlot, readTickets, releaseDeadSlot, waitingOrder, killGroup, pidAlive,
-  defaultLockDir, assertSafeLockDir, safePgid, trustedOwner,
+  defaultLockDir, assertSafeLockDir, safePgid, trustedOwner, procStartTime,
 } from "../scripts/runner/lock.mjs";
 import { listEntries, removeEntries } from "../scripts/runner/queue.mjs";
 import { rowOfFile, aggregate, formatReport, reportFor } from "../scripts/runner/cost-report.mjs";
@@ -166,7 +166,7 @@ test("a dead owner's slot is released by the next process, and its leftover chil
   const leftover = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
   const dead = deadPid();
   fs.mkdirSync(path.join(dir, "slot"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: dead, uid: process.getuid(), label: "gone", since: Date.now(), childPgid: leftover.pid }));
+  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: dead, uid: process.getuid(), label: "gone", since: Date.now(), childPgid: leftover.pid, childStart: procStartTime(leftover.pid) }));
   assert.equal(readSlot(dir).ownerAlive, false);
   const h = await acquireSlot(fastOpts(dir, { label: "next" }));
   assert.equal(readSlot(dir).owner.label, "next");
@@ -388,7 +388,7 @@ test("a dead owner's slot is a removable entry and its child group goes with it"
   const dir = tmp();
   const leftover = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { detached: true, stdio: "ignore" });
   fs.mkdirSync(path.join(dir, "slot"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: deadPid(), uid: process.getuid(), label: "gone", since: Date.now() - 5000, childPgid: leftover.pid }));
+  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ pid: deadPid(), uid: process.getuid(), label: "gone", since: Date.now() - 5000, childPgid: leftover.pid, childStart: procStartTime(leftover.pid) }));
   const slot =listEntries({ dir }).find((e) => e.kind === "slot");
   assert.deepEqual(slot.reasons, ["owner-dead"]);
   removeEntries({ dir, ids: ["slot"] });

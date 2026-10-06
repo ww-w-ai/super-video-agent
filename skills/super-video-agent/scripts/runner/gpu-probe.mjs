@@ -77,6 +77,14 @@ export function busyThreshold(env = process.env) {
   return Number.isFinite(n) && env.SVA_GPU_BUSY_PCT !== undefined && env.SVA_GPU_BUSY_PCT !== "" ? n : DEFAULT_BUSY_PCT;
 }
 
+export const DEFAULT_IDLE_SAMPLES = 3;
+
+/** How many consecutive samples at or below the threshold count as idle (env SVA_GPU_IDLE_SAMPLES, default 3, at least 1). */
+export function idleSamples(env = process.env) {
+  const n = Number(env.SVA_GPU_IDLE_SAMPLES);
+  return Number.isInteger(n) && n >= 1 && env.SVA_GPU_IDLE_SAMPLES !== "" ? n : DEFAULT_IDLE_SAMPLES;
+}
+
 /**
  * Wait while the machine's GPU is above `threshold`. Resolves {status, waitedMs, probe}:
  *   "idle"     at or below the threshold (waitedMs is 0 when it never had to wait)

@@ -14,6 +14,9 @@ result-<stage>.json name also works), one file per session or resume, and prints
 then the totals. Flags: is_error true, a subtype other than "success" (for example error_max_turns),
 a file that is empty or not JSON, a result with no cost field.
 Stage wall time (start to finish, waits included) is added when <film-dir>/.runner/state.json exists.
+TTS usage: reads the optional <film-dir>/voice/tts-usage.jsonl and <film-dir>/dub/<code>/tts-usage.jsonl, one JSON
+object per synthesis: {"provider": "...", "chars": 120, "seconds" or "audioSec": 8.4, "cost": 0.012} (cost may be missing). It prints
+syntheses, characters, seconds and known cost per folder and provider, or "not logged" when no such file exists.
 --json prints the same numbers as JSON.
 `;
 
@@ -89,7 +92,72 @@ export function formatReport(agg) {
   lines.push(`total | ${t.sessions} | ${t.cost.toFixed(2)} | ${fmtMin(t.durationMs)} | - | ${t.turns} | ${fmtK(t.inTokens)}/${fmtK(t.outTokens)} | ${agg.flagged.length ? `flagged: ${agg.flagged.join(", ")}` : "none flagged"}`);
   if (agg.stages.length === 0) lines.push("no result files found");
   lines.push("Cost is what claude -p reports per session; rendering, voice and other tools run outside a session and are not in it.");
+  if (agg.tts) lines.push(...formatTts(agg.tts));
   return lines.join("\n") + "\n";
+}
+
+const TTS_LOG = "tts-usage.jsonl";
+
+/** The folders a film's voice synthesis logs to: voice/ and every dub/<code>/. */
+function ttsScopes(filmDir) {
+  const scopes = [{ scope: "voice", dir: path.join(filmDir, "voice") }];
+  try {
+    for (const code of fs.readdirSync(path.join(filmDir, "dub")).sort()) scopes.push({ scope: `dub/${code}`, dir: path.join(filmDir, "dub", code) });
+  } catch {
+    /* no dub folder */
+  }
+  return scopes;
+}
+
+/**
+ * TTS usage from the optional `tts-usage.jsonl` files (one JSON object per synthesis: provider, chars, seconds,
+ * cost when known). Returns {logged:false} when no film folder has the file; else per scope and provider the
+ * synthesis count, characters, seconds, the cost that was known and how many syntheses had none, plus the count
+ * of lines that were not JSON objects.
+ */
+export function ttsUsageFor(filmDir) {
+  const rows = new Map();
+  let unreadable = 0;
+  let files = 0;
+  for (const { scope, dir } of ttsScopes(filmDir)) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(dir, TTS_LOG), "utf8");
+    } catch {
+      continue;
+    }
+    files++;
+    for (const line of text.split("\n").filter((l) => l.trim())) {
+      let e;
+      try {
+        e = JSON.parse(line);
+      } catch {
+        e = null;
+      }
+      if (!e || typeof e !== "object" || Array.isArray(e)) {
+        unreadable++;
+        continue;
+      }
+      const provider = typeof e.provider === "string" && e.provider ? e.provider : "unknown";
+      const row = rows.get(`${scope}\u0000${provider}`) || { scope, provider, syntheses: 0, chars: 0, seconds: 0, cost: 0, noCost: 0 };
+      row.syntheses += 1;
+      row.chars += numberOr(e.chars);
+      row.seconds += numberOr(e.seconds ?? e.audioSec);
+      if (typeof e.cost === "number" && Number.isFinite(e.cost)) row.cost += e.cost;
+      else row.noCost += 1;
+      rows.set(`${scope}\u0000${provider}`, row);
+    }
+  }
+  return { logged: files > 0, files, unreadable, rows: [...rows.values()] };
+}
+
+function formatTts(tts) {
+  if (!tts.logged) return [`TTS usage: not logged (no ${TTS_LOG} in voice/ or dub/<code>/)`];
+  const lines = ["TTS usage (from tts-usage.jsonl)", "scope | provider | syntheses | chars | seconds | cost USD (known)"];
+  for (const r of tts.rows) lines.push(`${r.scope} | ${r.provider} | ${r.syntheses} | ${r.chars} | ${r.seconds.toFixed(1)} | ${r.cost.toFixed(4)}${r.noCost ? ` (+${r.noCost} without cost)` : ""}`);
+  if (!tts.rows.length) lines.push("the file(s) hold no readable entry");
+  if (tts.unreadable) lines.push(`${tts.unreadable} line(s) were not JSON objects and are not counted`);
+  return lines;
 }
 
 function wallTimes(filmDir) {
@@ -114,7 +182,7 @@ export function reportFor(filmDir, resultsDir = path.join(filmDir, "results")) {
     /* no results folder yet: the report says so */
   }
   const rows = files.map((f) => rowOfFile(f, fs.readFileSync(f, "utf8")));
-  return aggregate(rows, wallTimes(filmDir));
+  return { ...aggregate(rows, wallTimes(filmDir)), tts: ttsUsageFor(filmDir) };
 }
 
 export function main(argv) {

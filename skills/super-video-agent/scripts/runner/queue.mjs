@@ -5,7 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
-import { defaultLockDir, assertSafeLockDir, readTickets, readSlot, killGroup, trustedOwner } from "./lock.mjs";
+import { defaultLockDir, assertSafeLockDir, readTickets, readSlot, stopLeftoverGroup } from "./lock.mjs";
 
 const HELP = `usage:
   queue.mjs list [--dir <lock-dir>] [--older-than <hours>] [--json]
@@ -73,7 +73,7 @@ export function removeEntries({ dir = defaultLockDir(), ids, force = false }) {
 function removeOne(dir, id) {
   if (id === "slot") {
     const s = readSlot(dir);
-    if (!s.ownerAlive && trustedOwner(s.owner)) killGroup(s.owner.childPgid, "SIGKILL"); // killGroup refuses a pgid that is not an integer > 1
+    if (!s.ownerAlive) stopLeftoverGroup(s.owner, (type, text) => process.stderr.write(`queue: ${text}\n`));
     fs.rmSync(path.join(dir, "slot"), { recursive: true, force: true });
     return;
   }

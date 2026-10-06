@@ -708,7 +708,7 @@ async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, f
       fps, framesDir: captionsDir, ranges: langFrameRanges(plan), notes: await dubCornerNotes({ dir, lang }), lang,
     });
     if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
-  }
+  } else captionNote = ownLayer.note || null;
   process.stdout.write(formatSpanReport(plan, fps));
   if (contrast) await reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps });
   const videoPath = path.join(workDir, "video-captioned.mp4");
@@ -734,13 +734,54 @@ function readBaseLang(dir) {
  */
 export function sceneSpanVerdict({ spans, lang, baseLang, pictureSource, dir }) {
   const scene = spans.filter((s) => s.in === "scene");
-  if (!scene.length || !baseLang || pictureSource === "lang") return null;
-  if (String(lang).split(/[-_]/)[0].toLowerCase() === String(baseLang).split(/[-_]/)[0].toLowerCase()) return null;
+  if (!scene.length || pictureSource === "lang") return null;
+  if (sameLanguageTag(lang, baseLang) !== false) return null;
   const list = scene.map((s) => `${s.start}-${s.end}`).join(", ");
   return (
     `the page lists text inside the picture (langSpans in:"scene": ${list} s) but this dub would use the base picture, which still shows ${baseLang} there. ` +
     `Render this language's picture first: render.mjs ${dir} --no-captions --lang ${lang} (shots that read no language string are reused), then run dub again`
   );
+}
+
+const MULTI_SCRIPT = new Set(["zh", "sr", "uz", "pa", "az", "mn", "ks"]); // languages written in more than one script
+const REGION_SCRIPT = { TW: "Hant", HK: "Hant", MO: "Hant", CN: "Hans", SG: "Hans" };
+
+/** {lang, script} of a BCP 47 tag; script is explicit, inferred from a zh region, or null. null when the tag is not readable. */
+function parseLangTag(tag) {
+  if (typeof tag !== "string" || !/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{2,8})*$/.test(tag.trim())) return null;
+  const [language, ...rest] = tag.trim().split(/[-_]/);
+  const lang = language.toLowerCase();
+  const scriptPart = rest.find((p) => /^[A-Za-z]{4}$/.test(p));
+  const region = rest.find((p) => /^([A-Za-z]{2}|\d{3})$/.test(p));
+  const script = scriptPart ? scriptPart[0].toUpperCase() + scriptPart.slice(1).toLowerCase() : lang === "zh" && region ? REGION_SCRIPT[region.toUpperCase()] || null : null;
+  return { lang, script };
+}
+
+/**
+ * Whether two BCP 47 tags name the same written language: true, false, or null when that cannot be told
+ * (a tag is unreadable, or a multi-script language such as zh names its script on one side only).
+ * Region differences (ko / ko-KR, en-US / en-GB) do not matter; script differences (zh-Hans / zh-Hant) do.
+ */
+export function sameLanguageTag(a, b) {
+  const x = parseLangTag(a);
+  const y = parseLangTag(b);
+  if (!x || !y) return null;
+  if (x.lang !== y.lang) return false;
+  if (x.script && y.script) return x.script === y.script;
+  if (!x.script && !y.script) return true;
+  return MULTI_SCRIPT.has(x.lang) ? null : true;
+}
+
+/**
+ * A fact about scene spans this run could not settle (never a stop): the base language is unreadable, the two
+ * tags cannot be told apart by script, or the page's spans could not be read at all (spans === null).
+ */
+export function sceneSpanNote({ spans, lang, baseLang, pictureSource }) {
+  if (pictureSource === "lang") return null;
+  if (spans === null) return 'langSpans could not be read from reel.html, so scene spans (in:"scene") were not checked against the base picture.';
+  if (!spans.some((s) => s.in === "scene")) return null;
+  if (!parseLangTag(baseLang)) return `the base language of the reel is not readable (meta.lang ${JSON.stringify(baseLang)}), so scene spans were not compared with ${lang}; check that the picture used shows ${lang} text.`;
+  return sameLanguageTag(lang, baseLang) === null ? `${lang} and the base language ${baseLang} may differ in script; scene spans were not stopped on.` : null;
 }
 
 /** Contrast of the drawn captions against the picture, per line and time: printed, saved, never a stop. */
@@ -899,33 +940,34 @@ function frameFileName(index) {
  * per-language fields it needs from dub/<lang>/plan.json (e.g. an
  * `emphasis` word list keyed to that language's words) — that is the film
  * author's job, not dub.mjs's.
- * @returns {Promise<{ok:boolean, note?:string}>}
+ * @returns {Promise<{ok:boolean, note?:string, fatal?:string, plan?:object}>} fatal stops the step; note is a fact to print
  */
 async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor }) {
   const server = await serveDir(reelDir);
   let session;
+  let declared = null; // stays null when the page's spans were never read
   try {
     const url = `${server.url}?layer=captions&dub=${encodeURIComponent(lang)}`;
     session = await openReel(url, {});
-    if (!(session.meta.layers || []).includes("captions")) {
-      return {
-        ok: false,
-        note:
-          'reel.html does not declare "captions" in __reel.layers — it cannot draw its own caption layer yet (references/pipeline.md "Picture first").',
-      };
-    }
-    // Only the language spans are drawn; a probe then checks the rest is blank.
-    const declared = await declaredLangSpans(session.page);
+    // Scene spans are checked whether or not the page draws its own caption layer: the picture is wrong either way.
+    declared = await declaredLangSpans(session.page);
     const fatal = sceneSpanVerdict({ spans: declared, lang, baseLang, pictureSource, dir: reelDir });
     if (fatal) return { ok: false, fatal };
+    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource });
+    if (!(session.meta.layers || []).includes("captions")) {
+      const noLayer = 'reel.html does not declare "captions" in __reel.layers — it cannot draw its own caption layer yet (references/pipeline.md "Picture first").';
+      return { ok: false, note: spanNote ? `${noLayer} ${spanNote}` : noLayer };
+    }
     // Scene text lives in the language's own picture; the caption layer draws nothing there.
     const layerSpans = declared.filter((s) => s.in !== "scene");
     let plan = planFor(layerSpans);
     await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
     plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: layerSpans.length });
-    return { ok: true, plan };
+    return { ok: true, plan, note: spanNote };
   } catch (e) {
-    return { ok: false, note: `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.` };
+    const failed = `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.`;
+    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource });
+    return { ok: false, note: spanNote ? `${failed} ${spanNote}` : failed };
   } finally {
     if (session) await session.close();
     await server.close();

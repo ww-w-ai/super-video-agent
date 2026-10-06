@@ -5,9 +5,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
-import { probeGpu, busyThreshold, describeProbe } from "./gpu-probe.mjs";
+import { probeGpu, busyThreshold, idleSamples, describeProbe } from "./gpu-probe.mjs";
 
 const HELP = `usage:
   lock.mjs run [options] -- <command> [args...]    wait for the slot, run the command, release
@@ -22,13 +22,17 @@ options for run:
   --label <text>          shown in status
   --output <abs-path>     file this job will produce; lets queue.mjs tell a finished job from a stale one
   --gpu-threshold <pct>   also wait while the machine's GPU utilization is above this (default env SVA_GPU_BUSY_PCT, else 50)
+  --gpu-idle-samples <n>  the GPU must read at or below the threshold this many polls in a row (default env
+                          SVA_GPU_IDLE_SAMPLES, else 3), so a quiet moment between two bursts does not count
   --gpu-wait-max <sec>    stop waiting for the GPU after this long and go on, saying so (default 5400)
   --no-gpu                wait for the slot only, never probe the GPU
   --poll <sec>            how often to look again (default 5)
 
-The slot is a folder created with mkdir (one process wins) and holds the owner's pid. A slot whose owner
-has died is released by the next process that looks, and the dead owner's leftover child process group is
-stopped (only when the owner record names your uid and the group id is above 1). The command runs in its own process group; when this wrapper exits, is interrupted or is
+The slot is a folder created with mkdir (one process wins) and holds the owner's pid and its start time (a pid
+now running a process with another start time counts as dead, so a recycled pid never keeps the slot). A slot
+whose owner has died is released by the next process that looks, and the dead owner's leftover child process
+group is stopped only when the owner record names your uid, the group id is above 1 and the group leader still
+has the start time recorded for it (otherwise the kill is skipped and the reason is printed). The command runs in its own process group; when this wrapper exits, is interrupted or is
 terminated, the whole group is stopped (SIGTERM, then SIGKILL after 10 s).
 Exit code is the command's. 75 means the wrapper could not get the slot.
 `;
@@ -70,14 +74,52 @@ export const safePgid = (n) => Number.isInteger(n) && n > 1;
 /** An owner record counts only when it names this user: a file someone else planted must not steer kill(). */
 export const trustedOwner = (owner) => Boolean(owner) && myUid() !== null && owner.uid === myUid();
 
-export function pidAlive(pid) {
+/**
+ * When the process started, as text that is stable for that process: `ps -o lstart=` (macOS, Linux),
+ * else field 22 of /proc/<pid>/stat. null when it cannot be read (no such pid, no ps).
+ */
+export function procStartTime(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (pid === process.pid) return (ownStartTime ??= readStartTime(pid)); // never changes; saves a ps on every poll
+  const hit = startCache.get(pid);
+  if (hit && Date.now() - hit.at < START_CACHE_MS) return hit.value;
+  const value = readStartTime(pid);
+  startCache.set(pid, { value, at: Date.now() });
+  return value;
+}
+
+let ownStartTime;
+const startCache = new Map(); // one poll asks about the same pid several times; a pid is not recycled within a second
+const START_CACHE_MS = 1000;
+
+function readStartTime(pid) {
+  const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 5000 });
+  const text = r.status === 0 ? (r.stdout || "").trim().replace(/\s+/g, " ") : "";
+  if (text) return text;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" "); // after "(comm)": state is field 3
+    return fields[19] ? `proc:${fields[19]}` : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether the process is there. With `startTime` (recorded when the owner or ticket was written), a pid that
+ * now belongs to a process with a different start time is a recycled pid, so dead. A start time that cannot
+ * be read now leaves the kill(pid, 0) answer standing.
+ */
+export function pidAlive(pid, startTime = null) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch (e) {
     return e.code === "EPERM";
   }
+  if (!startTime) return true;
+  const now = procStartTime(pid);
+  return now === null || now === startTime;
 }
 
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -109,7 +151,7 @@ export function readTickets(dir) {
   for (const n of names) {
     const t = readJson(path.join(p.queue, n));
     if (!t || !Number.isInteger(t.pid)) continue;
-    out.push({ ...t, id: n.slice(0, -5), alive: pidAlive(t.pid) });
+    out.push({ ...t, id: n.slice(0, -5), alive: pidAlive(t.pid, t.startTime) });
   }
   return out;
 }
@@ -132,7 +174,7 @@ export function readSlot(dir) {
   }
   const owner = readJson(p.owner);
   if (!owner) return { held: true, owner: null, ownerAlive: Date.now() - st.mtimeMs < STALE_SLOT_MS };
-  return { held: true, owner, ownerAlive: pidAlive(owner.pid) };
+  return { held: true, owner, ownerAlive: pidAlive(owner.pid, owner.startTime) };
 }
 
 export function killGroup(pgid, signal) {
@@ -145,32 +187,65 @@ export function killGroup(pgid, signal) {
   }
 }
 
+/** Why a recorded child group must not be signalled, or null when its leader is the process we recorded. */
+function groupLeaderMismatch({ childPgid, childStart }) {
+  if (!childStart) return "the record has no start time for the group leader, so it cannot be told from an unrelated process that reused the id";
+  const now = procStartTime(childPgid);
+  // A gone leader is fine: a group id is not reused while members remain, and an empty group makes the kill a no-op.
+  if (now === null) return pidAlive(childPgid) ? "the group leader's start time cannot be read" : null;
+  return now === childStart ? null : `pid ${childPgid} started at "${now}" but the record says "${childStart}" (the id was reused)`;
+}
+
+/** SIGKILL the child group a dead owner left behind, only when the record is ours and its leader is the recorded process. */
+export function stopLeftoverGroup(owner, emit = () => {}) {
+  if (!trustedOwner(owner) || !safePgid(owner.childPgid)) return false;
+  const why = groupLeaderMismatch(owner);
+  if (why) {
+    emit("skip-group-kill", `not stopping process group ${owner.childPgid}: ${why}`);
+    return false;
+  }
+  return killGroup(owner.childPgid, "SIGKILL");
+}
+
 /**
  * Release the slot when its owner is dead. The slot is renamed away first, so of several
  * processes that notice at once exactly one removes it. Returns the dead owner's record or null.
+ * `seam.beforeRename` / `seam.afterRename` run around the rename (tests only: they stand in for other processes).
  */
-export function releaseDeadSlot(dir) {
+export function releaseDeadSlot(dir, emit = () => {}, seam = {}) {
   const p = paths(dir);
   const s = readSlot(dir);
   if (!s.held || s.ownerAlive) return null;
+  seam.beforeRename?.();
   const grave = `${p.slot}.dead-${nowUs()}-${process.pid}`;
   try {
     fs.renameSync(p.slot, grave);
   } catch {
     return null;
   }
+  seam.afterRename?.();
   const dead = readJson(path.join(grave, "owner.json"));
   if (dead && s.owner && dead.pid !== s.owner.pid) {
-    try {
-      fs.renameSync(grave, p.slot); // we displaced a fresh owner, not the dead one: put it back
-    } catch {
-      /* the new owner's slot is gone; it re-creates on its own release check */
-    }
+    putBackDisplaced(p, grave, dead, emit);
     return null;
   }
-  if (trustedOwner(dead)) killGroup(dead.childPgid, "SIGKILL");
+  stopLeftoverGroup(dead, emit);
   fs.rmSync(grave, { recursive: true, force: true });
   return dead || { pid: null };
+}
+
+/**
+ * We renamed away a fresh owner's slot, not the dead one's: put it back. When another waiter has already taken
+ * the free slot the rename fails; the displaced owner's record is then gone, and that owner finds out through
+ * its handle's holds() (checked before it runs the command and after it records its group) and queues again.
+ */
+function putBackDisplaced(p, grave, displaced, emit) {
+  try {
+    fs.renameSync(grave, p.slot);
+  } catch {
+    fs.rmSync(grave, { recursive: true, force: true });
+    emit("displaced-owner", `slot of pid ${displaced.pid} was taken by another waiter before it could be put back; that process will queue again`);
+  }
 }
 
 function writeTicket(p, t) {
@@ -199,16 +274,17 @@ export async function acquireSlot(opts = {}) {
   const pollMs = opts.pollMs ?? 5000;
   const emit = opts.onEvent || (() => {});
   const t0 = Date.now();
-  const ticket = writeTicket(p, { pid, priority: opts.priority || 0, label: opts.label || "", output: opts.output || null, createdUs: nowUs(), createdMs: Date.now() });
+  const ticket = writeTicket(p, { pid, startTime: procStartTime(pid), priority: opts.priority || 0, label: opts.label || "", output: opts.output || null, createdUs: nowUs(), createdMs: Date.now() });
   const gate = makeGpuGate(opts.gpu, emit);
   try {
     for (;;) {
-      const dead = releaseDeadSlot(dir);
+      const dead = releaseDeadSlot(dir, emit);
       if (dead) emit("released-dead-owner", `released slot of dead owner pid ${dead.pid}`);
       const head = waitingOrder(readTickets(dir))[0];
-      if (head && head.id === ticket.id && !readSlot(dir).held && (await gate())) {
+      const ourTurn = Boolean(head) && head.id === ticket.id && !readSlot(dir).held;
+      if (ourTurn && (await gate())) {
         if (tryMkdirSlot(p, pid, opts.label, opts.output)) break;
-      }
+      } else if (!ourTurn) gate.reset(); // idle samples must be consecutive polls of our own turn
       await sleep(pollMs);
     }
   } catch (e) {
@@ -219,13 +295,19 @@ export async function acquireSlot(opts = {}) {
   return makeHandle(p, pid, Date.now() - t0, gate.summary());
 }
 
-/** Returns an async () => boolean ("GPU is free for us now"), with a `summary()` of what it saw. */
+/**
+ * Returns an async () => boolean ("GPU is free for us now"), with `summary()` of what it saw and `reset()`.
+ * Free means `idleSamples` samples in a row at or below the threshold (cfg.idleSamples, env SVA_GPU_IDLE_SAMPLES,
+ * default 3): one quiet reading between two bursts of someone else's work does not count.
+ */
 function makeGpuGate(cfg, emit) {
-  if (cfg === false) return Object.assign(async () => true, { summary: () => ({ status: "off" }) });
+  if (cfg === false) return Object.assign(async () => true, { summary: () => ({ status: "off" }), reset() {} });
   const threshold = cfg?.threshold ?? busyThreshold();
+  const needIdle = cfg?.idleSamples ?? idleSamples();
   const probe = cfg?.probe || probeGpu;
   const maxWaitMs = (cfg?.maxWaitMs ?? 5400 * 1000);
   let busySince = null;
+  let idleRun = 0;
   let status = "idle";
   let announcedNoProbe = false;
   const gate = async () => {
@@ -237,9 +319,16 @@ function makeGpuGate(cfg, emit) {
       return true;
     }
     if (p.utilization <= threshold) {
-      busySince = null;
-      return true;
+      idleRun++;
+      if (idleRun >= needIdle) {
+        busySince = null;
+        return true;
+      }
+      status = "waited";
+      emit("gpu-settling", `${describeProbe(p)} <= ${threshold}%, sample ${idleRun} of ${needIdle} in a row`);
+      return false;
     }
+    idleRun = 0;
     busySince ??= Date.now();
     if (Date.now() - busySince >= maxWaitMs) {
       status = "timeout";
@@ -250,7 +339,7 @@ function makeGpuGate(cfg, emit) {
     status = "waited";
     return false;
   };
-  return Object.assign(gate, { summary: () => ({ status, threshold }) });
+  return Object.assign(gate, { summary: () => ({ status, threshold, idleSamples: needIdle }), reset: () => { idleRun = 0; } });
 }
 
 function tryMkdirSlot(p, pid, label, output) {
@@ -260,7 +349,7 @@ function tryMkdirSlot(p, pid, label, output) {
     if (e.code === "EEXIST") return false;
     throw e;
   }
-  fs.writeFileSync(p.owner, JSON.stringify({ pid, label: label || "", output: output || null, uid: myUid(), since: Date.now(), childPgid: null }));
+  fs.writeFileSync(p.owner, JSON.stringify({ pid, startTime: procStartTime(pid), label: label || "", output: output || null, uid: myUid(), since: Date.now(), childPgid: null, childStart: null }));
   return true;
 }
 
@@ -269,9 +358,17 @@ function makeHandle(p, pid, waitedMs, gpu) {
   return {
     waitedMs,
     gpu,
+    /** Whether the slot on disk still names this process (false when a releaser displaced it and another waiter took the slot). */
+    holds() {
+      const o = readJson(p.owner);
+      return Boolean(o) && o.pid === pid;
+    },
+    /** Records the child's group and its leader's start time; false when the slot no longer names this process. */
     setChildGroup(pgid) {
       const o = readJson(p.owner);
-      if (o && o.pid === pid) fs.writeFileSync(p.owner, JSON.stringify({ ...o, childPgid: pgid }));
+      if (!o || o.pid !== pid) return false;
+      fs.writeFileSync(p.owner, JSON.stringify({ ...o, childPgid: pgid, childStart: procStartTime(pgid) }));
+      return true;
     },
     release() {
       if (released) return;
@@ -323,18 +420,35 @@ export function installExitKill(graceMs = 10000) {
  * (128+signal when killed). `spawnOptions` pass to spawn (stdio, cwd, env).
  */
 export async function runLocked(cmd, args, opts = {}) {
-  const handle = await acquireSlot(opts);
+  for (;;) {
+    const handle = await acquireSlot(opts);
+    const result = await runHeld(handle, cmd, args, opts);
+    if (result !== SLOT_LOST) return result;
+    (opts.onEvent || (() => {}))("requeued", "the slot was taken from this process by a releaser's mistaken rename; queueing again");
+  }
+}
+
+const SLOT_LOST = Symbol("slot lost");
+
+/** Runs the command while holding the slot; SLOT_LOST when the slot stopped naming this process before or just after the spawn. */
+async function runHeld(handle, cmd, args, opts) {
   const releaseOnExit = () => handle.release(); // the wrapper may be terminated: free the slot on the way out
   process.once("exit", releaseOnExit);
   let pgid = null;
   try {
+    if (!handle.holds()) return SLOT_LOST;
     const child = spawnGroup(cmd, args, opts.spawnOptions || { stdio: "inherit" });
     pgid = child.pid;
-    handle.setChildGroup(pgid);
-    return await new Promise((resolve) => {
+    const closed = new Promise((resolve) => {
       child.once("error", () => resolve(127));
       child.once("close", (code, sig) => resolve(code ?? 128 + (os.constants.signals[sig] || 0)));
     });
+    if (!handle.setChildGroup(pgid)) {
+      killGroup(pgid, "SIGKILL");
+      await closed;
+      return SLOT_LOST;
+    }
+    return await closed;
   } finally {
     if (pgid && killGroup(pgid, 0)) killGroup(pgid, "SIGTERM"); // the command ended; anything it left in its group goes too
     process.removeListener("exit", releaseOnExit);
@@ -365,7 +479,7 @@ function flagsToOpts(flags) {
     if (!Number.isFinite(n)) throw new Error(`--${name} takes a number (got "${flags[name]}")`);
     return n;
   };
-  const gpu = flags["no-gpu"] ? false : { threshold: num("gpu-threshold", busyThreshold()), maxWaitMs: num("gpu-wait-max", 5400) * 1000 };
+  const gpu = flags["no-gpu"] ? false : { threshold: num("gpu-threshold", busyThreshold()), maxWaitMs: num("gpu-wait-max", 5400) * 1000, idleSamples: num("gpu-idle-samples", idleSamples()) };
   return {
     dir: typeof flags.dir === "string" ? path.resolve(flags.dir) : defaultLockDir(),
     priority: num("priority", 0),
