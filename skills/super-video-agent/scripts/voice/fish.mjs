@@ -4,7 +4,7 @@ import path from "node:path";
 import { ffmpeg } from "../lib/ffmpeg.mjs";
 import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "../lib/wav.mjs";
-import { planCuts, cutClips, withSentenceEnd, groupByChars } from "../lib/line-split.mjs";
+import { planCuts, cutClips, withSentenceEnd, groupByChars, sentLength } from "../lib/line-split.mjs";
 
 export const name = "fish";
 
@@ -85,7 +85,7 @@ async function requestSpeech({ apiKey, referenceId }, text, voiceCfg) {
 export async function synthBatch(items, ctx) {
   const voiceCfg = ctx && ctx.voiceCfg;
   const results = [];
-  for (const group of groupByChars(items, BATCH_MAX_CHARS)) {
+  for (const group of groupByChars(items, BATCH_MAX_CHARS, sentLength)) {
     results.push(...(await speakAndCut(group, voiceCfg)));
   }
   return results;

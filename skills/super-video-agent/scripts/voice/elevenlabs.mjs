@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { decodeMonoPcm } from "../lib/audio-analysis.mjs";
 import { writeWavPCM16 } from "../lib/wav.mjs";
-import { spokenRange, cutSpans, withQuietTail, withSentenceEnd, groupByChars } from "../lib/line-split.mjs";
+import { spokenRange, cutSpans, withQuietTail, withSentenceEnd, groupByChars, sentLength } from "../lib/line-split.mjs";
 import { wordsFromCharAlignment } from "../lib/timing.mjs";
 import { tagSpans } from "../lib/tags.mjs";
 
@@ -176,7 +176,7 @@ async function speakAndCut(items, cfg) {
 export async function synthBatch(items, ctx) {
   const cfg = settings(null, ctx && ctx.voiceCfg);
   const results = [];
-  for (const group of groupByChars(items, BATCH_MAX_CHARS)) results.push(...(await speakAndCut(group, cfg)));
+  for (const group of groupByChars(items, BATCH_MAX_CHARS - CLOSING_PAUSE.length, sentLength)) results.push(...(await speakAndCut(group, cfg)));
   return results;
 }
 

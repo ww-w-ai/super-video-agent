@@ -121,24 +121,36 @@ export function withSentenceEnd(text) {
 }
 
 /**
+ * Characters one item adds to a joined request: its text as sent (withSentenceEnd may add a full
+ * stop) plus the joining space. Providers count this, not the raw text, against their limit.
+ * @param {{text:string}} item
+ */
+export function sentLength(item) {
+  return withSentenceEnd(item.text).length + 1;
+}
+
+/**
  * Groups of items whose joined text stays within `maxChars` (one request each); an item longer
- * than the limit is a group of its own.
+ * than the limit is a group of its own. `measure` is the size an item adds to the request
+ * (default: its text plus the joining space; pass sentLength to count the added punctuation).
  * @template {{text:string}} T
  * @param {T[]} items
  * @param {number} maxChars
+ * @param {(item:T)=>number} [measure]
  * @returns {T[][]}
  */
-export function groupByChars(items, maxChars) {
+export function groupByChars(items, maxChars, measure = (it) => it.text.length + 1) {
   const out = [];
   let cur = [], size = 0;
   for (const it of items) {
-    if (cur.length && size + it.text.length + 1 > maxChars) {
+    const n = measure(it);
+    if (cur.length && size + n > maxChars) {
       out.push(cur);
       cur = [];
       size = 0;
     }
     cur.push(it);
-    size += it.text.length + 1;
+    size += n;
   }
   if (cur.length) out.push(cur);
   return out;

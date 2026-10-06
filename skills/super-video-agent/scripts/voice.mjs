@@ -109,9 +109,13 @@ not actually cut off.
                      Transcribes in timings.json's lang, else plan.json
                      meta.lang. A line that now passes loses an old MISHEARD
                      flag. With --lines id,id only those lines are checked.
-                     The model loads once; timings.json is saved after the
-                     first pass, and a run that stops midway keeps the lines
-                     it finished and prints the ids left for a rerun.
+                     The model loads once; timings.json is saved after every
+                     finished line of the first pass, and voice/stt-pending.json
+                     lists the lines left: a killed run, rerun with the same
+                     command, resumes with those lines only (delete the file
+                     to check every line). A line the second model answers
+                     keeps the transcript with the lower error rate; the
+                     model is recorded in the line's stt.model.
 
 STT engine (env): SVA_STT_PYTHON  python with mlx-whisper installed.
                   SVA_STT_ENGINE  mlx (default) or groq (hosted; audio is
@@ -606,7 +610,7 @@ export async function synthesizeAll({
     } else {
       for (const lineOut of lineResults) {
         if (!checkedIds.includes(lineOut.id)) continue;
-        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id), codeOf(lineOut.id), pronounce);
+        applySttResult(lineOut, linesById.get(lineOut.id), stt.results.get(lineOut.id) || "", providerTimed.has(lineOut.id) ? null : stt.words.get(lineOut.id), codeOf(lineOut.id), pronounce, stt.models && stt.models.get(lineOut.id));
       }
 
       if (retryFlagged > 0) {
@@ -818,8 +822,9 @@ function providerWords(timedText, synthResult, lang, lineStart, speedUp = 1, lea
  * words take the heard times (alignCaptionWords), and `lineOut.wordsMeasured`
  * counts the words measured rather than interpolated. `pronounce` is the film's
  * pronunciation dictionary: a name spoken as its respelling is not an error.
+ * `model` (optional) is recorded as `lineOut.stt.model`: the STT model the transcript came from.
  */
-export function applySttResult(lineOut, line, heard, sttWords, langCode, pronounce = null) {
+export function applySttResult(lineOut, line, heard, sttWords, langCode, pronounce = null, model = null) {
   const names = pronounceFolds(langCode, pronounce, line.pronounce);
   const timedText = stripCaptionBreaks(line.text);
   const timedSay = line.say != null ? stripCaptionBreaks(line.say) : line.say;
@@ -844,6 +849,7 @@ export function applySttResult(lineOut, line, heard, sttWords, langCode, pronoun
     grossMismatch: gross,
     tailMatched: tailOk,
   };
+  if (model) lineOut.stt.model = model;
 
   if (lineOut.voiceFlag === "TAIL" && tailOk) {
     delete lineOut.voiceFlag;
@@ -927,7 +933,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
       lineOut.wordsMeasured = measured ? measured.measured : 0;
       delete lineOut.voiceFlag;
       if (synthResult.flag && synthResult.flag !== "OK") lineOut.voiceFlag = synthResult.flag;
-      applySttResult(lineOut, line, newHeard, measured ? null : sttRes.words.get(line.id), langCode, pronounce);
+      applySttResult(lineOut, line, newHeard, measured ? null : sttRes.words.get(line.id), langCode, pronounce, sttRes.models && sttRes.models.get(line.id));
       fs.rmSync(backupPath, { force: true });
     } else {
       fs.copyFileSync(backupPath, outPath);
@@ -981,7 +987,10 @@ async function runSttOnly(dir, paths, flags = {}) {
     throw new Error(`--stt-only: no ${paths.timingsJson} — run a full voice.mjs pass first`);
   }
   const timings = readJson(paths.timingsJson);
-  const lines = sttOnlyLines(timings.lines || [], flags.lines);
+  const pendingFile = path.join(paths.voiceDir, STT_PENDING_FILE);
+  const pending = openSttPending(pendingFile, timings.lines || [], flags.lines);
+  const lines = pending.resumed ? (timings.lines || []).filter((l) => pending.ids.has(l.id)) : sttOnlyLines(timings.lines || [], flags.lines);
+  if (pending.resumed) process.stdout.write(`resuming an interrupted --stt-only: ${lines.length} line(s) left (delete ${pendingFile} to check every line)\n`);
   const missing = lines.filter((l) => !fs.existsSync(path.join(paths.voiceDir, `line-${l.id}.wav`)));
   if (missing.length) {
     throw new Error(`--stt-only: missing voice/line-<id>.wav for: ${missing.map((l) => l.id).join(", ")}`);
@@ -1005,15 +1014,16 @@ async function runSttOnly(dir, paths, flags = {}) {
   const entries = lines.map((l) => sttEntry(targetOf(l), `line-${l.id}.wav`, { id: l.id, langCode: codeOf(l), pronounce }));
 
   const checked = new Set();
-  const save = ({ results, words }) => {
+  const save = ({ results, words, models }) => {
     for (const lineOut of lines) {
       if (!results.has(lineOut.id)) continue;
       // ElevenLabs and Typecast lines keep the word times the engine measured; the rest take the speech-to-text ones.
       const engineTimed = ["elevenlabs", "typecast"].includes((lineOut.voice && lineOut.voice.provider) || timings.provider);
-      applySttResult(lineOut, targetOf(lineOut), results.get(lineOut.id) || "", engineTimed ? null : words.get(lineOut.id), codeOf(lineOut), pronounce);
+      applySttResult(lineOut, targetOf(lineOut), results.get(lineOut.id) || "", engineTimed ? null : words.get(lineOut.id), codeOf(lineOut), pronounce, models && models.get(lineOut.id));
       checked.add(lineOut.id);
     }
     writeTimingsAtomic(paths.timingsJson, timings);
+    pending.done(checked);
   };
   const stt = await sttTranscribe(paths.voiceDir, entries, langCode, { allowPartial: true, onProgress: save });
   if (stt.skipped) {
@@ -1024,6 +1034,46 @@ async function runSttOnly(dir, paths, flags = {}) {
   printSttTable(lines.filter((l) => checked.has(l.id)));
   process.stdout.write(`wrote ${paths.timingsJson}\n`);
   if (stt.incomplete) reportUnchecked(stt, dir);
+}
+
+const STT_PENDING_FILE = "stt-pending.json";
+
+/**
+ * The lines a `--stt-only` run has not checked yet, kept in voice/stt-pending.json so a run that
+ * was killed resumes where it stopped. A run without `--lines` resumes from an existing file,
+ * else starts one covering every line; a run with `--lines` only crosses its lines off an
+ * existing file. The file is deleted when nothing is left.
+ * @returns {{ids:Set<string>, resumed:boolean, done:(checked:Set<string>)=>void}}
+ */
+function openSttPending(file, timingsLines, linesFlag) {
+  const known = new Set(timingsLines.map((l) => l.id));
+  let ids = null;
+  try {
+    ids = new Set(JSON.parse(fs.readFileSync(file, "utf8")).ids.filter((id) => known.has(id)));
+  } catch {
+    ids = null;
+  }
+  const resumed = linesFlag === undefined && ids !== null && ids.size > 0;
+  if (linesFlag === undefined && !resumed) ids = new Set(known);
+  const write = () => {
+    if (!ids || !ids.size) {
+      fs.rmSync(file, { force: true });
+      return;
+    }
+    const tmp = `${file}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ ids: [...ids] }), "utf8");
+    fs.renameSync(tmp, file);
+  };
+  if (ids && !resumed) write();
+  return {
+    ids: ids || new Set(),
+    resumed,
+    done(checked) {
+      if (!ids) return;
+      for (const id of checked) ids.delete(id);
+      write();
+    },
+  };
 }
 
 /** What an interrupted `--stt-only` did not reach, and the command that finishes it. */
@@ -1405,17 +1455,20 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
       const durationSec = await probeDuration(synthResult.wavPath);
 
       let cerVal = null;
+      let cerSkipped = null;
       if (sttEnabled) {
         const sttId = `${id}-${k}`;
         // On the same leveling an installed clip gets: a take's raw loudness would reorder the ranking.
         const entry = sttEntry(line, `takes/${id}-${k}.wav`, { id: sttId, langCode: takeCode, pronounce });
         const sttRes = await sttTranscribeLeveled(paths.voiceDir, [entry], takeCode, { level: lv.voiceCfg.levelLines !== false });
-        if (!sttRes.skipped) {
+        if (sttRes.skipped) {
+          cerSkipped = sttRes.skipped;
+        } else {
           const heard = sttRes.results.get(sttId) || "";
           cerVal = compareLine({ text: strippedText, say: strippedSay, heard, lang: takeCode, names: entry.names }).cer;
         }
       }
-      rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, lv.voiceCfg, lv.provider), cer: cerVal });
+      rows.push({ id, k, mark, durationSec, lengthSec: installedLength(durationSec, line, lv.voiceCfg, lv.provider), cer: cerVal, cerSkipped });
     }
 
     manifest[id] = spec.mode === "tone" ? { mode: "tone", marks: spec.marks } : { mode: "count", n: spec.n };
@@ -1498,7 +1551,7 @@ function pickTakes(rows, lineIds, pickBy) {
  * Prints a compact `id | take | tone | cer | duration | length` comparison
  * table; `picked` (id -> k) marks the takes --pick-by chose.
  */
-function printTakesTable(rows, picked = null) {
+export function printTakesTable(rows, picked = null) {
   if (!rows.length) return;
   process.stdout.write("takes:\n");
   process.stdout.write(`id\ttake\ttone\tcer\tduration\tlength${picked ? "\tpicked" : ""}\n`);
@@ -1507,6 +1560,9 @@ function printTakesTable(rows, picked = null) {
     const lengthStr = r.lengthSec == null ? "-" : `${r.lengthSec.toFixed(3)}s`;
     const mark = picked ? (picked.get(r.id) === r.k ? "\t<-" : "\t") : "";
     process.stdout.write(`${r.id}\t${r.k}\t${r.mark || "-"}\t${cerStr}\t${r.durationSec.toFixed(3)}s\t${lengthStr}${mark}\n`);
+  }
+  for (const why of new Set(rows.map((r) => r.cerSkipped).filter(Boolean))) {
+    process.stdout.write(`cer "-": STT check skipped — ${why}\n`);
   }
 }
 

@@ -30,6 +30,7 @@ const DEFAULT_FIRST_MODEL = "small";
 const DEFAULT_RECHECK_MODEL = "turbo";
 const DEFAULT_DOUBT_CER = 0.15;
 const MODEL_NOT_DOWNLOADED_EXIT = 3;
+const PROGRESS_POLL_MS = 500;
 const FRAME_SEC = 0.01;
 
 /** mlx-whisper model aliases and the repos they stand for (stt_check.py MODELS is the same table). */
@@ -95,12 +96,37 @@ function fromArray(arr) {
   };
 }
 
+/**
+ * Reads the progress file while python runs and hands every line finished so far to
+ * deps.onProgress, so a caller can save each line as it lands (a killed run keeps them).
+ * @returns {() => Promise<void>} stop: one last read, then waits for the saves to end
+ */
+function tailProgress(ctx, file, code, model) {
+  if (!ctx.deps.onProgress) return async () => {};
+  let seen = 0;
+  let chain = Promise.resolve();
+  const poll = () => {
+    const arr = readProgress(file);
+    if (arr.length <= seen) return;
+    seen = arr.length;
+    const part = { ...fromArray(arr), models: new Map(arr.map((r) => [r.id, model])) };
+    chain = chain.then(() => ctx.deps.onProgress({ ...part, code, partial: true })).catch(() => {});
+  };
+  const timer = setInterval(poll, ctx.deps.progressPollMs ?? PROGRESS_POLL_MS);
+  return async () => {
+    clearInterval(timer);
+    poll();
+    await chain;
+  };
+}
+
 /** One mlx-whisper run: the model loads once for every entry, progress is kept per line. */
-async function mlxPass(ctx, python, entries, code, model) {
+async function mlxPass(ctx, python, entries, code, model, { tail = false } = {}) {
   const jobDir = fs.mkdtempSync(path.join(ctx.voiceDir, `.stt-${uniqueTag()}-`));
   const jobPath = path.join(jobDir, "lines.json");
   const progress = path.join(jobDir, "progress.json");
   fs.writeFileSync(jobPath, JSON.stringify(entries.map(({ id, wav }) => ({ id, wav }))), "utf8");
+  const stopTail = tail ? tailProgress(ctx, progress, code, model) : null;
   try {
     const { stdout } = await ctx.run(python, [STT_SCRIPT, ctx.voiceDir, jobPath], {
       HF_HUB_OFFLINE: "1",
@@ -115,11 +141,22 @@ async function mlxPass(ctx, python, entries, code, model) {
     }
     return { ...fromArray(readProgress(progress)), failed: `stt check failed to run (${safeMessage(e)})` };
   } finally {
+    if (stopTail) await stopTail();
     fs.rmSync(jobDir, { recursive: true, force: true });
   }
 }
 
-/** Second pass on the doubtful lines only; a failure keeps the first-pass answer. */
+/** Error rate of `heard` against the entry's own target; an empty answer is wrong in full. */
+function entryCer(entry, heard, code) {
+  if (!String(heard || "").trim()) return 1;
+  return compareLine({ text: entry.text, say: entry.say, heard, lang: code, names: entry.names }).cer;
+}
+
+/**
+ * Second pass on the doubtful lines only; a failure keeps the first-pass answer. A line takes the
+ * second transcript only when its error rate is not worse than the first one's; `first.models`
+ * records which model each line's transcript came from.
+ */
 async function recheckDoubtful(ctx, python, group, code, first) {
   const threshold = Number(ctx.env.SVA_STT_DOUBT_CER) || DEFAULT_DOUBT_CER;
   const recheckModel = ctx.env.SVA_STT_MODEL_RECHECK || DEFAULT_RECHECK_MODEL;
@@ -131,18 +168,24 @@ async function recheckDoubtful(ctx, python, group, code, first) {
   const second = await mlxPass(ctx, python, doubtful, code, recheckModel);
   if (second.skipped) ctx.log(`STT second pass skipped: ${second.skipped} — the first-pass transcript stands`);
   else if (second.failed) ctx.log(`STT second pass stopped: ${second.failed} — lines it did not reach keep the first-pass transcript`);
+  const byId = new Map(doubtful.map((e) => [e.id, e]));
   for (const [id, heard] of second.results || []) {
+    const entry = byId.get(id);
+    if (entryCer(entry, heard, code) > entryCer(entry, first.results.get(id), code)) continue;
     first.results.set(id, heard);
     first.words.set(id, second.words.get(id) || []);
+    first.models.set(id, recheckModel);
   }
 }
 
 async function runMlx(ctx, group, code) {
   const python = ctx.deps.pythonPath || ctx.env.SVA_STT_PYTHON || null;
   if (!python) return { skipped: "no python found (set SVA_STT_PYTHON to a Python with mlx-whisper installed)" };
-  const first = await mlxPass(ctx, python, group, code, ctx.env.SVA_STT_MODEL || DEFAULT_FIRST_MODEL);
+  const firstModel = ctx.env.SVA_STT_MODEL || DEFAULT_FIRST_MODEL;
+  const first = await mlxPass(ctx, python, group, code, firstModel, { tail: true });
   if (first.skipped || first.failed) return first;
-  if (ctx.deps.onProgress) await ctx.deps.onProgress({ results: first.results, words: first.words, code });
+  first.models = new Map([...first.results.keys()].map((id) => [id, firstModel]));
+  if (ctx.deps.onProgress) await ctx.deps.onProgress({ results: first.results, words: first.words, models: first.models, code });
   await recheckDoubtful(ctx, python, group, code, first);
   return first;
 }
@@ -219,7 +262,8 @@ async function runGroq(ctx, group, code) {
       return { results, words, failed: `groq request failed (${safeMessage(e, key)})` };
     }
   }
-  return { results, words };
+  const model = ctx.env.SVA_STT_GROQ_MODEL || "whisper-large-v3-turbo";
+  return { results, words, models: new Map([...results.keys()].map((id) => [id, `groq:${model}`])) };
 }
 
 const ENGINES = { mlx: runMlx, groq: runGroq };
@@ -230,10 +274,12 @@ const ENGINES = { mlx: runMlx, groq: runGroq };
  * or `{skipped: reason}` — it never throws, so the voice step never fails because of this check.
  * An entry's own `langCode` wins over `langCode`; one run per language. `text`/`say`/`names`
  * (target text and pronounceFolds) let the second pass pick the doubtful lines.
+ * `models` (Map id -> model name) says which model made each line's transcript.
  * With `deps.allowPartial`, an engine that stops mid-way returns what it finished plus
  * `{incomplete: reason, missing: [ids]}` instead of `{skipped}`.
- * `deps.onProgress({results, words, code})` runs after the first pass (mlx) or after each
- * line (groq) so a caller can save what is done. `deps` (tests): {pythonPath, runPythonBatch, fetch, env, log}.
+ * `deps.onProgress({results, words, code})` runs while the first pass (mlx) is going, as each
+ * line is finished (polled every deps.progressPollMs, default 500), or after each line (groq),
+ * so a caller can save what is done. `deps` (tests): {pythonPath, runPythonBatch, fetch, env, log}.
  */
 export async function sttTranscribe(voiceDir, entries, langCode, deps = {}) {
   const env = deps.env || process.env;
@@ -244,12 +290,13 @@ export async function sttTranscribe(voiceDir, entries, langCode, deps = {}) {
   }
   if (!entries.length) return { results: new Map(), words: new Map() };
   const ctx = { voiceDir, env, deps, run: deps.runPythonBatch || runPythonBatch, log: deps.log || ((m) => process.stdout.write(`${m}\n`)) };
-  const merged = { results: new Map(), words: new Map() };
+  const merged = { results: new Map(), words: new Map(), models: new Map() };
   for (const [code, group] of groupByLangCode(entries, langCode)) {
     const one = await runner(ctx, group, code);
     if (one.skipped) return one;
     for (const [k, v] of one.results) merged.results.set(k, v);
     for (const [k, v] of one.words) merged.words.set(k, v);
+    for (const [k, v] of one.models || []) merged.models.set(k, v);
     if (one.failed) {
       if (!deps.allowPartial) return { skipped: one.failed };
       return { ...merged, incomplete: one.failed, missing: entries.filter((e) => !merged.results.has(e.id)).map((e) => e.id) };

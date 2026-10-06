@@ -50,6 +50,25 @@ export function stripCaptionBreaks(text) {
     .join(" ");
 }
 
+// Quote marks of any language. Double-style marks are always quotes; a single straight or curly
+// quote is an apostrophe (don't, l'été) when a letter or digit sits on both sides, and stays.
+const DOUBLE_QUOTES = /["“”„‟«»‹›「」『』﹁﹂﹃﹄｢｣〝〞〟＂]/gu;
+const SINGLE_QUOTES = /(?<![\p{L}\p{N}])['‘’‚‛＇]|['‘’‚‛＇](?![\p{L}\p{N}])/gu;
+
+/**
+ * `text` without quote marks (straight, curly, guillemets, CJK corner brackets), for the voice
+ * only: no engine should read them, and some read them as a pause or a word. Captions keep them.
+ * An apostrophe inside a word stays.
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripQuoteMarks(text) {
+  const src = String(text ?? "");
+  const out = src.replace(DOUBLE_QUOTES, "").replace(SINGLE_QUOTES, "");
+  // « bonjour » leaves a space on each side; close the gap a removed mark opened.
+  return out === src ? src : out.replace(/ {2,}/g, " ").trim();
+}
+
 function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -74,7 +93,7 @@ function wordPattern(word) {
  * defaults (DEFAULT_PRONOUNCE, e.g. Claude -> Clawd) apply first, so both the
  * film's own meta.pronounce and a line's own pronounce always win over them.
  * A "|" forced-caption-break marker is stripped (stripCaptionBreaks) — it is
- * never spoken.
+ * never spoken. Quote marks are stripped in every language (stripQuoteMarks).
  * @param {{text:string, say?:string, pronounce?:Record<string, {say?:string, ipa?:string}>}} line
  * @param {Record<string, {say?:string, ipa?:string}>} [filmPronounce] plan.meta.pronounce
  * @param {{phonemeTags?:boolean}} [voiceCfg]
@@ -83,7 +102,7 @@ function wordPattern(word) {
  */
 export function spokenText(line, filmPronounce, voiceCfg, lang) {
   // A "\n" in `text` only breaks the caption; the voice reads it as a space.
-  let out = stripCaptionBreaks((line.say != null ? line.say : line.text).replace(/\s*\n\s*/g, " "));
+  let out = stripQuoteMarks(stripCaptionBreaks((line.say != null ? line.say : line.text).replace(/\s*\n\s*/g, " ")));
   const pronounce = { ...defaultPronounceFor(lang), ...filmPronounce, ...line.pronounce };
   if (!Object.keys(pronounce).length) return out;
   const useTags = !!(voiceCfg && voiceCfg.phonemeTags);

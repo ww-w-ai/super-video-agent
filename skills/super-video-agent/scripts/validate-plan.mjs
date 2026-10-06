@@ -9,6 +9,7 @@ import { readJson, reelPaths } from "./lib/reeldir.mjs";
 import { validate } from "./lib/schema-check.mjs";
 import { stripCaptionBreaks, spokenText } from "./lib/pronounce.mjs";
 import { stripTags } from "./lib/tags.mjs";
+import { cer, pronounceFolds } from "./lib/stt-compare.mjs";
 import { captionBreakReport } from "./lib/caption-breaks.mjs";
 import { leadErrors, leadSec } from "./lib/lead.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
@@ -43,6 +44,11 @@ JSON path if not. <reel-dir> may be a dub folder (dub/<code>/).
              --max-chars <n> also shows the engine's even split of a long
              phrase at that chunk size.
 The reports never change the exit code.
+
+A line whose say still differs from its text (after numbers, names from
+pronounce, punctuation and marks are folded the same way) prints a warning
+with the character error rate, before any voice is made: a say left over from
+an older text. Write why in the line's sayWhy when it differs on purpose.
 `;
 
 export async function main(argv) {
@@ -81,6 +87,11 @@ export async function main(argv) {
     process.stdout.write("ok\n");
   }
   if (!Array.isArray(plan.lines)) return;
+  const stale = staleSayWarnings(plan);
+  if (stale.length) {
+    process.stdout.write(`warning: ${stale.length} line(s) whose say differs from text (a say left from an older text?)\n`);
+    for (const w of stale) process.stdout.write(`  - ${w}\n`);
+  }
   if (flags.estimate) {
     const rateFrom = typeof flags["rate-from"] === "string" ? loadRateSource(abs(flags["rate-from"])) : null;
     const rate = flags.rate != null ? Number(flags.rate) : null;
@@ -416,6 +427,30 @@ export function captionBreakErrors(plan) {
     }
   });
   return errors;
+}
+
+/**
+ * Lines whose `say` no longer reads as their `text`: the text was edited and the say still holds
+ * the old sentence. Both sides go through the STT gate's folding (numbers, scripts, pronounce
+ * respellings, punctuation, marks), so a say that only spells numbers or names out is not a
+ * difference. Any difference left is reported with its character error rate; a say that differs
+ * on purpose is left out of the report by writing the reason in the line's `sayWhy`. A warning
+ * only: say may differ from text by design.
+ * @returns {string[]}
+ */
+export function staleSayWarnings(plan) {
+  const meta = plan.meta || {};
+  const out = [];
+  for (const line of plan.lines || []) {
+    if (line.say == null || line.sayWhy) continue;
+    const lang = line.lang || meta.lang || null;
+    const names = pronounceFolds(lang, meta.pronounce, line.pronounce);
+    const text = stripTags(stripCaptionBreaks(line.text || ""));
+    const say = stripTags(stripCaptionBreaks(line.say));
+    const c = cer(text, say, lang, names);
+    if (c > 0) out.push(`"${line.id}" CER ${c.toFixed(2)}: text "${text}" / say "${say}"; if intended, write why in sayWhy`);
+  }
+  return out;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
