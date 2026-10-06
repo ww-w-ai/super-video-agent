@@ -123,7 +123,7 @@ test("16: validate-plan prints the warning and keeps the exit code", () => {
   const dir = tmp("sva-a2-vp-");
   fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify({
     meta: { title: "t", lang: "en-US" },
-    lines: [{ id: "l1", text: "New sentence.", say: "Old sentence." }],
+    lines: [{ id: "l1", text: "New sentence.", say: "An older line about something else." }],
   }));
   const res = spawnSync(process.execPath, [VALIDATE_MJS, dir], { encoding: "utf8" });
   assert.equal(res.status, 0, res.stderr);

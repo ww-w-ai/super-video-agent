@@ -6,6 +6,75 @@
   "required": ["meta", "lines"],
   "additionalProperties": false,
   "definitions": {
+    "pageContract": {
+      "type": "object",
+      "description": "Optional window.__reel declarations a page makes for the tools (not part of plan.json; validate a page dump against #/definitions/pageContract). The engine checks the same shapes and throws on a malformed entry.",
+      "additionalProperties": true,
+      "properties": {
+        "regions": {
+          "type": "array",
+          "description": "Boxes in canvas px that state-checks.mjs --only covers compares. No from/to = the whole film; kind \"overlay\" = an always-on mark (logo, watermark).",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "box"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "kind": { "type": "string", "enum": ["key", "label", "overlay"] },
+              "box": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number" }, "description": "[x0, y0, x1, y1] with x1 > x0 and y1 > y0." },
+              "outline": { "type": "number", "minimum": 0, "description": "Outline width in px, added around the box when it is compared." },
+              "from": { "type": "number" },
+              "to": { "type": "number" }
+            }
+          }
+        },
+        "holds": {
+          "type": "array",
+          "description": "Intentional slow-motion or hold spans: review does not flag dead air inside them.",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "number" },
+              "to": { "type": "number" },
+              "id": { "type": "string" },
+              "reason": { "type": "string" }
+            }
+          }
+        },
+        "captionFonts": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "CSS font-family list per language tag; \"*\" is the fallback."
+        },
+        "langSpans": {
+          "type": "array",
+          "description": "Seconds where the picture draws language-dependent text. in \"layer\" (default): the caption layer draws it. in \"scene\": the text is inside the 3D picture, so a dub needs its own picture render for the span.",
+          "items": {
+            "type": "object",
+            "required": ["start", "end"],
+            "additionalProperties": false,
+            "properties": {
+              "start": { "type": "number" },
+              "end": { "type": "number" },
+              "in": { "type": "string", "enum": ["layer", "scene"] }
+            }
+          }
+        }
+      }
+    },
+    "sfxCue": {
+      "type": "object",
+      "description": "An entry of the page's SFX_CUES. window.__reel.sfxStems(sampleRate) renders only cues flagged card: true (every cue when none is flagged), so a film with a thousand cues does not hand a thousand stems to sfx-cards.mjs.",
+      "required": ["kind", "at"],
+      "properties": {
+        "kind": { "type": "string" },
+        "at": { "type": "number" },
+        "id": { "type": "string" },
+        "card": { "type": "boolean", "description": "true: this cue has a sound card (sound-cards.json) and its stem is measured." }
+      }
+    },
     "voice": {
       "type": "object",
       "additionalProperties": false,
@@ -68,6 +137,8 @@
       "additionalProperties": false,
       "properties": {
         "title": { "type": "string", "minLength": 1 },
+        "filmKey": { "type": "string", "minLength": 1, "description": "Seeds this film's sound kit: the page calls ReelAudio.setFilmKey(meta.filmKey || meta.title || meta.id). Two films with the same key sound alike." },
+        "id": { "type": "string", "minLength": 1, "description": "The film's own id; the page's last-resort ReelAudio film key after meta.filmKey and meta.title." },
         "lang": { "type": "string", "default": "ko-KR", "pattern": "^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
         "ratio": { "type": "string", "enum": ["9:16", "1:1", "16:9", "4:5"] },
         "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30 },
@@ -110,7 +181,11 @@
       "additionalProperties": false,
       "properties": {
         "palette": { "type": "array", "items": { "type": "string" } },
-        "fonts": { "type": "object" },
+        "fonts": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "CSS font-family lists by use: a language tag (\"ko\", \"ja-JP\"), \"caption\", \"body\", \"default\". state-checks.mjs --only langglyphs reads a language's list as the page's captionFonts[lang], then captionFonts[\"*\"], then this object's [lang], caption, body, default."
+        },
         "motifs": { "type": "array", "items": { "type": "string" } },
         "boilHz": { "type": "number", "exclusiveMinimum": 0 }
       }
@@ -128,7 +203,28 @@
           "say": {
             "type": "string",
             "minLength": 1,
-            "description": "Optional spoken-form override for TTS (e.g. '엠씨피' for 'MCP'). May carry delivery marks in curly braces (e.g. {confident}, {pause}); each provider translates them into its own model tags or drops them (references/voice.md \"Delivery marks\"). Captions and timings.json `text` always show `text`; voice.mjs synthesizes `say ?? text`."
+            "description": "Optional spoken-form override for TTS (e.g. '엠씨피' for 'MCP'). May carry delivery marks in curly braces (e.g. {confident}, {pause}); each provider translates them into its own model tags or drops them (references/voice.md \"Delivery marks\"). Captions and timings.json `text` always show `text`; voice.mjs synthesizes `say ?? text`. validate-plan.mjs warns when `say` still differs from `text` after numbers, pronounce respellings, punctuation and marks are folded (character error rate > 0.3): a say left from an older text. Write the reason in `sayWhy` when it differs on purpose."
+          },
+          "sayWhy": { "type": "string", "minLength": 1, "description": "Why `say` differs from `text` on purpose (e.g. \"brand name read by letter\"). Never spoken or shown; validate-plan.mjs leaves a line with a sayWhy out of its stale-say warning." },
+          "pauseBefore": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Silence before this line in ms, after the previous line's pause: the picture plays this long before the line starts (first line: after the head). Recorded in timings.json as pauseBeforeSec."
+          },
+          "notes": {
+            "type": "array",
+            "description": "Corner notes drawn in the caption step (Reel.cornerNotes): wording from this plan's line, timing from this language's word times.",
+            "items": {
+              "type": "object",
+              "required": ["at", "text"],
+              "additionalProperties": false,
+              "properties": {
+                "at": { "type": "string", "pattern": "^(start|word:.+)$", "description": "\"start\" | \"word:<text>\" — the first word of the line that contains <text>." },
+                "text": { "type": "string", "minLength": 1 },
+                "corner": { "type": "string", "enum": ["tl", "tr", "bl", "br"], "description": "Default \"tr\"." },
+                "holdSec": { "type": "number", "exclusiveMinimum": 0, "description": "How long the note stays, default 3.5." }
+              }
+            }
           },
           "lead": { "type": "boolean", "description": "true marks an opening line spoken inside the lead (meta.lead). Lead lines are the first lines of the plan; the story starts after the lead." },
           "lang": {

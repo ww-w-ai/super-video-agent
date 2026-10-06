@@ -46,9 +46,21 @@ JSON path if not. <reel-dir> may be a dub folder (dub/<code>/).
 The reports never change the exit code.
 
 A line whose say still differs from its text (after numbers, names from
-pronounce, punctuation and marks are folded the same way) prints a warning
-with the character error rate, before any voice is made: a say left over from
-an older text. Write why in the line's sayWhy when it differs on purpose.
+pronounce, punctuation and marks are folded the same way) by a character
+error rate over 0.3 prints a warning before any voice is made: a say left
+over from an older text. A deliberate respelling stays under it. Write why in
+the line's sayWhy to silence a say that differs on purpose.
+A line note "word:<text>" that matches no word of the line's text prints a
+warning (a dub's text may differ on purpose).
+
+Facts printed after the result, never changing the exit code:
+doc/schema mismatch: <field>   a field the plan carries that the schema
+                               rejects but references/*.md or a template names, or a
+                               meta.<field> the page (reel.html, src/) reads that the
+                               schema does not have. Check which side is right before going on.
+overlay keys (dub/<code>)      Reel.pictureText("key") and Reel.overlayText(overlay, "key")
+                               keys found in reel.html and src/ that the dub's plan.json
+                               meta.overlay (picture strings: meta.overlay.picture) lacks.
 `;
 
 export async function main(argv) {
@@ -86,11 +98,17 @@ export async function main(argv) {
   } else {
     process.stdout.write("ok\n");
   }
+  for (const fact of contractFacts(dir, schema, errors)) process.stdout.write(`${fact}\n`);
   if (!Array.isArray(plan.lines)) return;
   const stale = staleSayWarnings(plan);
   if (stale.length) {
     process.stdout.write(`warning: ${stale.length} line(s) whose say differs from text (a say left from an older text?)\n`);
     for (const w of stale) process.stdout.write(`  - ${w}\n`);
+  }
+  const noteWarns = noteWordWarnings(plan);
+  if (noteWarns.length) {
+    process.stdout.write(`warning: ${noteWarns.length} line note(s) whose word matches no word of the line text\n`);
+    for (const w of noteWarns) process.stdout.write(`  - ${w}\n`);
   }
   if (flags.estimate) {
     const rateFrom = typeof flags["rate-from"] === "string" ? loadRateSource(abs(flags["rate-from"])) : null;
@@ -134,6 +152,8 @@ export async function main(argv) {
 const DEFAULT_UNITS_PER_SEC = { ko: 6.0, ja: 7.0, zh: 4.5, en: 3.8 };
 const FALLBACK_UNITS_PER_SEC = 4.0;
 const DEFAULT_GAP_MS = 700;
+// A say that differs from its text above this character error rate (after folding) is reported as stale.
+const STALE_SAY_CER = 0.3;
 
 // One unit each: Hangul (syllables and jamo), kana, CJK ideographs.
 const SYLLABIC_CHAR = /[ᄀ-ᇿ㄰-㆏가-힣぀-ヿㇰ-ㇿ㐀-䶿一-鿿豈-﫿]/u;
@@ -218,15 +238,17 @@ export function estimateLength(plan, opts = {}) {
   const lead = opts.leadSec != null ? opts.leadSec : leadSec(meta);
   const headSec = HEAD_SILENCE_SEC + lead;
   const pauses = plan.lines.map((l, i) => (i === plan.lines.length - 1 ? 0 : (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000));
+  const befores = plan.lines.map((l) => (l.pauseBefore || 0) / 1000);
   let at = headSec;
   const perLine = lines.map((l, i) => {
     const sec = l.units / (baseRate * l.speed);
+    at += befores[i];
     const line = { ...l, sec, start: at };
     at += sec + pauses[i];
     return line;
   });
   const speechSec = perLine.reduce((a, l) => a + l.sec, 0);
-  const pauseSec = pauses.reduce((a, p) => a + p, 0);
+  const pauseSec = pauses.reduce((a, p) => a + p, 0) + befores.reduce((a, p) => a + p, 0);
   const tailSec = meta.tailSec == null ? TAIL_SILENCE_SEC : meta.tailSec;
   return {
     lang,
@@ -429,13 +451,201 @@ export function captionBreakErrors(plan) {
   return errors;
 }
 
+/** A line note "word:<text>" that matches no word of the line's text (caption breaks removed). */
+export function noteWordWarnings(plan) {
+  const out = [];
+  (plan.lines || []).forEach((line, i) => {
+    const words = stripCaptionBreaks(line.text || "").split(/\s+/);
+    (Array.isArray(line.notes) ? line.notes : []).forEach((note, j) => {
+      if (!note || typeof note.at !== "string" || !note.at.startsWith("word:")) return;
+      const w = note.at.slice(5);
+      if (!words.some((x) => x.includes(w))) out.push(`lines[${i}].notes[${j}].at: "${note.at}" matches no word in line "${line.id}" text (the note starts with the line)`);
+    });
+  });
+  return out;
+}
+
+// ---------------------------------------------------------------------
+// contract facts: where the docs, the page and the plan disagree
+// ---------------------------------------------------------------------
+
+const SOURCE_EXT = /\.(?:html|js|mjs)$/;
+const SOURCE_SKIP = new Set(["node_modules", "vendor", ".git", "out", "voice", "dub"]);
+const MAX_SOURCE_BYTES = 2_000_000;
+const MAX_SOURCE_DEPTH = 4;
+
+/** reel.html and the page's own sources under src/ (text, <= 2 MB each), as [relative path, text]. */
+function pageSources(dir) {
+  const out = [];
+  const read = (file) => {
+    try {
+      if (fs.statSync(file).size <= MAX_SOURCE_BYTES) out.push([path.relative(dir, file), fs.readFileSync(file, "utf8")]);
+    } catch {
+      /* an unreadable file is not a source */
+    }
+  };
+  const walk = (folder, depth) => {
+    if (depth > MAX_SOURCE_DEPTH || !fs.existsSync(folder)) return;
+    for (const e of fs.readdirSync(folder, { withFileTypes: true })) {
+      if (SOURCE_SKIP.has(e.name)) continue;
+      if (e.isDirectory()) walk(path.join(folder, e.name), depth + 1);
+      else if (SOURCE_EXT.test(e.name)) read(path.join(folder, e.name));
+    }
+  };
+  read(path.join(dir, "reel.html"));
+  walk(path.join(dir, "src"), 0);
+  return out;
+}
+
+/** The skill's own docs and templates, as [path relative to the skill, text]. */
+function skillDocs(skillDir) {
+  const out = [];
+  for (const [sub, ext] of [["references", ".md"], [path.join("assets", "template"), ".html"]]) {
+    const folder = path.join(skillDir, sub);
+    if (!fs.existsSync(folder)) continue;
+    for (const name of fs.readdirSync(folder)) {
+      if (name.endsWith(ext)) out.push([path.join(sub, name), fs.readFileSync(path.join(folder, name), "utf8")]);
+    }
+  }
+  return out;
+}
+
+// Which doc spellings name a field under an error path: "$.meta" -> meta.<k>, "$.lines[2]" -> line.<k> or lines[].<k>.
+function ownerNames(errPath) {
+  const last = errPath.replace(/\[\d+\]/g, "[]").split(".").pop();
+  if (last === "lines[]") return ["line", "lines\\[\\]"];
+  if (last === "cues[]") return ["cue"];
+  return [last.replace(/\[\]$/, "")];
+}
+
+/**
+ * The plan.meta fields a page's code reads: `<x>.meta.<field>`, and `<name>.<field>` for a variable
+ * assigned from `<x>.meta` (read within the next 25 lines, so another `meta` variable elsewhere in the
+ * file is not mistaken for the plan's).
+ */
+function planMetaReads(text) {
+  const keys = new Set();
+  for (const m of text.matchAll(/\.meta\.([A-Za-z_]\w*)/g)) keys.add(m[1]);
+  const lines = text.split("\n");
+  lines.forEach((line, i) => {
+    const assigned = /\b(?:var|let|const)\s+(\w+)\s*=\s*[^;]*\.meta\b/.exec(line);
+    if (!assigned) return;
+    const read = new RegExp(`\\b${assigned[1]}\\.([A-Za-z_]\\w*)`, "g");
+    for (const m of lines.slice(i + 1, i + 26).join("\n").matchAll(read)) keys.add(m[1]);
+  });
+  return keys;
+}
+
+/**
+ * "doc/schema mismatch: <field>" facts. (1) A property the plan carries that the schema rejects and a
+ * reference or template names. (2) A meta.<field> the page's own sources read that the schema lacks.
+ * Facts only: the docs or the schema may be the side that is wrong, so each line says to check.
+ */
+export function docSchemaMismatches({ errors, schema, sources, docs }) {
+  const out = [];
+  for (const e of errors) {
+    const m = /^(\$[^:]*): unexpected property "([^"]+)"$/.exec(e);
+    if (!m) continue;
+    const [, at, key] = m;
+    const re = new RegExp(`\\b(?:${ownerNames(at).join("|")})\\.${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    const hit = docs.find(([, text]) => re.test(text));
+    if (hit) out.push(`doc/schema mismatch: ${at}.${key} — named in ${hit[0]} but rejected by plan.schema.json; check which is right before going on`);
+  }
+  const metaKeys = new Set(Object.keys(((schema.properties || {}).meta || {}).properties || {}));
+  const reads = new Map();
+  for (const [file, text] of sources) {
+    for (const key of planMetaReads(text)) if (!metaKeys.has(key) && !reads.has(key)) reads.set(key, file);
+  }
+  for (const [key, file] of reads) out.push(`doc/schema mismatch: meta.${key} — read by ${file} but plan.schema.json has no meta.${key}; check which is right before going on`);
+  return out;
+}
+
+const PICTURE_CALL = /Reel\.pictureText\(\s*(["'`])((?:(?!\1).)+)\1/g;
+const OVERLAY_CALL = /Reel\.overlayText\(\s*(?:[^,()"'`]+,\s*)?(["'`])((?:(?!\1).)+)\1/g;
+const ANY_CALL = /Reel\.(?:pictureText|overlayText)\(/g;
+
+/**
+ * The literal keys of Reel.pictureText("key"...) and Reel.overlayText(overlay, "key"...) calls, and how
+ * many calls named a key that is not a string literal (not scanned).
+ * @param {[string,string][]} sources
+ */
+export function scanLabelKeys(sources) {
+  const picture = new Set();
+  const overlay = new Set();
+  let calls = 0;
+  let literal = 0;
+  for (const [, text] of sources) {
+    calls += (text.match(ANY_CALL) || []).length;
+    for (const [re, set] of [[PICTURE_CALL, picture], [OVERLAY_CALL, overlay]]) {
+      for (const m of text.matchAll(re)) {
+        if (m[2].includes("${")) continue;
+        set.add(m[2]);
+        literal++;
+      }
+    }
+  }
+  return { picture: [...picture], overlay: [...overlay], notScanned: Math.max(0, calls - literal) };
+}
+
+const hasString = (obj, key) => !!obj && typeof obj === "object" && typeof obj[key] === "string" && obj[key] !== "";
+
+/**
+ * Label keys the page uses that a dub's plan.json meta.overlay does not carry: picture strings live in
+ * meta.overlay.picture, caption-layer labels in meta.overlay. Facts: the base text is drawn there, which
+ * may be intended (a brand kept as is).
+ * @param {{picture:string[], overlay:string[], notScanned:number}} keys
+ * @param {{code:string, plan:object}[]} dubs
+ */
+export function missingOverlayKeys(keys, dubs) {
+  const out = [];
+  for (const { code, plan } of dubs) {
+    const overlay = (plan.meta && plan.meta.overlay) || {};
+    const picture = keys.picture.filter((k) => !hasString(overlay.picture, k));
+    const label = keys.overlay.filter((k) => !hasString(overlay, k));
+    if (!picture.length && !label.length) continue;
+    const parts = [];
+    if (picture.length) parts.push(`Reel.pictureText ${picture.map((k) => `"${k}"`).join(", ")} (meta.overlay.picture)`);
+    if (label.length) parts.push(`Reel.overlayText ${label.map((k) => `"${k}"`).join(", ")} (meta.overlay)`);
+    out.push(`overlay keys (dub/${code}): ${parts.join("; ")} missing in dub/${code}/plan.json — the base language's text is drawn there`);
+  }
+  return out;
+}
+
+function readDubPlans(dir) {
+  const root = path.join(dir, "dub");
+  if (!fs.existsSync(root)) return [];
+  const out = [];
+  for (const code of fs.readdirSync(root).sort()) {
+    try {
+      out.push({ code, plan: readJson(path.join(root, code, "plan.json")) });
+    } catch {
+      /* a folder without a readable plan is not a dub language */
+    }
+  }
+  return out;
+}
+
+/** Every contract fact for a reel folder: doc/schema mismatches and missing overlay keys. */
+function contractFacts(dir, schema, errors) {
+  const skillDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const sources = pageSources(dir);
+  const out = docSchemaMismatches({ errors, schema, sources, docs: skillDocs(skillDir) });
+  const dubs = readDubPlans(dir);
+  if (dubs.length && sources.length) {
+    const keys = scanLabelKeys(sources);
+    out.push(...missingOverlayKeys(keys, dubs));
+    if (keys.notScanned) out.push(`overlay keys: ${keys.notScanned} Reel.pictureText/overlayText call(s) use a key that is not a string literal and were not scanned`);
+  }
+  return out;
+}
+
 /**
  * Lines whose `say` no longer reads as their `text`: the text was edited and the say still holds
  * the old sentence. Both sides go through the STT gate's folding (numbers, scripts, pronounce
  * respellings, punctuation, marks), so a say that only spells numbers or names out is not a
- * difference. Any difference left is reported with its character error rate; a say that differs
- * on purpose is left out of the report by writing the reason in the line's `sayWhy`. A warning
- * only: say may differ from text by design.
+ * difference. A difference is reported only above STALE_SAY_CER (a deliberate respelling stays
+ * quiet), with its character error rate; a say that differs on purpose is left out of the report by
+ * writing the reason in the line's `sayWhy`. A warning only: say may differ from text by design.
  * @returns {string[]}
  */
 export function staleSayWarnings(plan) {
@@ -448,7 +658,7 @@ export function staleSayWarnings(plan) {
     const text = stripTags(stripCaptionBreaks(line.text || ""));
     const say = stripTags(stripCaptionBreaks(line.say));
     const c = cer(text, say, lang, names);
-    if (c > 0) out.push(`"${line.id}" CER ${c.toFixed(2)}: text "${text}" / say "${say}"; if intended, write why in sayWhy`);
+    if (c > STALE_SAY_CER) out.push(`"${line.id}" CER ${c.toFixed(2)}: text "${text}" / say "${say}"; if intended, write why in sayWhy`);
   }
   return out;
 }

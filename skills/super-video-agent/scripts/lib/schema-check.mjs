@@ -1,8 +1,8 @@
 // Minimal, dependency-free validator for plan.schema.json. Not a general
 // JSON-Schema engine — it only implements the subset plan.schema.json uses
 // (object/required/additionalProperties/properties/enum/pattern/array/
-// minItems/items/type/minimum/maximum/exclusiveMinimum/minLength, and local
-// "#/definitions/<name>" $ref), which is
+// minItems/maxItems/items/type/minimum/maximum/exclusiveMinimum/minLength, an
+// additionalProperties schema, and local "#/definitions/<name>" $ref), which is
 // enough to validate this one schema exactly and report the failing path.
 
 function typeOf(v) {
@@ -71,10 +71,11 @@ function validateNode(value, node, path, errors, root) {
     for (const req of schema.required || []) {
       if (!(req in value)) errors.push(`${path}: missing required property "${req}"`);
     }
-    if (schema.additionalProperties === false) {
-      for (const key of Object.keys(value)) {
-        if (!(key in props)) errors.push(`${path}: unexpected property "${key}"`);
-      }
+    const extra = schema.additionalProperties;
+    for (const key of Object.keys(value)) {
+      if (key in props) continue;
+      if (extra === false) errors.push(`${path}: unexpected property "${key}"`);
+      else if (extra && typeof extra === "object") validateNode(value[key], extra, `${path}.${key}`, errors, root);
     }
     for (const [key, sub] of Object.entries(props)) {
       if (key in value) validateNode(value[key], sub, `${path}.${key}`, errors, root);
@@ -84,6 +85,9 @@ function validateNode(value, node, path, errors, root) {
     if (schema.minItems != null && value.length < schema.minItems) {
       errors.push(`${path}: array shorter than minItems ${schema.minItems}`);
     }
+    if (schema.maxItems != null && value.length > schema.maxItems) {
+      errors.push(`${path}: array longer than maxItems ${schema.maxItems}`);
+    }
     if (schema.items) {
       value.forEach((item, i) => validateNode(item, schema.items, `${path}[${i}]`, errors, root));
     }
@@ -91,11 +95,12 @@ function validateNode(value, node, path, errors, root) {
 }
 
 /**
- * Validate `data` against `schema`.
+ * Validate `data` against `schema`, or against one of its local definitions when `ref`
+ * ("#/definitions/<name>") is given.
  * @returns {{valid: boolean, errors: string[]}}
  */
-export function validate(data, schema) {
+export function validate(data, schema, ref = null) {
   const errors = [];
-  validateNode(data, schema, "$", errors, schema);
+  validateNode(data, ref ? { $ref: ref } : schema, "$", errors, schema);
   return { valid: errors.length === 0, errors };
 }
