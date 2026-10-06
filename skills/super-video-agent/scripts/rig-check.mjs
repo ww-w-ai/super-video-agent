@@ -15,6 +15,9 @@ film's end. The hook returns what ReelRig.jointCheck returns:
   {joints:[{joint, maxGapPx, atT, over, angleOver, samples}], rows:[...], lines:[...], notes:[...]}
 Prints one line per joint (the largest gap in px between the child's pivot and the parent's anchor, and how many
 samples were over the tolerance) and writes the whole result as JSON (default <reel-dir>/out/rig-check.json).
+The gap is an anchor offset: 0 px means the pose does not move a child off its parent's anchor, not that
+the drawn parts overlap at the joint. A visible seam from parts that do not overlap is a drawing question;
+look at a still of the pose (still.mjs --at <sec>).
 Exit 0 whatever it finds. A page with no rigCheck hook is reported as such, also with exit 0.
 
 --step <sec>  sampling step; --stub <sec> for a reel with no voice/timings.json (see still.mjs)

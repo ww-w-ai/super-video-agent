@@ -28,6 +28,7 @@ import {
   fitFrozenLines,
   buildPlacedTimings,
   computeSlots,
+  plannedGapMap,
   planCaptionSpans,
   langFrameRanges,
   promoteSharedSpan,
@@ -64,6 +65,7 @@ import {
   buildPlainSpanArgs,
   buildCaptionSpanArgs,
 } from "./lib/dub-space.mjs";
+import { initDubPlan, formatInitReport } from "./lib/dub-scaffold.mjs";
 import { gateAvSync, pointLatest, timestamp, concatMp4, checkPicturePair } from "./render.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -71,6 +73,17 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-speed <x>] [--table] [--no-contrast]
        dub.mjs <reel-dir> --lang <code> --audio-only [--audio-format m4a|wav] [--max-speed <x>]
        dub.mjs <reel-dir> --insert-time <sec> --seconds <n>
+       dub.mjs <reel-dir> --lang <code> --init-plan [--copy]
+
+--init-plan: writes <reel-dir>/dub/<code>/plan.json from the base plan.json and
+exits (no render, no voice). It keeps each line's id, pauseBeforeMs,
+pauseAfterMs, lead and rate, sets meta.lang to <code>, and leaves each line's
+text empty, meta.pronounce out, meta.overlay strings empty and the speaker
+fields of meta.voice (voiceId, refAudio, refText, refTokens) out: the
+language's own copy and voice are the user's to write. --copy keeps the base
+text, say, notes, pronounce, overlay and voice as they are (a dub in the base
+language, or a start to translate in place). An existing dub plan.json is
+never overwritten: the run stops.
 
 Lays a language version over a picture-first render (render.mjs
 --no-captions). <reel-dir>/dub/<code>/ holds plan.json (same line ids as
@@ -85,7 +98,7 @@ start -> next base line start, the last line -> the film's end). A line
 longer than its slot is sped up (atempo, pitch kept) by at most --max-speed
 (default ${MAX_SPEED_DEFAULT}, 10%); at least 0.5 s of silence is kept after a line when the
 slot has room, and the rest stays voice-free up to 1.0 s (a longer gap slows the line, down
-to 0.95x). A line still too
+to 0.95x; a pause the plan's pauseAfterMs or the picture itself declares is planned silence and is never slowed away). A line still too
 long fails, naming the line id and by how much, instead of cutting audio or
 moving the picture — shorten the line in that language's script and re-make
 it. Then each line's silence after it is judged against its own scene's
@@ -183,6 +196,7 @@ and timing sidecar; preserves the source video and frozen timings.
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
   if (typeof flags.table === "string") positional.unshift(flags.table);
+  if (typeof flags["init-plan"] === "string") positional.unshift(flags["init-plan"]);
   const inserting = flags["insert-time"] !== undefined;
   if (flags.help || flags.h || positional.length === 0 || (!inserting && typeof flags.lang !== "string")) {
     printHelpAndExit(HELP, flags.help || flags.h ? 0 : 1);
@@ -191,6 +205,14 @@ export async function main(argv) {
   const dir = abs(positional[0]);
   createTerminationGuard().install();
   if (inserting) return runTimeInsert(dir, flags);
+  if (flags["init-plan"] !== undefined) {
+    try {
+      process.stdout.write(formatInitReport(initDubPlan(dir, flags.lang, { copy: flags.copy !== undefined })));
+    } catch (e) {
+      fail(e.message);
+    }
+    return;
+  }
   const lang = flags.lang;
   let minGap = null;
   if (flags["min-gap"] !== undefined) {
@@ -382,7 +404,9 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     const dubLines = shiftForTrim(dubTimings.lines, trims);
 
     // 2. speed (at most maxSpeed) and 3. the voice-free gap: fitAllLines.
-    const fitSlots = (timings) => fitOrThrow(timings.lines, dubLines, clipDurations, timings.duration, maxSpeed);
+    // A pause the plan (pauseAfterMs) or the picture declared is planned silence, never slowed away.
+    const plannedFor = (timings) => plannedGapMap(pictureGapPlan(timings.lines, dubPlan.lines));
+    const fitSlots = (timings) => fitOrThrow(timings.lines, dubLines, clipDurations, timings.duration, maxSpeed, { plannedGapSec: plannedFor(timings) });
     let fit = fitSlots(baseTimings);
 
     // --min-gap: from here on this language's final uses the widened
@@ -398,7 +422,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     // Report only — a poor fill or a line that needed atempo means the
     // script's wording doesn't match the picture's pace in this language; the
     // film is still written either way (references/pipeline.md "Picture first").
-    const fillReport = reportLineFill(fit.lines, computeSlots(baseTimings.lines, baseTimings.duration), baseTimings.lines);
+    const fillReport = reportLineFill(fit.lines, computeSlots(baseTimings.lines, baseTimings.duration), baseTimings.lines, plannedFor(baseTimings));
     const fillWarning = formatFillWarnings(fillReport);
     if (table) process.stdout.write(formatFillTable(fillReport));
     if (fillWarning) process.stdout.write(fillWarning);
@@ -642,18 +666,26 @@ async function spanDrawsPixels(page, span, fps, capture, probed) {
   return false;
 }
 
-const LANG_SPANS_ADVICE = "advice: this page draws text beyond the captions without declaring it; list those labels as {start,end} seconds in window.__reel.langSpans so they never depend on the probe\n";
+const LANG_SPANS_ADVICE = "advice: this page draws text outside the lines' [start,end] windows without declaring it; list those labels as {start,end} seconds in window.__reel.langSpans so they never depend on the probe\n";
+const CAPTION_HOLD_ADVICE = "advice: a span the probe promoted touches a caption line, so the page's caption layer draws before the line starts or after it ends (a fade-in, or a hold). Keep each caption's window inside its line's [start,end], or list that window as {start,end,in:\"layer\"} in window.__reel.langSpans; until then the span is encoded per language\n";
+
+/** Whether `span` (frames) begins where a line ends or ends where a line begins, within a frame. */
+function touchesLine(span, lines, fps) {
+  return (lines || []).some((l) => Math.abs(span.startFrame - Math.ceil(l.end * fps)) <= 1 || Math.abs(span.endFrame - Math.floor(l.start * fps)) <= 1);
+}
 
 /**
  * Probes every language-neutral span; one with a language-drawn pixel (a
  * label the page did not list in __reel.langSpans) becomes a language span
  * and its frames are captured. Reported, never silently dropped.
- * @param {{declaredCount?:number, capture?:Function}} [o] declaredCount: how many langSpans the page declares
+ * @param {{declaredCount?:number, lines?:{start:number,end:number}[], capture?:Function}} [o] declaredCount: how many
+ *   langSpans the page declares; lines: the placed lines (seconds), to tell a caption hold from a label
  */
-export async function settleSharedSpans({ page, framesDir, plan, fps, declaredCount = 0, capture = captureFrame }) {
+export async function settleSharedSpans({ page, framesDir, plan, fps, declaredCount = 0, lines = [], capture = captureFrame }) {
   const checked = new Set();
   const probed = { n: 0 };
   let promoted = 0;
+  let nearCaption = false;
   for (let i = 0; i < plan.spans.length; ) {
     const span = plan.spans[i];
     const key = `${span.startFrame}-${span.endFrame}`;
@@ -667,13 +699,15 @@ export async function settleSharedSpans({ page, framesDir, plan, fps, declaredCo
       continue;
     }
     process.stdout.write(`span ${span.startFrame}-${span.endFrame}: the caption layer draws here although no line or langSpans entry covers it; encoded per language\n`);
+    nearCaption = nearCaption || touchesLine(span, lines, fps);
     await captureRanges(page, framesDir, [[span.startFrame, span.endFrame]], fps, capture);
     plan = promoteSharedSpan(plan, i);
     promoted++;
     i = 0;
   }
   process.stdout.write(`probed ${probed.n} frames over ${checked.size + promoted} neutral spans\n`);
-  if (promoted && declaredCount === 0) process.stdout.write(LANG_SPANS_ADVICE);
+  if (nearCaption) process.stdout.write(CAPTION_HOLD_ADVICE);
+  else if (promoted && declaredCount === 0) process.stdout.write(LANG_SPANS_ADVICE);
   return plan;
 }
 
@@ -700,7 +734,7 @@ async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, f
   const duration = baseTimings.duration;
   const planFor = (labelSpans) => planCaptionSpans({ lines: fit.lines, duration, fps, labelSpans });
   const baseLang = readBaseLang(dir);
-  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor });
+  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor, lines: fit.lines });
   if (ownLayer.fatal) throw new Error(ownLayer.fatal);
   let plan = ownLayer.plan;
   let captionNote = null;
@@ -916,7 +950,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string, fatal?:string, plan?:object}>} fatal stops the step; note is a fact to print
  */
-async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor }) {
+async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines }) {
   const server = await serveDir(reelDir);
   let session;
   let declared = null; // stays null when the page's spans were never read
@@ -936,7 +970,7 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
     const layerSpans = declared.filter((s) => s.in !== "scene");
     let plan = planFor(layerSpans);
     await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
-    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: layerSpans.length });
+    plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: layerSpans.length, lines });
     return { ok: true, plan, note: spanNote };
   } catch (e) {
     const failed = `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.`;

@@ -11,7 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ffmpeg, probeDuration, applyAtempo } from "./ffmpeg.mjs";
-import { levelLineWav } from "./line-level.mjs";
+import { levelLineWav, formatLevelReport } from "./line-level.mjs";
 import { trimClipToVoice } from "./clip-trim.mjs";
 import { fitAllLines, computeSlots, MAX_ATEMPO_DEFAULT, MIN_ATEMPO } from "./dub-timing.mjs";
 
@@ -46,8 +46,8 @@ export function shiftForTrim(voiceLines, trims) {
 }
 
 /** fitAllLines, throwing one message that names every line that does not fit. Gaps are judged afterwards per scene (dub-fill.mjs reportLineFill). */
-export function fitOrThrow(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed = MAX_SPEED_DEFAULT) {
-  const fit = fitAllLines(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed);
+export function fitOrThrow(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed = MAX_SPEED_DEFAULT, breath = {}) {
+  const fit = fitAllLines(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed, breath);
   if (!fit.ok) throw new Error(`line(s) do not fit their slot: ${describeFailures(fit.failures)}`);
   return fit;
 }
@@ -58,8 +58,8 @@ export function fitOrThrow(baseLines, voiceLines, clipDurations, filmDuration, m
  * no clip or no matching id still throws, since there is nothing to place.
  * @returns {{ok:true, lines:object[], breathWarnings:object[], longGaps:object[], overflow:{id:string, requiredFactor:number, overSec:number}[]}}
  */
-export function fitDraft(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed = MAX_SPEED_DEFAULT) {
-  const first = fitAllLines(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed);
+export function fitDraft(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed = MAX_SPEED_DEFAULT, breath = {}) {
+  const first = fitAllLines(baseLines, voiceLines, clipDurations, filmDuration, maxSpeed, breath);
   if (first.ok) return { ...first, overflow: [] };
   const hard = first.failures.filter((f) => f.requiredFactor == null);
   if (hard.length) throw new Error(`line(s) cannot be placed even as a draft: ${describeFailures(hard)}`);
@@ -71,7 +71,7 @@ export function fitDraft(baseLines, voiceLines, clipDurations, filmDuration, max
     real.set(f.id, clipDurations.get(f.id));
     clamped.set(f.id, (slot.end - slot.start) * maxSpeed);
   }
-  const fit = fitAllLines(baseLines, voiceLines, clamped, filmDuration, maxSpeed);
+  const fit = fitAllLines(baseLines, voiceLines, clamped, filmDuration, maxSpeed, breath);
   const overflow = [];
   const lines = fit.lines.map((l) => {
     if (!real.has(l.id)) return l;
@@ -114,8 +114,7 @@ export async function placeLineClips({ fit, trims, workDir, maxSpeed = MAX_SPEED
     } else {
       await applyAtempo(srcPath, placedPath, line.atempoFactor, { min: MIN_ATEMPO, max: maxSpeed });
     }
-    const leveled = await levelLineWav(placedPath);
-    process.stdout.write(`line "${line.id}" leveled: ${leveled.beforeLufs == null ? "n/a" : leveled.beforeLufs.toFixed(1)} -> ${leveled.afterLufs == null ? "n/a" : leveled.afterLufs.toFixed(1)} LUFS\n`);
+    process.stdout.write(formatLevelReport(line.id, await levelLineWav(placedPath)));
     placedClips.push({ id: line.id, path: placedPath, startSec: line.start });
   }
   return placedClips;

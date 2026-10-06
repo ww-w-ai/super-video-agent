@@ -190,6 +190,8 @@ export async function renderingLines(env) {
   return lines;
 }
 
+const MLX_INSTALL_ROUTE = "on Apple silicon macOS, in a venv: `python3 -m venv <dir>` then `<dir>/bin/pip install mlx-whisper` (Python 3.11 is a verified version; use a Python version the mlx wheels list for your machine), then SVA_STT_PYTHON=<dir>/bin/python and `setup.mjs --stt-models`";
+
 function importsMlxWhisper(python) {
   return spawnSync(python, ["-c", "import mlx_whisper"], { stdio: "ignore" }).status === 0;
 }
@@ -211,6 +213,7 @@ export function sttReport(env, probe = importsMlxWhisper) {
   return [
     "speech-to-text engines (optional; the voice check is skipped when none is ready):",
     `  mlx-whisper: ${mlx}`,
+    ...(mlx.startsWith("ready") ? [] : [`  mlx-whisper install route: ${MLX_INSTALL_ROUTE}`]),
     `  mlx-whisper models: ${models.join(", ")}`,
     `  groq: ${env.GROQ_API_KEY ? "key set (used only with SVA_STT_ENGINE=groq)" : "no key (GROQ_API_KEY is not set)"}`,
   ];

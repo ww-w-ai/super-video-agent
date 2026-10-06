@@ -177,6 +177,21 @@ async function speakAndCut(items, { apiKey, voiceId, lang, voiceCfg }) {
 }
 
 /**
+ * The voices the account can use with `model` (default ssfm-v30), as the service lists them.
+ * The key is sent in a header and never printed.
+ * @param {{model?:string}} [opts]
+ * @returns {Promise<object[]>}
+ */
+export async function listVoices(opts = {}) {
+  const apiKey = process.env.TYPECAST_API_KEY;
+  if (!apiKey) throw new Error("TYPECAST_API_KEY is not set. Export it to list voices.");
+  const res = await fetch(`https://api.typecast.ai/v2/voices?model=${encodeURIComponent(opts.model || DEFAULT_MODEL)}`, { headers: { "X-API-KEY": apiKey } });
+  if (!res.ok) throw new Error(`Typecast voice list failed: ${res.status} ${res.statusText}`);
+  const json = await res.json();
+  return Array.isArray(json) ? json : json.voices || json.result || [];
+}
+
+/**
  * @param {{text:string, voice?:string, lang?:string, voiceCfg?:object, outPath:string}} args
  */
 export async function synth({ text, voice, lang, voiceCfg, outPath }) {

@@ -10,8 +10,10 @@ needs before choosing it; do not pick one only because it is written here.
 ## Name the technique
 
 People, hands and pen lines drawn from plain shapes in code look crude beside the rest of a frame.
-Do not draw a character that way. Choose a named technique for each scene and write its name in
-`FILM.md` (and in the plan's visual notes). The name makes you choose on purpose.
+Do not draw a character that way unless the user asks for it. Choose a named technique for each
+scene and write its name in `FILM.md` (and in the plan's visual notes). The name makes you choose
+on purpose. When the user asks for code-drawn parts (a rig of shapes, a drawn figure), the user's
+request wins over this advice: name it as the technique and build it.
 
 Techniques the skill already has code or assets for (tested, so the quality is known):
 
@@ -56,6 +58,10 @@ A bundled helper, offered as an example and not a required look: copy
 - The check reports and never blocks, and `jointCheck` never throws: a joint left apart on purpose
   (a part that flies off, `dx`/`dy` on a child) is a choice, and the model decides whether a reported
   gap is a flaw.
+- The check measures anchor offsets only. With `ReelRig` every child is placed at its parent's anchor,
+  so the gap is exactly 0 px unless a pose moves a child with `dx`/`dy`; "0.0 px" does not say the
+  figure has no visible seam. Two drawn parts that do not overlap at the joint show a seam with a
+  gap of 0: that is a drawing question, so look at a still of the pose (`still.mjs --at <sec>`).
 
 Once a rig works, keep the part images, the pivots and the pose list with the film's assets so a
 later film can reuse the figure.

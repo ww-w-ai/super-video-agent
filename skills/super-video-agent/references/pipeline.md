@@ -65,7 +65,8 @@ they read it.
 
 `voice.mjs` writes `voice/timings.json`: each line's measured start/end, and word times (from
 the engine when it reports them, otherwise from the speech-to-text check; always the caption's
-words). Each caption word is matched to the heard words by its letters (numbers read out,
+words). A line's `words` array holds `{w, start, end}` objects: the caption word is under the key
+`w` (not `text` or `word`), times in seconds. Each caption word is matched to the heard words by its letters (numbers read out,
 spacing ignored), so a word keyed to a beat lands when it was said; words the voice did not say
 are interpolated between measured neighbours, and `wordsMeasured` on each line counts the
 measured ones (0 = even spread, no speech-to-text; `references/voice.md` "Timing model").
@@ -174,6 +175,13 @@ render. The scaffold's `shots` always tile end-to-end: shot *i* spans from line 
 `gapMs` silence between lines belongs to the shot before it rather than being an un-owned gap.
 A custom scene that reports its own `shots` differently can still leave gaps or overlaps —
 those non-tiling shots merge into one bigger segment with a warning.
+
+Shot ids need not equal line ids: a film may tile its own shots (for example split one line's span in
+two so only the part that shows a language's text re-renders per language). The tools that use a shot
+id only as a name: `render.mjs` (segment files and `--only` are named by shot id) and `verify.mjs
+--only`. `review.mjs` and `still.mjs` read the shots' times, `changed-spans.mjs` reads `shots` when a
+timeline has them, and `dub.mjs` reads the lines' times, so none of them needs a shot id to equal a
+line id. A line id is what `plan.json`, `voice/timings.json` and every dub match on.
 
 ```
 render.mjs <dir> [--preview]           # normal render: probes every segment, reuses what matches
@@ -464,8 +472,14 @@ Each language, including the first one, lives in its own folder:
   voice/        # voice.mjs <reel-dir>/dub/<code>  ->  line-<id>.wav + timings.json
 ```
 
-No command creates `dub/<code>/plan.json`. Write it yourself: copy the base `plan.json`, translate
-each line's `text` and `say`, and set `meta.lang` and `meta.voice`.
+`dub.mjs <reel-dir> --lang <code> --init-plan [--copy]` writes `dub/<code>/plan.json` from the base
+plan: each line keeps its id, `pauseBeforeMs`, `pauseAfterMs`, `lead` and `rate`; `meta.lang` is
+`<code>`; each line's `text` is empty (a plan line needs a non-empty `text`, so the empty ones are
+the translation still to write), and `meta.pronounce`, the `meta.overlay` strings and the speaker
+fields of `meta.voice` (`voiceId`, `refAudio`, `refText`, `refTokens`) are left empty or out. With
+`--copy` the base text, `say`, notes, pronounce, overlay and voice are kept as they are (a dub in
+the base language, or a copy to translate in place). It never overwrites an existing plan. After it:
+translate each line's `text` and `say`, and set `meta.voice` for the language.
 
 The picture's time is the reference. `dub.mjs` fits each line in four steps, in this order:
 
@@ -481,7 +495,10 @@ The picture's time is the reference. `dub.mjs` fits each line in four steps, in 
    that keeps less even then shows up in the gap report below ("Judging a dub line").
 4. **Gap.** Whatever remains of the slot stays voice-free, up to 1.0 s (`MAX_BREATH_SEC`, the
    silence gate's limit). A line that leaves more is slowed (atempo, pitch kept) down to 0.95x to
-   close the rest. What gap is left is judged per scene ("Judging a dub line"). The last line's tail is not
+   close the rest. A pause the plan declared (`pauseAfterMs`, `pauseBeforeMs`) or the picture
+   itself has over 1 s is planned silence: the line is not slowed to shrink it, so a base-language
+   dub keeps the base voice's timing, and the gap report does not list it as sparse.
+   `validate-plan.mjs` lists a planned pause longer than this rule as a fact once the voice exists. What gap is left is judged per scene ("Judging a dub line"). The last line's tail is not
    limited. The picture is never stretched and audio is never cut.
 
 A line that still does not fit within 10% fails the run, naming the line and the factor it needs
@@ -594,7 +611,10 @@ Each neutral span is probed for pixels the caption layer drew (every frame in a 
 every 0.25 s); a span that has some becomes a language span and is reported. The run prints how many
 frames were probed. Where the page draws a label that is not a caption, list it in `langSpans` so it
 never depends on the probe; the run prints one advice line when a probe promoted a span and the page
-declares none.
+declares none. A page's own caption window must stay inside the line's `[start, end]` (a caption that
+fades in before the line or holds after it draws outside the language span), or be listed as
+`{start, end, in: "layer"}` spans; when a promoted span touches a caption line the advice line names
+that caption fade or hold as the likely cause.
 
 `langSpans` entries are `{start, end, in: "layer" | "scene"}` (default `"layer"`). Text drawn inside
 the scene (a sign or screen in a 3D world) cannot come from the caption layer: list it as
@@ -820,6 +840,13 @@ srt.mjs compare <a.srt> <b.srt> [...] [--tolerance <ms>]
   by language: Japanese and Chinese 16, Korean 22, others 42). With two or more languages it reports
   cue count and time equality per line and writes `srt-report.json`. Findings: too many rows, row too
   long, glued break, overlap, no duration, proportional times.
+- Which SRT goes with which file: the base track is named by the base plan's `meta.lang` (for example
+  `ko-KR.srt`) and carries `voice/timings.json`'s times, so it matches the film made from the base voice.
+  A dub track is named by its folder (`<code>.srt`, from `dub/<code>/timings.placed.json`) and matches
+  `out/final-<code>.mp4`. When the base language is also dubbed (`dub/<code>/` in the base language),
+  both files exist and their times can differ by the dub fit's speed changes: `<code>.srt` goes with
+  `out/final-<code>.mp4`, the `meta.lang`-named one with the base-voice film. `--base` writes only the
+  base track and `--dub <code>` only that dub.
 - `align` makes an SRT for a video that already exists: speech-to-text times the words, the text is your
   script (`plan.json` / `timings.json` `lines[].text`, or plain text one line per row). A script line
   with under half its words found gets no cue and is listed as `low match`. It uses the same engine as

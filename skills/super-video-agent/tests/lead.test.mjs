@@ -98,7 +98,7 @@ test("validation: a lead with a sound cue before the first story line passes; a 
 test("validation: a lead with a lead line passes; lead lines must open the plan and not be the whole plan", () => {
   const ok = plan({ lead: 3 }, [{ id: "hi", text: "안녕", lead: true }, { id: "l1", text: "x" }]);
   assert.deepEqual(leadErrors(ok), []);
-  assert.deepEqual(leadSound(ok), { bed: false, cue: false, line: true });
+  assert.deepEqual(leadSound(ok), { bed: false, cue: false, line: true, page: false });
   const notFirst = plan({ lead: 3 }, [{ id: "l1", text: "x" }, { id: "hi", text: "안녕", lead: true }]);
   assert.ok(leadErrors(notFirst).some((e) => /first lines/.test(e)));
   const all = plan({ lead: 3 }, [{ id: "hi", text: "안녕", lead: true }]);

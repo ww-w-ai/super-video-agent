@@ -18,6 +18,29 @@ export const MIN_BREATH_SEC = 0.5;
 export const MAX_BREATH_SEC = 1.0;
 // Slowest a line may be played to close a gap over MAX_BREATH_SEC.
 export const MIN_ATEMPO = 0.95;
+// A line whose silence is within this of its planned pause counts as having exactly that pause.
+const PLANNED_GAP_TOLERANCE_SEC = 0.05;
+
+/**
+ * The silence after a line that counts as planned: its declared pause plus a small tolerance, or
+ * 0 when the line has none. `planned` maps a line id to seconds.
+ * @param {Map<string,number>|null} planned
+ * @param {string} id
+ */
+export function allowedGapSec(planned, id) {
+  const sec = planned && planned.get(id);
+  return sec > 0 ? sec + PLANNED_GAP_TOLERANCE_SEC : 0;
+}
+
+/**
+ * Planned silence after each base line, by id, from pictureGapPlan: the larger of the dub plan's
+ * pauseAfterMs and the picture's own pause when that is over the silence gate.
+ * @param {{id:string,pauseAfterMs?:number}[]} gapPlan pictureGapPlan's output
+ * @returns {Map<string,number>}
+ */
+export function plannedGapMap(gapPlan) {
+  return new Map((gapPlan || []).filter((g) => g.pauseAfterMs > 0).map((g) => [g.id, g.pauseAfterMs / 1000]));
+}
 
 /**
  * Base-clock slots: slot i spans from base line i's start to base line
@@ -107,12 +130,13 @@ export function shiftAndScaleWords(words, dubLineStart, atempoFactor, slotStart)
  * @param {Map<string,number>} clipDurations id -> measured duration (sec) of dub/voice/line-<id>.wav
  * @param {number} filmDuration
  * @param {number} [maxAtempo]
- * @param {{minBreathSec?:number, maxBreathSec?:number, minAtempo?:number}} [breath] see fitLineToSlot; lines left with
+ * @param {{minBreathSec?:number, maxBreathSec?:number, minAtempo?:number, plannedGapSec?:Map<string,number>}} [breath] see fitLineToSlot;
+ *   plannedGapSec: id -> a pause the plan or picture declared, which is never slowed away; lines left with
  *   less breath go to `breathWarnings`, lines left with a longer gap (not the last line) to `longGaps`
  * @returns {{ok:true, lines:{id:string,text:string,start:number,end:number,atempoFactor:number,words:object[]}[], breathWarnings:{id:string,breathSec:number,minBreathSec:number}[], longGaps:{id:string,gapSec:number,maxBreathSec:number}[]} | {ok:false, failures:{id:string,requiredFactor:number|null,maxAtempo:number,reason?:string}[]}}
  */
 export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, maxAtempo = DEFAULT_MAX_ATEMPO, breath = {}) {
-  const { minBreathSec = MIN_BREATH_SEC, maxBreathSec = MAX_BREATH_SEC, minAtempo = MIN_ATEMPO } = breath;
+  const { minBreathSec = MIN_BREATH_SEC, maxBreathSec = MAX_BREATH_SEC, minAtempo = MIN_ATEMPO, plannedGapSec = null } = breath;
   const slots = computeSlots(baseLines, filmDuration);
   const dubById = new Map(dubLines.map((l) => [l.id, l]));
 
@@ -132,7 +156,9 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
     const slotDur = slot.end - slot.start;
     // The last slot's tail runs to the film's end, not to a next line: no gap limit there.
     const isLast = slotIndex === slots.length - 1;
-    const fit = fitLineToSlot(clipDur, slotDur, maxAtempo, { minBreathSec, maxBreathSec: isLast ? Infinity : maxBreathSec, minAtempo });
+    // A pause the plan or the picture declared is planned silence: the line is not slowed to shrink it.
+    const limit = Math.max(maxBreathSec, allowedGapSec(plannedGapSec, slot.id));
+    const fit = fitLineToSlot(clipDur, slotDur, maxAtempo, { minBreathSec, maxBreathSec: isLast ? Infinity : limit, minAtempo });
     if (!fit.ok) {
       failures.push({ id: slot.id, requiredFactor: fit.requiredFactor, maxAtempo: fit.maxAtempo });
       continue;

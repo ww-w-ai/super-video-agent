@@ -69,13 +69,33 @@ export function lineLevelFilter(gainDb, limit, opts = {}) {
 export async function levelLineWav(wavPath, opts = {}) {
   const before = await measureLoudness(wavPath);
   const gainDb = computeLineGainDb(before, opts);
+  const target = opts.targetLufs ?? LINE_TARGET_LUFS;
+  const capped = Number.isFinite(before.integratedLufs) && target - before.integratedLufs > LINE_MAX_BOOST_DB + 0.05;
   if (Math.abs(gainDb) < 0.05) {
-    return { beforeLufs: before.integratedLufs, afterLufs: before.integratedLufs, gainDb: 0 };
+    return { beforeLufs: before.integratedLufs, afterLufs: before.integratedLufs, gainDb: 0, capped: false, targetLufs: target };
   }
   const tmpPath = wavPath + ".prelevel.wav";
   fs.renameSync(wavPath, tmpPath);
   await ffmpeg(["-y", "-i", tmpPath, "-filter:a", lineLevelFilter(gainDb, lineNeedsLimiter(before, gainDb, opts), opts), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
   fs.rmSync(tmpPath, { force: true });
   const after = await measureLoudness(wavPath);
-  return { beforeLufs: before.integratedLufs, afterLufs: after.integratedLufs, gainDb };
+  return { beforeLufs: before.integratedLufs, afterLufs: after.integratedLufs, gainDb, capped, targetLufs: target };
+}
+
+const lufs = (v) => (v == null || !Number.isFinite(v) ? "n/a" : v.toFixed(1));
+
+/**
+ * The log lines for one leveled line: the before/after loudness, plus a warning when the boost
+ * was capped at LINE_MAX_BOOST_DB so the line stayed under the target. Pure.
+ * @param {string} id
+ * @param {{beforeLufs:number|null, afterLufs:number|null, capped?:boolean, targetLufs?:number}} leveled
+ */
+export function formatLevelReport(id, leveled) {
+  let out = `line "${id}" leveled: ${lufs(leveled.beforeLufs)} -> ${lufs(leveled.afterLufs)} LUFS\n`;
+  if (leveled.capped) {
+    const target = leveled.targetLufs ?? LINE_TARGET_LUFS;
+    const under = Number.isFinite(leveled.afterLufs) ? `${(target - leveled.afterLufs).toFixed(1)} dB` : "some dB";
+    out += `WARN: line "${id}" boost capped at +${LINE_MAX_BOOST_DB} dB; the line stays ${under} under ${target} LUFS (a very quiet take)\n`;
+  }
+  return out;
 }

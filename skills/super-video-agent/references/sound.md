@@ -67,7 +67,9 @@ A film with `meta.lead` (seconds before the first story line; `true` = 3 s) must
 the lead — at least one of: a music bed playing from t=0 (declare it with `meta.sound.bed: true`),
 a sound-effect cue inside the lead (a line cue that sounds before the first story line, e.g. `at:
 "start"` with a negative `offsetMs` on the first story line), or an opening line spoken in the
-lead (the first plan lines, marked `lead: true`, inside the lead window).
+lead (the first plan lines, marked `lead: true`, inside the lead window), or sound the page makes itself inside the lead (its `SFX_CUES` kit or custom
+cues, or its own sound path; declare it with `meta.sound.page: true`, and `cue-check.mjs --page`
+lists the page's marks with their times so the claim can be checked).
 `validate-plan.mjs` fails a lead with none of them, and the silence gates report a lead without
 sound. One way to choose the sound is by what comes next: a bed's key or an effect's material that
 leads naturally into the first scene keeps the cut from lead to story from feeling like a
@@ -153,7 +155,9 @@ words — e.g. "a kitchen promo, warm and bouncy" — the same phrase for every 
 custom: "<free text>"}`). `scripts/sfx-cards.mjs measure <reel-dir>` fills `measured` — duration,
 peak dB, LUFS (when the clip is long enough), attack time, spectral brightness, pitch trend and
 noisiness — from `window.__reel.sfxStems()` (a kit/custom cue rendered alone, no bed, no other
-cues) or, for an `asset` recipe, from the part of the library file the film plays: 0 s to the
+cues, at the cue's own `gain` as it plays before the bed's master gain, so a cue at gain 0.12
+measures 18 dB under the same cue at 1.0; a page that writes its own `sfxStems()` returns each
+stem at its cue's gain too) or, for an `asset` recipe, from the part of the library file the film plays: 0 s to the
 card's `maxSec`, else to the `maxSec` every `plan.json` cue of that asset shares, else the whole
 file (a cue always plays from the file's start, so there is no start offset). `measured.fileSec`
 keeps the file's own length, and `measure`, `report` and the judge prompt all name the span, e.g.

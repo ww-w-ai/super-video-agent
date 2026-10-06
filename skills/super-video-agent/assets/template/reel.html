@@ -333,7 +333,7 @@
   }
 
   // sfxStems(sampleRate) -> Promise<[{id, at, L, R}]> — each SFX_CUES kit
-  // effect rendered alone (no bed, no other cues, no master gain), for
+  // effect rendered alone at its cue's gain (no bed, no other cues, no master gain), for
   // scripts/sfx-cards.mjs's `measure` (references/sound.md "Sound cards").
   // Optional: a page that never calls this still works with everything
   // else; sfx-cards.mjs then falls back to measuring library cue files
@@ -350,6 +350,8 @@
       if (!gen) return null;
       var buf = gen(sampleRate, { seed: cue.kind + ":" + cue.at });
       var arr = Float32Array.from(buf);
+      var g = cue.gain == null ? 1 : cue.gain;
+      for (var i = 0; i < arr.length; i++) arr[i] *= g;
       return { id: cue.id || (cue.kind + "@" + cue.at), at: cue.at, L: arr, R: arr };
     }).filter(Boolean);
     return Promise.resolve(out);

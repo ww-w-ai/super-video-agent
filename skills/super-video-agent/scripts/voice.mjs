@@ -14,7 +14,7 @@ import { compareLine, isGrossMismatch, tailCleared, pronounceFolds } from "./lib
 import { sttTranscribe, sttTranscribeLeveled } from "./lib/stt-engine.mjs";
 import { spokenText, stripCaptionBreaks } from "./lib/pronounce.mjs";
 import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags.mjs";
-import { levelLineWav } from "./lib/line-level.mjs";
+import { levelLineWav, formatLevelReport } from "./lib/line-level.mjs";
 import { trimClipToVoice } from "./lib/clip-trim.mjs";
 import { MIN_BREATH_SEC } from "./lib/dub-timing.mjs";
 import { measureNarrationGaps, formatSilenceReport } from "./lib/silence-gate.mjs";
@@ -48,6 +48,7 @@ import { snapStartsToSound } from "./lib/word-onsets.mjs";
 import { readWav } from "./lib/wav-read.mjs";
 import { measureEdgeEnvelope, voicedSpanWithPads } from "./lib/clip-trim.mjs";
 import { lineLang } from "./lib/line-lang.mjs";
+import { listVoicesReport } from "./lib/voice-list.mjs";
 
 export { sttTranscribe };
 // Providers whose output is deterministic (same input -> same audio every
@@ -67,6 +68,14 @@ Each synthesized line is trimmed to its voiced span plus 0.05 s head and
 narration is placed, the silence gate lists every pause over 1 s between
 voiced audio with the line ids around it; a pause the plan asks for (a line's
 pauseAfterMs) is listed as planned, not as a problem.
+
+--list-voices [<reel-dir>] [--lang <code>] [--provider typecast|elevenlabs]
+              prints the voices the provider's own list offers (id, name,
+              gender, age, use, languages) and exits; no synthesis. The
+              provider is --provider, else the reel's meta.voice.provider.
+              --lang keeps the voices whose list names that language; a
+              provider whose list has no language field shows every voice
+              and says so. The key is read from the environment, never printed.
 
 --provider overrides plan.json meta.voice.provider. If neither is given,
 voice.mjs auto-chooses: file (if voice/in/ has audio) ->
@@ -254,8 +263,29 @@ function keepOldSlots(dir, flags) {
   return false;
 }
 
+/**
+ * --list-voices [<reel-dir>] [--lang <code>] [--provider <name>]: the provider's own voice list.
+ * The provider is --provider, else the reel's plan.json meta.voice.provider.
+ */
+async function runListVoices(positional, flags) {
+  try {
+    if (typeof flags["list-voices"] === "string") positional.unshift(flags["list-voices"]);
+    let providerName = flags.provider;
+    if (!providerName && positional.length) providerName = (loadPlan(abs(positional[0])).meta.voice || {}).provider;
+    if (!providerName) throw new Error("--list-voices needs a provider: --provider typecast|elevenlabs, or a reel whose plan.json sets meta.voice.provider");
+    const lang = typeof flags.lang === "string" ? flags.lang : undefined;
+    process.stdout.write(await listVoicesReport(providerName, await loadProviderModule(providerName), { lang }));
+  } catch (e) {
+    fail(e.message);
+  }
+}
+
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
+  if (flags["list-voices"]) {
+    await runListVoices(positional, flags);
+    return;
+  }
   if (flags.help || flags.h || positional.length === 0) {
     printHelpAndExit(HELP, flags.help || flags.h ? 0 : 1);
     return;
@@ -618,8 +648,7 @@ export async function synthesizeAll({
     const leadTrimSec = !reused && !(finishedIds && finishedIds.has(line.id)) ? await trimLineClip(paths, line.id, wavPath) : 0;
     if (!reused && !(finishedIds && finishedIds.has(line.id))) await applyLineTempo(wavPath, line, lv.voiceCfg, lv.provider);
     if (!reused && lv.voiceCfg.levelLines !== false) {
-      const leveled = await levelLineWav(wavPath);
-      process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
+      process.stdout.write(formatLevelReport(line.id, await levelLineWav(wavPath)));
     }
 
     const prevLine = previousById.get(line.id);
@@ -1048,8 +1077,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     const leadTrimSec = await trimLineClip(paths, line.id, wavPath);
     await applyLineTempo(wavPath, line, voiceCfg, provider);
     if (voiceCfg.levelLines !== false) {
-      const leveled = await levelLineWav(wavPath);
-      process.stdout.write(`line "${line.id}" leveled: ${fmtLufs(leveled.beforeLufs)} -> ${fmtLufs(leveled.afterLufs)} LUFS\n`);
+      process.stdout.write(formatLevelReport(line.id, await levelLineWav(wavPath)));
     }
     // A retry that does not fit the slot is not a candidate: the previous best stays and the later lines do not move.
     if (slots.has(line.id) && !(await fitRetake(line.id, wavPath, slots.get(line.id), { borrow: false })).ok) {
@@ -1388,11 +1416,6 @@ export function lineTempo(line, voiceCfg, provider) {
   }
   if (voiceCfg.rate != null && !provider.nativeRate) return { factor: voiceCfg.rate, range: {} };
   return null;
-}
-
-/** "-16.0" or "n/a" for the leveling log line. */
-function fmtLufs(lufs) {
-  return lufs == null || !Number.isFinite(lufs) ? "n/a" : lufs.toFixed(1);
 }
 
 async function applyLineTempo(wavPath, line, voiceCfg, provider) {
