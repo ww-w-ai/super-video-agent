@@ -24,7 +24,7 @@ Runs the stages of a film in dependency order, unattended. Plan file (all paths 
         "done": "/abs/film/reel/dub/xx/voice/timings.json", "owns": ["/abs/film/reel/dub/xx"],
         "verify": { "json": true }, "maxResumes": 3 },
       { "name": "dub-xx", "kind": "job", "cmd": ["node", "/abs/skill/scripts/dub.mjs", "/abs/film/reel", "--lang", "xx"],
-        "needs": ["voice-xx"], "done": "/abs/film/reel/dub/xx/out/dub.wav", "heavy": true, "maxAttempts": 2 }
+        "needs": ["voice-xx"], "done": "/abs/film/reel/out/final-xx.mp4", "heavy": true, "maxAttempts": 2 }
     ]
   }
   kind session   one \`claude -p --output-format json\` run per stage, resumed by its session id (up to maxResumes)

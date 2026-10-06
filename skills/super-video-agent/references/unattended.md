@@ -26,7 +26,8 @@ Shape both to the film.
    from any session, waits, retries and logs. A session's background task is never the owner of a long
    job. Each session does one piece of judgment work and leaves one file.
 2. **One session, one job, one done-file.** Use the stage table's hand-off files as done-files
-   (`plan.json`, `voice/timings.json`, a review verdict). Write every done-file as an absolute path:
+   (`plan.json`, `voice/timings.json`, a review verdict; for a `dub.mjs --lang <code>` job,
+   `<reel>/out/final-<code>.mp4`, the file `dub.mjs` writes). Write every done-file as an absolute path:
    the runner refuses a relative one, and it appends `Done-file (absolute path): <path>` to the
    session's prompt so the session writes exactly the file the runner checks.
 3. **Jobs that depend on each other run one after another, each in a fresh session.** Jobs that
@@ -69,10 +70,10 @@ Shape both to the film.
 | Script | What it does |
 |---|---|
 | `run.mjs <plan.json> [--check] [--redo a,b]` | runs the stages of a film in dependency order, unattended; validates the plan with `--check`; prints the cost report at the end |
-| `lock.mjs run [options] -- <command>` / `lock.mjs status` | the render slot: one heavy job at a time per machine and user, fair order by priority then arrival, a dead owner's slot released and its leftover child processes stopped |
+| `lock.mjs run [options] -- <command>` / `lock.mjs status` | the render slot: one heavy job at a time per machine and user, fair order by priority then arrival, a dead owner's slot released and its leftover child processes stopped. Options: `--priority <n>` (higher first, default 0), `--label <text>` (shown in status), `--no-gpu` (wait for the slot only, never probe the GPU), `--poll <sec>` (how often to look again, default 5) |
 | `gpu-probe.mjs [--threshold <pct>] [--wait]` | reads how busy the machine's GPU is, whoever is using it (macOS `ioreg`, NVIDIA `nvidia-smi`); exit 0 idle, 2 busy, 3 no probe |
-| `queue.mjs list` / `queue.mjs remove --ids ...` | lists stale queue entries as facts, then removes exactly the entries you name |
-| `cost-report.mjs <film-dir>` | per stage: sessions, cost, session time, wall time, turns, tokens, flags; TTS usage when the synthesis tools logged it |
+| `queue.mjs list [--older-than <hours>]` / `queue.mjs remove --ids ...` | lists stale queue entries as facts (`--older-than` sets the age for the `older-than-<hours>` reason, default 24, `0` turns it off), then removes exactly the entries you name |
+| `cost-report.mjs <film-dir> [--results <dir>]` (results default `<film-dir>/results`) | per stage: sessions, cost, session time, wall time, turns, tokens, flags; TTS usage when the synthesis tools logged it |
 
 **The plan file** (`run.mjs`) is JSON, every path absolute: `dir` (state, logs, results, `status.txt`),
 `claude` and `claudeArgs` (the command for session stages), `maxParallel`, `lock`

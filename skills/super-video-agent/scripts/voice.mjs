@@ -67,9 +67,9 @@ voiced audio with the line ids around it; a pause the plan asks for (a line's
 pauseAfterMs) is listed as planned, not as a problem.
 
 --provider overrides plan.json meta.voice.provider. If neither is given,
-voice.mjs auto-chooses (design.md §2.3): file (if voice/in/ has audio) ->
+voice.mjs auto-chooses: file (if voice/in/ has audio) ->
 qwen3 (if its python venv is found and meta.voice.refAudio is set) -> fish
--> elevenlabs -> melotts (if its python venv is found); with none of these it
+-> elevenlabs -> typecast -> melotts (if its python venv is found); with none of these it
 stops and lists what to set up. say (macOS) runs only when asked for. It prints
 which provider it picked and why.
 

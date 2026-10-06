@@ -58,7 +58,11 @@ Further assembly techniques, each an example; a different or better way may be c
 ## Timeline JSON and the drift guard
 
 Generate `timeline.json` from the step data with one script, and have the page read it. Do not
-type step times into the page by hand: with many steps a hand edit goes unnoticed.
+type step times into the page by hand: with many steps a hand edit goes unnoticed. Scene code may
+not call `fetch` (`references/qa.md` "Gates"), so the page reads the file where it loads its other
+JSON: in the template's boot code, inside `ready`, call `loadJSON("timeline.json", true)` next to
+the `voice/timings.json` load, keep the result in a variable, and pass it to the guard and to the
+scene functions.
 
 ```
 {"steps": [{"id": "s01", "start": 0, "end": 4.2, "parts": ["p1", "p2"]}, ...], "duration": 312.4}

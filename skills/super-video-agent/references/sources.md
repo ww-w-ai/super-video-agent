@@ -78,6 +78,5 @@ Nothing to extract; the look is yours to choose.
 - One source per on-screen figure. When two sources give different values, pick one, write which
   and why in `FILM.md`, and use that value in the narration, the caption and the picture alike.
 - Research and news: check dates and figures against the primary official source and note the
-  reference date in `FILM.md`. Recommended: show the date next to a figure that changes (a price,
-  a ranking, a count) as "as of <month year>"; a film whose concept leaves no room for it keeps
-  the date in `FILM.md` only.
+  reference date in `FILM.md`. Whether the date also appears on screen is the film's call; one
+  option is "as of <month year>" next to a figure that changes (a price, a ranking, a count).

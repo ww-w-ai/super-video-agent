@@ -125,7 +125,8 @@ film.
 ## Named 2D techniques
 
 Users often describe a look by a technique seen on TV. These names mean different things; use
-the right one when you talk with the user and in `FILM.md`.
+the right one when you talk with the user and in `FILM.md`. These are examples, not a menu: pick
+one that fits the content, or use or invent another technique that suits this film better.
 
 | Name | What it is | Known examples |
 |---|---|---|
@@ -139,7 +140,7 @@ joints is called cut-out rigging. A cut-out figure moves well when its parts sha
 shade at every overlap, and when motion is eased with follow-through (a forearm trailing its
 shoulder) rather than switched pose to pose. A drawn figure that looks crude next to the rest of
 the frame can often be replaced by generated images cut into such parts. Name the technique for
-each scene in `FILM.md`; the rigs, the 3D route and the keyword rule for characters are in
+each scene in `FILM.md`; the rigs and the 3D route for characters are in
 `references/characters.md`.
 
 ## Failures real viewers called out on Opus-made films

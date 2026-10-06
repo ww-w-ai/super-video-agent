@@ -171,7 +171,7 @@ own characters adds a cast stage between voice and film.
 | Language dub (one film, several language versions) | after the base voice | the locked base `plan.json`, `voice/timings.json` | `dub/<code>/plan.json`, `voice/`, `out/final-<code>.mp4` | medium |
 
 The language dub stage is adaptation more than creation, so a lighter path is a good starting
-point: write the whole table of languages at once, make the voice without a review before it,
+point: write every language's `dub/<code>/plan.json` at once (no command scaffolds it; `references/pipeline.md` shows its shape), make the voice without a review before it,
 fix the lines that fail, and run one review focused on caption breaks (`references/pipeline.md`).
 Add passes where a language needs them; the creation stages keep their repeated review passes.
 
@@ -315,7 +315,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | Step | Script | Gives you |
 |---|---|---|
 | setup | `scripts/setup.mjs [--check] [--dir <reel>] [--stt-models]` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked; browser cache and render-folder disk, real GPU or software renderer (`SVA_GPU`), speech-to-text engines and models listed; `--dir` measures the reel's `out/`; `--stt-models` downloads the speech-to-text models. A browser script run before setup stops with one line naming this command |
-| scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--3d\|--testbed]` | page with contract + optional helpers; `--3d` scaffolds a WebGL/three.js reel, `--testbed` a page that shows the GLBs in `assets/models/` one view per second for the cast stage (`references/3d.md`) |
+| scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--title "..."] [--fps 30] [--3d\|--testbed]` | page with contract + optional helpers; `--title` sets the page title (default: the folder name) and `--fps` the frame rate (default 30); `--3d` scaffolds a WebGL/three.js reel, `--testbed` a page that shows the GLBs in `assets/models/` one view per second for the cast stage (`references/3d.md`) |
 | model facts | `scripts/glb-info.mjs <file.glb>` | roots, clips with lengths, node names as three.js's GLTFLoader sees them, morph targets, triangle counts — for the cast contract (`references/3d.md`) |
 | script check | `scripts/validate-plan.mjs <dir> [--estimate] [--listener]` — run before the voice | `plan.json` matches the schema; every `word:` cue names a word in its line; `--estimate` the film length before synthesis, `--listener` the ending and punctuation counts for pass 4 (`references/script-review.md`) |
 | voice | `scripts/voice.mjs <dir>` | per-line audio + measured `voice/timings.json`; takes, picking and pauses in a finished take (`references/voice.md`) |

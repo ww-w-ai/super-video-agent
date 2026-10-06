@@ -27,9 +27,8 @@ scores fit 8 or more for this event and this film's world (below, "Sound cards")
 design a new one for this film: pitch, envelope, length and layers, or a new synth voice written
 in the page, shaped from what is on screen (the object's size and material, how fast it moves,
 the film's music key). The fit check includes the film's world because the kit's effects and the
-library are starting points, not a palette to repeat: measured, one library pop sat in 27 cues
-across recent films, and every film's kit sfx sounded like the first film made (a basketball
-promo, because every kind's default seed was the literal kind name). `reel-audio.js` gives
+library are starting points, not a palette to repeat: one library pop reused across many cues
+makes every film's effects sound alike. `reel-audio.js` gives
 each kind's default seed a film key, so the same kind carries a character of its own per film —
 but that alone does not make a sound fit a *different* film's world, which is what the fit check
 catches.
@@ -171,8 +170,8 @@ size, material and speed, and does it belong to this film's world (§2, above �
 check that decides whether a library or kit sound may be reused as-is). With `TYPESAFE_API_KEY`
 set it asks Jev (TypeSafe AI's typed-judgment model) a two-level 0..1 question and passes at 0.8
 (equal to fit 8 on the 1-10 scale below); with only `OPENROUTER_API_KEY` set it asks Jev through
-OpenRouter's `typesafe/jev-1.13`, which scores 1-10 and passes at 8; with neither set — the normal
-case now — it writes `<reel>/sound-judge.md`, a self-contained scoring sheet, for the current
+OpenRouter's `typesafe/jev-1.13`, which scores 1-10 and passes at 8; with neither set (the usual
+case) it writes `<reel>/sound-judge.md`, a self-contained scoring sheet, for the current
 model to score 1-10 by hand (pass at 8), plus a `sound-scores.json` template to fill in. Cards
 that fail get a new sound made for this film instead — it only costs time.
 

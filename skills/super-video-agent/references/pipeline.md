@@ -416,7 +416,7 @@ drawing earlier segments too, since a page may read a string once and keep it. A
 copies a base segment without probing it when none of those reads is a key that language sets and
 none read `Reel.lang`; the other segments are probed as usual.
 This trusts the base picture's cache: after changing the page, render the base picture again
-first, or pass `--probe-all` to probe every segment as before.
+first, or pass `--probe-all` to probe every segment.
 
 Each language, including the first one, lives in its own folder:
 
@@ -426,6 +426,9 @@ Each language, including the first one, lives in its own folder:
                 #   and each line's own voice where that language needs one
   voice/        # voice.mjs <reel-dir>/dub/<code>  ->  line-<id>.wav + timings.json
 ```
+
+No command creates `dub/<code>/plan.json`. Write it yourself: copy the base `plan.json`, translate
+each line's `text` and `say`, and set `meta.lang` and `meta.voice`.
 
 The picture's time is the reference. `dub.mjs` fits each line in four steps, in this order:
 
@@ -548,7 +551,7 @@ language span. A neutral span is encoded once into `out/shared-spans/<key>-<a>-<
 every later language (the key covers the picture's path, size and modified time, the fps and the
 encoder arguments); only the language spans are captured and encoded per language, and everything is
 joined by stream copy with the frame count gated. A film with no neutral span of 1 s or more encodes
-whole, as before.
+whole.
 
 Each neutral span is probed for pixels the caption layer drew (every frame in a span under 10 s, else
 every 0.25 s); a span that has some becomes a language span and is reported. The run prints how many
@@ -584,9 +587,11 @@ timing field to override it, and the base line's own gap is shown for reference 
 It still writes the film either way. The last line has no gap and no gap warning: its slot runs on
 under the end card to the film's end.
 
-On a warning, rewrite that line's wording (shorter for a tight gap, longer for a scene left in
-silence) and re-make only that line (`voice.mjs <dir>/dub/<code> --lines <id>`), up to 3 rounds,
-without asking. The same wording can come out at quite different lengths on a hosted voice;
+On a warning, first try the free local fixes: a pause edit or a tempo change within the limits
+(`guides/audio-editing.md`). A flag alone, with no measured failure, never triggers a paid
+re-synthesis. When local editing cannot fix a measured failure, rewrite that line's wording (shorter
+for a tight gap, longer for a scene left in silence) and re-make only that line
+(`voice.mjs <dir>/dub/<code> --lines <id>`), up to 3 rounds, without asking the user. The same wording can come out at quite different lengths on a hosted voice;
 `--takes N` with `--pick-by length:<sec>` picks the take closest to a target
 (`references/voice.md` "Comparing takes").
 
@@ -690,8 +695,10 @@ nothing is written into the reel. Not with `--no-captions` or `--stub`.
 
 ### Determinism: `verify.mjs`
 
-`verify.mjs <dir> [--range <t0>-<t1> | --only <shotIds> | --world <key>]` runs the static scan, the
-warm determinism probe and the cold probe. `--only a,b` warms and probes exactly those shots (an
+`verify.mjs <dir> [--range <t0>-<t1> | --only <shotIds> | --world <key>] [--no-cue-check]` runs the
+static scan, the warm determinism probe and the cold probe. `--no-cue-check` turns off the warning
+that `assets/lib/cues.json` is out of date (`assets.mjs fetch` has not run since the cues changed),
+for a session that cannot run `assets.mjs`. `--only a,b` warms and probes exactly those shots (an
 unknown id fails and lists the page's ids); `--range` and `--world` narrow it by time or by world
 (`window.__reel.segments`); give at most one. The scan covers `reel.html` and every script under
 `src/`, skips bundled libraries (`src/vendor/`, `src/lib/three*`, `*.min.js`, `node_modules`) and lists
@@ -765,7 +772,7 @@ with no encode or no timings is skipped with the reason; exit 1 only when no cop
 
 ```
 srt.mjs build <dir> [--base | --dub <code>] [--line-chars <n>] [--max-lines <n>] [--out-dir <dir>]
-srt.mjs align <media> --script <file> --lang <code> [--out <file.srt>]
+srt.mjs align <media> --script <file> --lang <code> [--out <file.srt>] [--timings-out <json>]
 srt.mjs compare <a.srt> <b.srt> [...] [--tolerance <ms>]
 ```
 
@@ -779,7 +786,8 @@ srt.mjs compare <a.srt> <b.srt> [...] [--tolerance <ms>]
 - `align` makes an SRT for a video that already exists: speech-to-text times the words, the text is your
   script (`plan.json` / `timings.json` `lines[].text`, or plain text one line per row). A script line
   with under half its words found gets no cue and is listed as `low match`. It uses the same engine as
-  `voice.mjs` (`SVA_STT_ENGINE`, `SVA_STT_MODEL`; `references/voice.md`).
+  `voice.mjs` (`SVA_STT_ENGINE`, `SVA_STT_MODEL`; `references/voice.md`). `--timings-out <json>`
+  also writes the aligned lines as a `timings.json`-shaped file (`duration`, `lang`, `lines`).
 - `compare` reports cue count and time equality across SRT files; the first file is the reference.
 - Exit is non-zero only when an input cannot be read or the speech-to-text step cannot run.
 
@@ -804,7 +812,7 @@ Recorded sound effects and reaction clips ("짤") live outside the skill, in one
 `SVA_ASSET_LIB` when it is set, else `~/.super-video-agent/library` (the same folder under the
 home folder on every OS). Nothing in it ships with the skill, because most such files carry
 third-party rights, and it is kept outside the skill folder so an update never touches it.
-Without a library, everything works as before — synthesized effects only (`sound.md`) — and
+Without a library, everything works with synthesized effects only (`sound.md`), and
 `assets.mjs search`/`fetch`/`model` say where they looked and that
 `SVA_ASSET_LIB=<folder with catalog.json>` points them at another folder. The folder is never
 created for you.
@@ -876,7 +884,8 @@ them, marked `(k/n words)`.
 - A sound-only file's head silence (up to 0.3 s) is skipped, so the effect is heard on the cue.
   A clip keeps its own lead so its sound stays on its picture.
 - Every cue dips by `meta.sound.sfxDuckDb` (default -2.5dB, 0.8 s ramps) while a narration line
-  speaks, untouched in the gaps (`scripts/lib/duck.mjs`, shared with `dub.mjs`); the music bed
+  speaks; gaps under 1.5 s stay ducked, longer gaps return to full level (`scripts/lib/duck.mjs`,
+shared with `dub.mjs`); the music bed
   keeps its own, deeper -10dB duck. `references/sound.md` "Mix".
 
 ## Fonts

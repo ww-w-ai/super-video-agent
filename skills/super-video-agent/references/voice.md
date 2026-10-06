@@ -22,8 +22,8 @@ understand the voice" is a top public complaint).
 
 | Provider | Setup | Word timings |
 |---|---|---|
-| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film | speech-to-text |
-| `fishspeech` | `SVA_FISH_DIR`; `meta.voice.refTokens` (.npy) + `refText` | speech-to-text |
+| `qwen3` | `SVA_QWEN3_PYTHON` (path to a python venv with qwen3-tts installed); `meta.voice.refAudio` + `refText`; `model` 1.7B (default) or 0.6B (lighter, less clear); `SVA_QWEN3_MODEL` sets the default for every film; `SVA_QWEN3_DEVICE` sets the torch device (default `mps`) | speech-to-text |
+| `fishspeech` | `SVA_FISH_DIR`; `SVA_FISH_DEVICE` sets the torch device (default `mps`); `meta.voice.refTokens` (.npy) + `refText` | speech-to-text |
 | `melotts` | `SVA_MELO_PYTHON` | speech-to-text |
 | `fish` | `FISH_AUDIO_API_KEY` (or `FISH_API_KEY`), `FISH_AUDIO_VOICE_ID` (reference_id = clone id) | speech-to-text |
 | `elevenlabs` | `ELEVENLABS_API_KEY`, `ELEVENLABS_VOICE_ID` | engine alignment |
@@ -35,7 +35,7 @@ Hosted models (`meta.voice.model`):
 
 | Provider | Default | Other models | Cost |
 |---|---|---|---|
-| `fish` | `s2.1-pro-free` | `s2.1-pro` (its paid twin; set it once the free model ends), `s2-pro`, `s1` | billed per UTF-8 byte of input ($15 per million; Korean is 3 bytes a character). The default `s2.1-pro-free` is the same model at no cost while Fish Audio offers it (announced through 2026-11-30); its requests may be used to train their models. A private cloned voice can be created with an API key alone (POST /model); Fish's web app needs a paid plan for one |
+| `fish` | `s2.1-pro-free` | `s2.1-pro` (its paid twin), `s2-pro`, `s1` | billed per UTF-8 byte of input ($15 per million; Korean is 3 bytes a character). The default `s2.1-pro-free` is the same model at no cost while Fish Audio offers it (announced through 2026-11-30); its requests may be used to train their models. A private cloned voice can be created with an API key alone (POST /model); Fish's web app needs a paid plan for one |
 | `elevenlabs` | `eleven_multilingual_v2` | `eleven_v3`, `eleven_v4`, `eleven_flash_v2_5` | billed per character, tags included. Library voices work through the API only on a paid plan. A restricted API key needs the text-to-speech and voice permissions |
 | `typecast` | `ssfm-v30` | `ssfm-v21` (untested) | billed per character |
 
@@ -125,8 +125,8 @@ that reads no tags (qwen3, MeloTTS, say, Fish s1, ElevenLabs before v3) gets the
 any. The same plan works on every engine.
 
 ```json
-{ "id": "l14", "text": "텔레칩스도 할 수 있고, 해야 합니다.",
-  "say": "{confident} 텔레칩스도 할 수 있고, {pause} 해야 합니다." }
+{ "id": "l14", "text": "우리도 할 수 있고, 해야 합니다.",
+  "say": "{confident} 우리도 할 수 있고, {pause} 해야 합니다." }
 ```
 
 | Mark | Fish Audio S2 | ElevenLabs v3/v4 |

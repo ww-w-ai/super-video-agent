@@ -171,7 +171,7 @@
           "additionalProperties": false,
           "properties": {
             "bed": { "type": "boolean", "description": "true when the page's music bed plays from t=0. It counts as the lead's sound (meta.lead)." },
-            "sfxDuckDb": { "type": "number", "default": -6, "description": "Gain (dB) applied to library cue sounds while a narration line speaks, ~80ms ramps (references/sound.md \"Mix\"); 0 turns ducking off. The music bed keeps its own -10dB duck." }
+            "sfxDuckDb": { "type": "number", "default": -2.5, "description": "Gain (dB) applied to library cue sounds while a narration line speaks, 0.8 s ramps, narration gaps under 1.5 s stay ducked (references/sound.md \"Mix\"); 0 turns ducking off. The music bed keeps its own -10dB duck." }
           }
         }
       }

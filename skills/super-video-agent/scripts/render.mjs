@@ -50,7 +50,7 @@ Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
 joining them (concat demuxer, -c copy) into the video track, then muxing
 voice/narration.wav (+ page SFX via __reel.audio.renderSfx, + any library
-sound cues via __reel.soundCues(), design.md §2.5), mastered to -16 LUFS
+sound cues via __reel.soundCues()), mastered to -16 LUFS
 with a single static gain (two-pass, not loudnorm), aac 192k.
 
 --preview     half resolution, crf 28, preset veryfast -> out/preview-<YYYYMMDD-HHMMSS>.mp4

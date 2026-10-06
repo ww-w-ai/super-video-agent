@@ -31,7 +31,11 @@ the others you considered.
 
 A figure cut into parts (head, torso, upper and lower limbs), each part an image with a pivot at
 its joint, parented in a chain, each rotating about its pivot. Parts come from generated images
-of the figure, cut out and separated; they share one fabric and shade at every overlap.
+of the figure; they share one fabric and shade at every overlap. To make them: generate the
+figure in a neutral pose on a flat background (an image-generation tool of your choice), remove
+the background, then crop each part along its joint with any image tool or a short script, keeping
+a margin past each joint so the overlap hides the seam. Record each part's pivot in its own
+image as you crop.
 
 A bundled helper, offered as an example and not a required look: copy
 `scripts/engine/reel-rig.js` into the reel's `src/` and load it with `<script src="src/reel-rig.js">`
