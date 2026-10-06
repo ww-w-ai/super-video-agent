@@ -9,6 +9,20 @@ export function sha256(buf) {
 }
 
 /**
+ * Reads a `<t0>-<t1>` seconds value (verify.mjs / state-checks.mjs --range).
+ * Throws unless both are numbers and t1 > t0.
+ * @param {string|boolean|undefined} value
+ * @returns {{from: number, to: number}}
+ */
+export function parseTimeRange(value) {
+  const m = typeof value === "string" ? /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(value) : null;
+  const from = m ? Number(m[1]) : NaN;
+  const to = m ? Number(m[2]) : NaN;
+  if (!m || !(to > from)) throw new Error(`--range takes <t0>-<t1> seconds with t1 > t0, e.g. --range 42-61.5 (got "${value}")`);
+  return { from, to };
+}
+
+/**
  * Build >=12 probe times covering shot boundaries and boil-bucket edges.
  * @param {{start:number,end:number,readAt:number}[]} shots
  * @param {number} duration

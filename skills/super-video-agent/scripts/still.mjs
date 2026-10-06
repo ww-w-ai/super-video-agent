@@ -6,13 +6,13 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, warmShotsOf, glIssues, glReportLines } from "./lib/browser.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { pictureUrl } from "./render.mjs";
 
 const DEFAULT_SHEET_CELL = 540;
 
-const HELP = `usage: still.mjs <reel-dir> --at <t|shotId>[,<t|shotId>...] [--out <png>] [--stub <sec>] [--no-captions]
+const HELP = `usage: still.mjs <reel-dir> --at <t|shotId>[,<t|shotId>...] [--out <png> | --out-dir <dir>] [--stub <sec>] [--no-captions] [--no-warm]
        still.mjs --sheet <out.png> <a.png> <b.png> ... [--cols N] [--cell <px>]
 
 Renders frames of <reel-dir>/reel.html at time \`t\` (seconds) or at a
@@ -20,6 +20,12 @@ shot's readAt (pass the shot id) and writes each as a PNG. Several --at
 values share one browser session.
 Default output is <reel-dir>/out/still-<at>.png per value (still-<at>-nocap.png
 with --no-captions). --out applies only when a single --at value is given.
+--out-dir <dir> writes the per-value files into <dir> instead of <reel-dir>/out.
+Only the shots the --at values fall in are warmed up (two throwaway seeks each);
+--no-warm skips even that.
+If the page logs a WebGL error (GL_INVALID_*, lost context) the frames are wrong:
+the files are still written, the error is printed and the exit code is 1. Other
+WebGL warnings are printed and do not change the exit code.
 
 --stub <sec>  for a reel with no voice/timings.json (a picture-only probe):
               the page is served one silent line of <sec> seconds with id
@@ -71,19 +77,31 @@ export async function main(argv) {
     return;
   }
 
+  if (flags.out && flags["out-dir"]) {
+    fail("--out names one file and --out-dir a folder for several; use one");
+    return;
+  }
+  if (flags["out-dir"] !== undefined && typeof flags["out-dir"] !== "string") {
+    fail("--out-dir takes a folder, e.g. --out-dir /tmp/stills");
+    return;
+  }
+  const outDir = flags["out-dir"] ? abs(flags["out-dir"]) : paths.outDir;
   const noCaptions = !!flags["no-captions"];
   const server = await serveDir(dir);
   let session;
   try {
-    session = await openReel(pictureUrl(server.url, noCaptions), { stubSec });
-    for (const at of ats) {
-      const t = resolveAt(at, session.meta.shots);
+    // Warm-up is two throwaway seeks per shot; only the shots this run captures need it.
+    session = await openReel(pictureUrl(server.url, noCaptions), { stubSec, warm: false });
+    const targets = ats.map((at) => ({ at, t: resolveAt(at, session.meta.shots) }));
+    if (!flags["no-warm"]) await warmShotsOf(session, shotsAt(session.meta.shots, targets.map((x) => x.t)));
+    for (const { at, t } of targets) {
       const png = await captureFrame(session.page, t);
-      const outPath = flags.out ? abs(flags.out) : path.join(paths.outDir, stillFileName(at, noCaptions));
+      const outPath = flags.out ? abs(flags.out) : path.join(outDir, stillFileName(at, noCaptions));
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, png);
       process.stdout.write(`wrote ${outPath} (t=${t.toFixed(3)}s)\n`);
     }
+    reportGl(session);
   } catch (e) {
     fail(e.message);
   } finally {
@@ -135,6 +153,33 @@ async function sheetMain(flags, positional) {
     process.stdout.write(`wrote ${args.outPath} (${frames.length} PNGs)\n`);
   } catch (e) {
     fail(e.message);
+  }
+}
+
+/**
+ * Ids of the shots that cover the times `ts` (start <= t < end; the last
+ * shot also covers its end). A time in no shot warms nothing.
+ * @param {{id: string, start: number, end: number}[]} shots
+ * @param {number[]} ts
+ */
+export function shotsAt(shots, ts) {
+  const last = shots.length - 1;
+  const ids = new Set();
+  for (const t of ts) {
+    const i = shots.findIndex((s, k) => t >= s.start && (t < s.end || (k === last && t <= s.end)));
+    if (i !== -1) ids.add(shots[i].id);
+  }
+  return [...ids];
+}
+
+// WebGL messages the page logged: a GL error means the frames just written are wrong (exit 1);
+// other GL warnings are reported for the reviewer.
+function reportGl(session) {
+  const issues = glIssues(session);
+  for (const l of glReportLines(issues)) process.stderr.write(`${l}\n`);
+  if (issues.definite.length) {
+    process.stderr.write("DIAGNOSIS: the page logged a WebGL error while drawing — the frame above is wrong (a failed draw leaves it blank or partial).\n");
+    process.exitCode = 1;
   }
 }
 

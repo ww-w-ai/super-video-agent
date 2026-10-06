@@ -17,6 +17,119 @@ export function readyTimeoutMs(env = process.env) {
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_READY_TIMEOUT_MS;
 }
 
+// A failed WebGL draw reaches the console as a warning, not an error, so an
+// errors-only listener passes a frame that drew nothing.
+const GL_MESSAGE = /webgl|\bGL[ _:]|\bgl[A-Z]\w*\s*[(:]|glsl|shader|drawElements|drawArrays|framebuffer|INVALID_(?:OPERATION|VALUE|ENUM)/i;
+const GL_NOISE = /GPU stall due to ReadPixels/i;
+// What a GL message must say for the frame to be definitely wrong.
+const GL_DEFINITE = /INVALID_(?:OPERATION|VALUE|ENUM|FRAMEBUFFER_OPERATION)|CONTEXT[_ ]LOST|OUT_OF_MEMORY/i;
+
+/**
+ * Records a console message in `gl` when it is a WebGL one: warnings and
+ * errors that name a GL call or state. definite = a GL error code or a lost
+ * context (the frame is wrong); any other GL message is a warning to report.
+ * @param {Map<string, {text: string, definite: boolean, count: number}>} gl
+ * @param {string} type console message type
+ * @param {string} text
+ */
+export function noteGlMessage(gl, type, text) {
+  if (type !== "warning" && type !== "error") return;
+  if (!GL_MESSAGE.test(text) || GL_NOISE.test(text)) return;
+  const key = text.replace(/0x[0-9a-f]+/gi, "0x…").replace(/\d{3,}/g, "N");
+  const seen = gl.get(key);
+  if (seen) seen.count++;
+  else gl.set(key, { text, definite: GL_DEFINITE.test(text), count: 1 });
+}
+
+/**
+ * The session's WebGL console messages so far, split into definite (a GL
+ * error: the frame is wrong, stop the step) and warnings (report).
+ * @param {{gl: Map<string, {text: string, definite: boolean, count: number}>}} session
+ */
+export function glIssues(session) {
+  const all = [...session.gl.values()];
+  return { definite: all.filter((g) => g.definite), warnings: all.filter((g) => !g.definite) };
+}
+
+/**
+ * Report lines for glIssues(): "GL error: ..." for each definite one,
+ * "GL warning: ..." for the rest; empty when the page logged none.
+ * @param {ReturnType<typeof glIssues>} issues
+ */
+export function glReportLines(issues) {
+  const line = (kind, g) => `${kind}: ${g.text.slice(0, 300)}${g.count > 1 ? ` (x${g.count})` : ""}`;
+  return [...issues.definite.map((g) => line("GL error", g)), ...issues.warnings.map((g) => line("GL warning", g))];
+}
+
+const GPU_MODES = ["default", "gpu", "swiftshader"];
+
+/**
+ * Chromium launch options from the environment (the skill's render config).
+ *   SVA_GPU          default (Playwright's own flags) | gpu (ask for the real GPU:
+ *                    ignore the GPU blocklist, GPU raster; ANGLE on Metal / EGL) |
+ *                    swiftshader (force the software renderer).
+ *   SVA_CHROME_ARGS  extra Chromium flags, space separated, added last.
+ * @param {Record<string, string|undefined>} env
+ * @param {string} [platform]
+ */
+export function chromeLaunchOptions(env = process.env, platform = process.platform) {
+  const mode = (env.SVA_GPU || "default").toLowerCase();
+  if (!GPU_MODES.includes(mode)) throw new Error(`SVA_GPU takes ${GPU_MODES.join(" | ")} (got "${env.SVA_GPU}")`);
+  const args = [];
+  const opts = { headless: true, args };
+  if (mode === "gpu") {
+    args.push("--ignore-gpu-blocklist", "--enable-gpu-rasterization", "--enable-zero-copy");
+    if (platform === "darwin") args.push("--use-angle=metal");
+    else if (platform === "linux") args.push("--use-gl=angle", "--use-angle=gl-egl");
+    opts.ignoreDefaultArgs = ["--disable-gpu"];
+  } else if (mode === "swiftshader") {
+    args.push("--use-angle=swiftshader", "--enable-unsafe-swiftshader");
+  }
+  if (env.SVA_CHROME_ARGS) args.push(...env.SVA_CHROME_ARGS.split(/\s+/).filter(Boolean));
+  return opts;
+}
+
+/** Whether a WebGL renderer string names a software rasteriser. */
+export function isSoftwareRenderer(name) {
+  return /swiftshader|llvmpipe|softpipe|software|basic render/i.test(name || "");
+}
+
+/**
+ * Opens a blank page with the launch options render pages use and reads the
+ * WebGL renderer: {webgl, renderer, vendor, software, mode, args}. A fact for
+ * `setup.mjs --check`; nothing here fails.
+ * @param {Record<string, string|undefined>} [env]
+ */
+export async function gpuReport(env = process.env) {
+  const chromium = await getChromium();
+  const opts = chromeLaunchOptions(env);
+  const browser = await chromium.launch(opts);
+  try {
+    const page = await browser.newPage();
+    const info = await page.evaluate(() => {
+      const gl = document.createElement("canvas").getContext("webgl");
+      if (!gl) return { webgl: false, renderer: "", vendor: "" };
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      return {
+        webgl: true,
+        renderer: String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)),
+        vendor: String(ext ? gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR)),
+      };
+    });
+    return { ...info, software: !info.webgl || isSoftwareRenderer(info.renderer), mode: env.SVA_GPU || "default", args: opts.args };
+  } finally {
+    await browser.close();
+  }
+}
+
+// Runs in the page: waits for the optional window.__reel.preload (a promise,
+// or a function returning one) — ImageBitmaps decoded after `ready`, so the
+// first seek of a cold page draws what every later seek draws.
+async function awaitPreload() {
+  const p = window.__reel.preload;
+  await (typeof p === "function" ? p() : p);
+}
+
 /**
  * Resolves or rejects with `promise`, or rejects after `ms` with an error
  * naming `step`. A late rejection of `promise` is swallowed, so a page
@@ -113,7 +226,7 @@ export function stubSeconds(value, timingsPath, exists) {
  */
 export async function openReel(url, opts = {}) {
   const chromium = await getChromium();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(chromeLaunchOptions(process.env));
   const page = await browser.newPage({
     viewport: {
       width: opts.width || 1080,
@@ -121,8 +234,10 @@ export async function openReel(url, opts = {}) {
     },
   });
   const errors = [];
+  const gl = new Map(); // WebGL console messages: text -> {text, definite, count}
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("console", (msg) => {
+    noteGlMessage(gl, msg.type(), msg.text());
     if (msg.type() !== "error") return;
     // Chromium logs its own "Failed to load resource: ...404..." console
     // error for ANY failed fetch, including the page's intentionally
@@ -176,6 +291,7 @@ export async function openReel(url, opts = {}) {
     page,
     meta,
     errors,
+    gl,
     warmUp: [],
     warmed: new Set(),
     pictureReads,
@@ -299,6 +415,8 @@ async function waitUntilReady({ page, browser, url, errors, ms }) {
     );
     step = "await window.__reel.ready";
     await withTimeout(page.evaluate(async () => { await window.__reel.ready; }), ms, step);
+    step = "await window.__reel.preload";
+    await withTimeout(page.evaluate(awaitPreload), ms, step);
   } catch (e) {
     await browser.close();
     const pageErrors = errors.length ? `\npage error(s):\n  ${errors.join("\n  ")}` : "\n(no page error was reported)";

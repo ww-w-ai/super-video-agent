@@ -38,14 +38,18 @@ export async function installTextProbe(page) {
 
 /**
  * Seeks every `step`th frame and returns the page state at each: the texts drawn by that seek and
- * the optional hook's visible-element list.
+ * the optional hook's visible-element list. `range` ({from, to} seconds) limits the frames to that
+ * span; `onProgress(done, total)` is called after each sampled frame.
  * @returns {Promise<{frames:{frame:number, t:number, texts:object[], layers:object[]|null}[], hook:boolean}>}
  */
-export async function collectFrameStates(page, { fps, duration, step }) {
+export async function collectFrameStates(page, { fps, duration, step, range = null, onProgress = null }) {
   const hook = await page.evaluate(() => typeof window.__reel.visibleAt === "function");
-  const last = Math.max(0, Math.ceil(duration * fps - 1e-9) - 1);
+  const end = Math.max(0, Math.ceil(duration * fps - 1e-9) - 1);
+  const first = range ? Math.min(end, Math.ceil(range.from * fps - 1e-9)) : 0;
+  const last = range ? Math.min(end, Math.floor(range.to * fps + 1e-9)) : end;
+  const total = Math.floor((last - first) / step) + 1;
   const frames = [];
-  for (let frame = 0; frame <= last; frame += step) {
+  for (let frame = first; frame <= last; frame += step) {
     const t = frame / fps;
     const state = await page.evaluate(async (time) => {
       window.__svaProbe.texts.length = 0;
@@ -66,6 +70,7 @@ export async function collectFrameStates(page, { fps, duration, step }) {
       if (!e || typeof e.id !== "string" || !e.id) throw new Error(`window.__reel.visibleAt(${t.toFixed(3)})[${i}] has no "id" string`);
     }
     frames.push({ frame, t, texts: state.texts, layers: state.layers });
+    if (onProgress) onProgress(frames.length, total);
   }
   return { frames, hook };
 }

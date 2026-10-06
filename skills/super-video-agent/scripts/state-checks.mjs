@@ -8,14 +8,20 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, stubSeconds } from "./lib/browser.mjs";
+import { openReel, stubSeconds, glIssues, glReportLines } from "./lib/browser.mjs";
+import { parseTimeRange } from "./lib/determinism.mjs";
 import { installTextProbe, collectFrameStates, glyphCoverage } from "./lib/page-probe.mjs";
 import { textOverlapSpans, glyphFallbacks, findFlicker, visibleKeys, formatStateChecks, namedFamilies, checkedNothingReasons,
   regionCovers, regionScope, coverNothingReason, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage } from "./lib/state-checks.mjs";
 import { gatherSources, visibilitySourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 
 const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--step <frames>] [--fps <n>]
-                        [--source-only] [--no-source] [--out <json>] [--stub <sec>] [--outline-em <n>]
+                        [--range <t0>-<t1>] [--source-only] [--no-source] [--out <json>] [--stub <sec>] [--outline-em <n>]
+
+--range <t0>-<t1> reads the frame checks (overlap, glyphs, flicker) only between t0 and t1 seconds
+(e.g. --range 42-61.5); the other checks are unchanged. Progress goes to stderr about every 10 s
+("frames 1200/4800 (25%, 31 s)"). WebGL console warnings and errors the page logged are printed
+to stderr; they do not change the exit code here.
 
 Five checks. The first three read the page's state at every frame (default every frame; --step N samples every Nth):
   overlap  text boxes that overlap other text boxes, per pair: the spans and the shared px²
@@ -64,6 +70,23 @@ Writes <reel-dir>/out/state-checks.json.
 
 const CHECKS = ["overlap", "glyphs", "flicker", "covers", "langglyphs"];
 const FRAME_CHECKS = ["overlap", "glyphs", "flicker"];
+
+/**
+ * A progress callback for collectFrameStates: a line on stderr (stdout stays the
+ * findings) about every 10 s and at the end, e.g. "frames 1200/4800 (25%, 31 s)".
+ * @param {() => number} [now] ms clock (tests replace it)
+ * @param {(line: string) => void} [write]
+ */
+export function progressPrinter(now = Date.now, write = (l) => process.stderr.write(l)) {
+  const started = now();
+  let lastPrinted = started;
+  return (done, total) => {
+    const t = now();
+    if (done !== total && t - lastPrinted < 10000) return;
+    lastPrinted = t;
+    write(`frames ${done}/${total} (${Math.round((done / total) * 100)}%, ${Math.round((t - started) / 1000)} s)\n`);
+  };
+}
 
 /** window.__reel.regions (an array, or a function returning one), or []. */
 async function pageDeclared(page, name) {
@@ -138,6 +161,12 @@ export async function main(argv) {
   if (bad) return fail(`--only takes ${CHECKS.join(", ")} (got "${bad}")`);
   const step = flags.step === undefined ? 1 : Number(flags.step);
   if (!Number.isInteger(step) || step < 1) return fail(`--step takes a whole number of frames ≥ 1 (got "${flags.step}")`);
+  let range = null;
+  try {
+    if (flags.range !== undefined) range = parseTimeRange(flags.range);
+  } catch (e) {
+    return fail(e.message);
+  }
   const outPath = typeof flags.out === "string" ? abs(flags.out) : path.join(paths.outDir, "state-checks.json");
   const result = { reel: paths.reelHtml, checks: only };
 
@@ -166,10 +195,12 @@ export async function main(argv) {
     const report = { step, fps, duration };
     const frameChecks = only.filter((c) => FRAME_CHECKS.includes(c));
     let frames = [], hook = false;
+    if (range) report.range = range;
     if (frameChecks.length) {
       await installTextProbe(session.page);
-      ({ frames, hook } = await collectFrameStates(session.page, { fps, duration, step }));
+      ({ frames, hook } = await collectFrameStates(session.page, { fps, duration, step, range, onProgress: progressPrinter() }));
     }
+    for (const l of glReportLines(glIssues(session))) process.stderr.write(`${l}\n`);
     report.sampledFrames = frames.length;
     if (frameChecks.length) report.nothing = checkedNothingReasons({ frames, checks: frameChecks, hasLayerHook: hook });
     if (only.includes("covers")) await reportCovers(session.page, report, duration);

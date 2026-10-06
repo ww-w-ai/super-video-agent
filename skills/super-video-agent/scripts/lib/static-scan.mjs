@@ -4,6 +4,7 @@
 // but the point of the contract is to police what scene authors write)
 // and checks it against the banned-token list.
 import fs from "node:fs";
+import path from "node:path";
 
 const BANNED = [
   { name: "Math.random", re: /Math\.random\s*\(/g, hardLimit: 0 },
@@ -18,17 +19,42 @@ const BANNED = [
   { name: "fetch", re: /\bfetch\s*\(/g, hardLimit: 1 },
 ];
 
+const SRC_SKIP = new Set(["node_modules", "out", ".git"]);
+
+/** Every .js/.mjs file under <reel-dir>/src, as [path, text]. */
+function readSrcFiles(reelDir) {
+  const out = [];
+  const walk = (d) => {
+    if (!fs.existsSync(d)) return;
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (SRC_SKIP.has(e.name)) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.m?js$/.test(e.name)) out.push([p, fs.readFileSync(p, "utf8")]);
+    }
+  };
+  walk(path.join(reelDir, "src"));
+  return out;
+}
+
 /**
+ * Scans the SCENE block of reel.html and every script under <reel-dir>/src
+ * (a reel that keeps its scenes in src/*.js is scene code too). Token counts
+ * are summed over all of them against the same limits.
  * @param {string} reelHtmlPath
- * @returns {{ok: boolean, violations: {name:string,count:number,limit:number}[], sceneFound: boolean}}
+ * @returns {{ok: boolean, violations: {name:string,count:number,limit:number}[], sceneFound: boolean, srcFiles: number, scannedChars: number}}
+ *   scannedChars = scene-block characters + src characters; 0 means nothing was checked.
  */
 export function scanReelHtml(reelHtmlPath) {
   const html = fs.readFileSync(reelHtmlPath, "utf8");
   const { scene, sceneFound } = extractScene(html);
+  const src = readSrcFiles(path.dirname(reelHtmlPath));
+  const code = [scene, ...src.map(([, text]) => text)].join("\n");
+  const scannedChars = (sceneFound ? scene.replace(/\/\*\s*SCENE:(?:BEGIN|END)\s*\*\//g, "").trim().length : 0) + src.reduce((n, [, t]) => n + t.trim().length, 0);
 
   const violations = [];
   for (const rule of BANNED) {
-    const matches = scene.match(rule.re) || [];
+    const matches = code.match(rule.re) || [];
     if (matches.length > rule.hardLimit) {
       violations.push({ name: rule.name, count: matches.length, limit: rule.hardLimit });
     }
@@ -44,7 +70,7 @@ export function scanReelHtml(reelHtmlPath) {
     violations.push({ name: "css-animation", count: cssAnim.length, limit: 0 });
   }
 
-  return { ok: violations.length === 0, violations, sceneFound };
+  return { ok: violations.length === 0, violations, sceneFound, srcFiles: src.length, scannedChars };
 }
 
 /** Isolates the SCENE:BEGIN..SCENE:END block from a reel.html string. */

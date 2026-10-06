@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Install what the skill needs into its own folder, then check the tools it cannot install.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
 import { mlxModelCached, MLX_MODEL_REPOS } from "./lib/stt-engine.mjs";
+import { gpuReport } from "./lib/browser.mjs";
 
 const HELP = `usage: setup.mjs [--check] [--stt-models]
 
@@ -14,6 +16,15 @@ Makes this skill folder ready to run:
   2. playwright-core in <skill>/node_modules (npm ci from package-lock.json)
   3. Playwright's Chromium
   4. ffmpeg and ffprobe on PATH (checked only; install them yourself)
+
+Both modes also report the Playwright browser cache folder (PLAYWRIGHT_BROWSERS_PATH
+or the OS default) and the free disk there and in the current folder: under 0.8 GB
+at the cache blocks the Chromium install (ENOSPC), under 5 GB in the working folder
+warns. A deleted cache shows as Chromium missing, with the folder named.
+They also report whether rendering uses a real GPU or a software renderer
+(SwiftShader), from a WebGL probe in the render browser. SVA_GPU=gpu asks Chromium
+for the real GPU (default = Playwright's flags; swiftshader forces software);
+SVA_CHROME_ARGS adds raw Chromium flags. Information only.
 
 --check        report what is missing without installing anything.
 --stt-models   download the mlx-whisper models (small, turbo) into the Hugging
@@ -42,8 +53,14 @@ export async function main(argv) {
 
   if (!nodeIsRecent()) missing.push(`Node 22+ (this is ${process.versions.node})`);
   if (!hasPlaywright() && (!install || !installPlaywright())) missing.push("playwright-core");
-  if (hasPlaywright() && !(await hasChromium()) && (!install || !installChromium())) missing.push("Chromium for Playwright");
+  const cache = browserCacheStatus(process.env);
+  for (const line of diskLines(cache, workStatus())) console.log(line);
+  if (hasPlaywright() && !(await hasChromium())) {
+    if (install && cache.low) missing.push(chromiumMissingHint(cache, "no room to install it"));
+    else if (!install || !installChromium()) missing.push(chromiumMissingHint(cache, install ? "the install failed" : "not installed"));
+  }
   for (const tool of ["ffmpeg", "ffprobe"]) if (!onPath(tool)) missing.push(`${tool} on PATH (macOS: brew install ffmpeg; Debian/Ubuntu: apt install ffmpeg)`);
+  if (hasPlaywright() && (await hasChromium())) for (const line of await renderingLines(process.env)) console.log(line);
 
   for (const line of sttReport(process.env)) console.log(line);
   if (flags["stt-models"] && install && !installSttModels(process.env)) missing.push("STT models (download failed or SVA_STT_PYTHON not set)");
@@ -53,6 +70,88 @@ export async function main(argv) {
     return;
   }
   console.log(`ready: ${SKILL_DIR}`);
+}
+
+const CHROMIUM_NEED_BYTES = 800 * 1024 ** 2; // a Chromium download plus its unpacked copy
+const WORKDIR_WARN_BYTES = 5 * 1024 ** 3; // renders write PNG frames and mp4 files
+
+/**
+ * Where Playwright keeps its browsers: PLAYWRIGHT_BROWSERS_PATH when set,
+ * else the per-OS default cache folder.
+ * @param {Record<string,string|undefined>} env
+ * @param {string} [platform]
+ * @param {string} [home]
+ */
+export function playwrightCacheDir(env, platform = process.platform, home = os.homedir()) {
+  if (env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0") return path.resolve(env.PLAYWRIGHT_BROWSERS_PATH);
+  if (platform === "darwin") return path.join(home, "Library", "Caches", "ms-playwright");
+  if (platform === "win32") return path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "ms-playwright");
+  return path.join(env.XDG_CACHE_HOME || path.join(home, ".cache"), "ms-playwright");
+}
+
+/** Free bytes on the volume holding `p` (its nearest existing parent); null when unreadable. */
+export function freeBytes(p) {
+  let dir = path.resolve(p);
+  while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+  try {
+    const s = fs.statfsSync(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
+
+/** {dir, exists, free, low}: the Playwright cache folder, whether it exists, free bytes, and whether that is too little for a Chromium install. */
+function browserCacheStatus(env) {
+  const dir = playwrightCacheDir(env);
+  const free = freeBytes(dir);
+  return { dir, exists: fs.existsSync(dir), free, low: free !== null && free < CHROMIUM_NEED_BYTES };
+}
+
+function workStatus() {
+  const free = freeBytes(process.cwd());
+  return { dir: process.cwd(), free, low: free !== null && free < WORKDIR_WARN_BYTES };
+}
+
+const gb = (n) => `${(n / 1024 ** 3).toFixed(1)} GB`;
+
+/**
+ * Lines about the Playwright cache folder and free disk (information; a low
+ * cache volume blocks the Chromium install, a low working volume only warns).
+ * @param {{dir: string, exists: boolean, free: number|null, low: boolean}} cache
+ * @param {{dir: string, free: number|null, low: boolean}} work
+ */
+export function diskLines(cache, work) {
+  const lines = [`Playwright browser cache: ${cache.dir} (${cache.exists ? "exists" : "does not exist yet"}), ${cache.free === null ? "free space unknown" : `${gb(cache.free)} free`}`];
+  if (cache.low) lines.push(`  warning: under ${gb(CHROMIUM_NEED_BYTES)} free there — the Chromium install fails with ENOSPC. Free space or set PLAYWRIGHT_BROWSERS_PATH to a roomier folder.`);
+  lines.push(`working folder ${work.dir}: ${work.free === null ? "free space unknown" : `${gb(work.free)} free`}`);
+  if (work.low) lines.push(`  warning: under ${gb(WORKDIR_WARN_BYTES)} free — renders write PNG frames and mp4 files and stop with ENOSPC when the disk fills.`);
+  return lines;
+}
+
+/** The "not ready" entry for a missing Chromium, with what to do about the cache. */
+export function chromiumMissingHint(cache, why) {
+  const gone = cache.exists ? "" : ` The cache folder ${cache.dir} is missing (a cleaned or moved cache deletes the browser).`;
+  return `Chromium for Playwright (${why}).${gone} Run: node ${path.join(SKILL_DIR, "scripts", "setup.mjs")}${cache.low ? " after freeing disk space" : ""}`;
+}
+
+/**
+ * Lines on whether rendering uses a real GPU or a software renderer
+ * (SwiftShader), read from a blank page opened with the render launch options.
+ * Information only; a probe failure is reported, never thrown.
+ * @param {Record<string,string|undefined>} env
+ */
+export async function renderingLines(env) {
+  let r;
+  try {
+    r = await gpuReport(env);
+  } catch (e) {
+    return [`rendering: could not probe WebGL (${String(e.message).split("\n")[0]})`];
+  }
+  const what = !r.webgl ? "no WebGL" : r.software ? `software renderer (${r.renderer})` : `real GPU (${r.renderer})`;
+  const lines = [`rendering: ${what}; SVA_GPU=${r.mode}${r.args.length ? `, flags ${r.args.join(" ")}` : ""}`];
+  if (r.software) lines.push("  3D reels render slowly on a software renderer. For a real GPU set SVA_GPU=gpu (extra flags: SVA_CHROME_ARGS=\"...\") and run setup.mjs --check again; on a Linux server the NVIDIA driver must be installed and visible to Chromium.");
+  return lines;
 }
 
 function importsMlxWhisper(python) {
@@ -106,7 +205,14 @@ function installPlaywright() {
 
 async function hasChromium() {
   const { chromium } = await import(pathToFileURL(path.join(PW_DIR, "index.mjs")).href);
-  return fs.existsSync(chromium.executablePath());
+  if (fs.existsSync(chromium.executablePath())) return true;
+  // Headless runs use the separate headless shell build, which executablePath() does not name.
+  try {
+    await (await chromium.launch({ headless: true })).close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function installChromium() {
