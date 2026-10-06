@@ -10,6 +10,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
@@ -18,7 +19,7 @@ import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, war
 import { createSessionPool } from "./lib/session-pool.mjs";
 import {
   run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
-  uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5,
+  uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5, probeGops, keyframeInterval,
 } from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
@@ -119,8 +120,15 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               Each touched segment's cache (mp4 + probe hashes) is updated, so a
               later render reuses it. Needs every segment rendered once and
               their frame ranges unchanged, else it stops and names them. Not
-              with --only, --insert, --use-draft, --handle or --lang. With
-              --plan: prints the span plan and exits.
+              with --only, --insert, --use-draft, --handle or --probe-all. With
+              --no-captions --lang <code> it redraws spans of that language's
+              picture (out/segments-<code>/, which must hold every segment
+              once: render --lang first; unchanged segments are copied from
+              the base). The page gets that language's strings; a rebuilt
+              segment keeps the strings its cached frames read and adds the
+              ones the new frames read. Use it for in-scene text (langSpans
+              in:"scene"): only those seconds are drawn again. With --plan:
+              prints the span plan and exits.
 --fix-picture-duration
               with --no-captions: when the picture length (the page's shots)
               differs from the timings duration by more than 50 ms the render
@@ -471,7 +479,7 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
     return { draftsOnly: true, drafts };
   }
   if (spans) {
-    return await renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
+    return await renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, lang, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
   }
   if (assemble) {
     return await renderAssembled({ dir, paths, pool, segments, segDir, edlPath: assemble, plan, fps, crf, preset: cPreset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
@@ -1095,13 +1103,13 @@ export function parseSpanFlag(value) {
 }
 
 const MODE_REFUSES = {
-  span: ["only", "insert", "use-draft", "handle", "lang", "probe-all", "assemble", "bed-only"],
+  span: ["only", "insert", "use-draft", "handle", "probe-all", "assemble", "bed-only"],
   assemble: ["only", "insert", "use-draft", "handle", "lang", "probe-all", "span", "bed-only", "stub"],
   "bed-only": ["only", "insert", "use-draft", "handle", "probe-all", "span", "assemble", "stub", "plan"],
 };
 
 /** Stops (throws) when a mode that works on the whole film is combined with a flag it cannot honour. */
-function assertWholeFilmFlags(mode, flags) {
+export function assertWholeFilmFlags(mode, flags) {
   for (const f of MODE_REFUSES[mode]) {
     if (flags[f] !== undefined) throw new Error(`--${mode} works on the film as a whole; it does not combine with --${f}`);
   }
@@ -1211,6 +1219,19 @@ export async function spliceSpanPieces({ pieces, oldPath, renderNew, fps, crf, p
   return joined;
 }
 
+/**
+ * The per-string read record a span-rebuilt segment stores. Frames cut from the
+ * cache keep the reads recorded for them (union with this session's reads, which
+ * only grows the record: a later render then probes more, never less); a
+ * segment with no record cannot claim one for its cached frames, so it stays
+ * without. A segment the span covers whole is described by the session alone.
+ * @param {{stored: object|null, sessionReads: object|null, pieces: {kind: string}[]}} args
+ */
+export function spanPictureReads({ stored, sessionReads, pieces }) {
+  if (pieces.every((p) => p.kind === "new")) return sessionReads;
+  return stored && stored.picture ? mergePictureReads(stored.picture, sessionReads) : null;
+}
+
 async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, scaleFilter, width, height, headerRef }) {
   const { id, segment } = touched;
   const target = segMp4Path(segDir, id);
@@ -1224,10 +1245,12 @@ async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, 
     if (headerRef && !(await sameStream(headerRef, built))) {
       throw new Error(`span splice of ${id} has different encoder headers from the other segments; a -c copy join would not decode`);
     }
+    const stored = readStoredMeta(segDir, id);
     fs.renameSync(built, target);
     const probes = [];
     for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
-    writeJson(segJsonPath(segDir, id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes });
+    const picture = spanPictureReads({ stored, sessionReads: await sessionPictureReads(session), pieces: touched.pieces });
+    writeJson(segJsonPath(segDir, id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) });
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
@@ -1263,19 +1286,48 @@ function spanDecisions({ segments, touched }) {
   });
 }
 
-async function renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, fps, crf, preset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
+/** The widest gap, in frames, between keyframes of a clip (its tail counts to the end). */
+export function widestKeyframeGap({ keyFrames, total }) {
+  let widest = 0;
+  keyFrames.forEach((k, i) => {
+    widest = Math.max(widest, (i + 1 < keyFrames.length ? keyFrames[i + 1] : total) - k);
+  });
+  return widest;
+}
+
+/**
+ * Said once: touched segments whose cached mp4 has keyframes further apart than
+ * a render writes now (older renders used x264's 250-frame default). They still
+ * splice, but the untouched frames up to the next keyframe are re-encoded.
+ */
+async function noteLongKeyframeGaps({ touched, segDir, fps }) {
+  const limit = 2 * keyframeInterval(fps);
+  const long = [];
+  for (const t of touched) {
+    if (t.pieces.every((p) => p.kind === "new")) continue;
+    if (widestKeyframeGap(await probeGops(segMp4Path(segDir, t.id))) > limit) long.push(t.id);
+  }
+  if (long.length) {
+    process.stdout.write(
+      `note: cached segment(s) ${long.join(", ")} have keyframes more than ${limit} frames apart (rendered before 1.9.0), so the untouched frames next to the span are re-encoded, not copied. Their new encode writes a keyframe every ${keyframeInterval(fps)} frames; later spans on them copy.\n`
+    );
+  }
+}
+
+async function renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, lang = null, fps, crf, preset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
   const filmStart = segments[0].frameStart;
   const filmEnd = segments[segments.length - 1].frameEnd;
   const ranges = planSpanFrames({ spans, fps, filmStart, filmEnd });
   const touched = planSpanSplice({ segments, ranges });
   assertSpanBase({ segments, touched, segDir, fps, width: targetWidth, height: targetHeight });
+  await noteLongKeyframeGaps({ touched, segDir, fps });
   const decisions = spanDecisions({ segments, touched });
   for (const d of decisions) process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
   const rendered = decisions.reduce((n, d) => n + (d.frames || 0), 0);
   process.stdout.write(`span: ${ranges.map((r) => `[${r.startFrame},${r.endFrame})`).join(" ")} — ${rendered} of ${filmEnd - filmStart} frames rendered\n`);
   if (plan) return { planOnly: true, decisions };
   await renderSpans({ pool, segments, touched, segDir, fps, crf, preset, scaleFilter, width: targetWidth, height: targetHeight, workers });
-  return await joinAndFinish({ dir, paths, pool, segments, segDir, decisions, fps, crf, preset, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
+  return await joinAndFinish({ dir, paths, pool, segments, segDir, decisions, fps, crf, preset, noCaptions, stubSec, stubSegments, lang, quality, fixPictureDuration });
 }
 
 // ---- the plan printout, its cache, and leftovers of crashed renders -----------
@@ -1328,7 +1380,7 @@ function segmentCacheStats(segDir) {
  * outside out/ (the page and what it loads) and the segment cache dirs it
  * compares against. Equal key = the plan would come out the same.
  */
-function planCacheKey({ dir, paths, preview, noCaptions, lang, only, probeAll, stubSec, stubSegments }) {
+export function planCacheKey({ dir, paths, preview, noCaptions, lang, only, probeAll, stubSec, stubSegments }) {
   const quality = preview ? "preview" : "final";
   const segDir = segmentDirFor(paths.outDir, quality, noCaptions, lang);
   const baseSegDir = lang ? segmentDirFor(paths.outDir, quality, noCaptions, null) : null;
@@ -1336,7 +1388,19 @@ function planCacheKey({ dir, paths, preview, noCaptions, lang, only, probeAll, s
     .createHash("sha256")
     .update(JSON.stringify([treeStats(dir), segmentCacheStats(segDir), baseSegDir ? segmentCacheStats(baseSegDir) : null]))
     .digest("hex");
-  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, fingerprint });
+  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, fingerprint, skill: skillStamp() });
+}
+
+/** Which render code made a cached plan: the skill's package.json version and render.mjs's mtime (an edited or updated skill plans again). */
+export function skillStamp() {
+  const here = fileURLToPath(import.meta.url);
+  let version = null;
+  try {
+    version = readJson(path.join(path.dirname(here), "..", "package.json")).version || null;
+  } catch {
+    version = null;
+  }
+  return { version, renderMtimeMs: fs.statSync(here).mtimeMs };
 }
 
 function readPlanCache(outDir, key) {
@@ -1395,16 +1459,19 @@ async function rebuildPictureBed({ paths, pool, meta, lang }) {
   if (frames !== pageFrames) {
     throw new Error(`--bed-only keeps the picture, but ${path.basename(oldVideo)} has ${frames} frames and the page's timeline is ${pageFrames}: the picture is out of date — render it (${again}; --span for a few seconds)`);
   }
+  // Hashed before anything is linked or re-pointed: a hard link shares its inode with the old file, so the later hash can only differ if the stream changed in between.
+  const oldMd5 = await videoStreamMd5(oldVideo);
   const sfxPath = await maybeRenderSfx(pool, paths);
   const cueInputs = await resolveSoundCues(pool, paths.root);
   const stamp = freshStamp(paths.outDir, stem);
   const stampedVideo = path.join(paths.outDir, `${stem}-${stamp}.mp4`);
   const stampedBed = path.join(paths.outDir, `${stem}-${stamp}.bed.wav`);
+  let videoMd5;
   try {
     linkOrCopy(oldVideo, stampedVideo);
     const durationSec = String(await probeDuration(stampedVideo));
     await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: stampedBed });
-    await assertBedPair({ oldVideo, stampedVideo, stampedBed, stem, timingsPath, durationSec });
+    videoMd5 = await assertBedPair({ oldMd5, stampedVideo, stampedBed, stem, timingsPath, durationSec });
   } catch (e) {
     fs.rmSync(stampedVideo, { force: true });
     fs.rmSync(stampedBed, { force: true });
@@ -1414,13 +1481,13 @@ async function rebuildPictureBed({ paths, pool, meta, lang }) {
   }
   const outPath = pointLatest(paths.outDir, `${stem}.mp4`, stampedVideo);
   const bedPath = pointLatest(paths.outDir, `${stem}.bed.wav`, stampedBed);
-  return { bedOnly: true, outPath, bedPath, frames, seconds: frames / meta.fps, videoMd5: await videoStreamMd5(stampedVideo), framesRendered: 0 };
+  return { bedOnly: true, outPath, bedPath, frames, seconds: frames / meta.fps, videoMd5, framesRendered: 0 };
 }
 
-/** Throws unless the picture stream is the old one's, byte for byte, and the new picture/bed/timings agree. */
-async function assertBedPair({ oldVideo, stampedVideo, stampedBed, stem, timingsPath, durationSec }) {
-  const [before, after] = await Promise.all([videoStreamMd5(oldVideo), videoStreamMd5(stampedVideo)]);
-  if (before !== after) throw new Error(`--bed-only changed the picture stream (md5 ${before} -> ${after}); nothing published`);
+/** Throws unless the new picture's stream md5 is `oldMd5` (taken before the link) and the new picture/bed/timings agree. Returns that md5. */
+export async function assertBedPair({ oldMd5, stampedVideo, stampedBed, stem, timingsPath, durationSec }) {
+  const after = await videoStreamMd5(stampedVideo);
+  if (oldMd5 !== after) throw new Error(`--bed-only changed the picture stream (md5 ${oldMd5} -> ${after}); nothing published`);
   const timings = readJson(timingsPath);
   const problems = pairProblems({
     videoSec: Number(durationSec),
@@ -1430,6 +1497,7 @@ async function assertBedPair({ oldVideo, stampedVideo, stampedBed, stem, timings
     bedStamp: stampOfPictureFile(stampedBed, stem),
   });
   if (problems.length) throw new Error(`picture/bed/timings mismatch, nothing published: ${problems.join("; ")}`);
+  return after;
 }
 
 // ---- --assemble: a film from existing runs of frames (an EDL) ------------------
@@ -1524,6 +1592,8 @@ async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf
       const mp4Path = segMp4Path(segDir, segment.id);
       const tmpPath = uniqueTempPath(mp4Path);
       await cutFrames({ src: videoPath, from: segment.frameStart, to: segment.frameEnd, fps, crf, preset, outPath: tmpPath });
+      // An mp4 with no meta is "never rendered"; the old meta must not outlive the old mp4.
+      fs.rmSync(segJsonPath(segDir, segment.id), { force: true });
       fs.renameSync(tmpPath, mp4Path);
       const probes = [];
       for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
@@ -1549,19 +1619,37 @@ async function renderAssembled({ dir, paths, pool, segments, segDir, edlPath, pl
   const workDir = uniqueTempPath(path.join(segDir, "_assemble"));
   fs.mkdirSync(workDir, { recursive: true });
   const videoOnlyPath = uniqueTempPath(path.join(paths.outDir, "_video.mp4"));
+  // finishTrack consumes the joined track; the cache is cut from this second name after the film is out.
+  const cacheSourcePath = uniqueTempPath(path.join(paths.outDir, "_assembled.mp4"));
   try {
     const { checks, notes } = await assembleTrack({ resolved, fps, crf, preset, workDir, outPath: videoOnlyPath });
     for (const n of notes) process.stdout.write(`note: ${n}\n`);
     const hashed = await gateAssembled({ outPath: videoOnlyPath, checks, expectedFrames, fps });
     process.stdout.write(`assemble: ${expectedFrames} frames joined by packet copy; framemd5 checked on ${hashed} (new frames, re-encoded frames, seams)\n`);
-    await refreshSegmentCache({ pool, segments, segDir, videoPath: videoOnlyPath, fps, crf, preset, width: targetWidth, height: targetHeight });
+    linkOrCopy(videoOnlyPath, cacheSourcePath);
   } catch (e) {
     fs.rmSync(videoOnlyPath, { force: true });
+    fs.rmSync(cacheSourcePath, { force: true });
     throw e;
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
-  return await finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
+  try {
+    const result = await finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
+    await refreshAfterAssemble({ pool, segments, segDir, videoPath: cacheSourcePath, fps, crf, preset, width: targetWidth, height: targetHeight });
+    return result;
+  } finally {
+    fs.rmSync(cacheSourcePath, { force: true });
+  }
+}
+
+/** The cache rewrite of --assemble runs after the film is published; a failure here leaves the film and says what the next render will do. */
+async function refreshAfterAssemble(args) {
+  try {
+    await refreshSegmentCache(args);
+  } catch (e) {
+    process.stderr.write(`warning: the film is written, but the segment cache was not brought up to date (${e.message}); the next render probes the changed segments again\n`);
+  }
 }
 
 // ---- --handle / --use-draft: drafts a little longer than their slot --------

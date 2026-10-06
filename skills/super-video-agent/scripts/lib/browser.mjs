@@ -68,7 +68,8 @@ const GPU_MODES = ["default", "gpu", "swiftshader"];
  *   SVA_GPU          default (Playwright's own flags) | gpu (ask for the real GPU:
  *                    ignore the GPU blocklist, GPU raster; ANGLE on Metal / EGL) |
  *                    swiftshader (force the software renderer).
- *   SVA_CHROME_ARGS  extra Chromium flags, space separated, added last.
+ *   SVA_CHROME_ARGS  extra Chromium flags, added last: space separated, or a JSON
+ *                    array of strings when the value starts with "[" (an argument may hold spaces).
  * @param {Record<string, string|undefined>} env
  * @param {string} [platform]
  */
@@ -85,8 +86,30 @@ export function chromeLaunchOptions(env = process.env, platform = process.platfo
   } else if (mode === "swiftshader") {
     args.push("--use-angle=swiftshader", "--enable-unsafe-swiftshader");
   }
-  if (env.SVA_CHROME_ARGS) args.push(...env.SVA_CHROME_ARGS.split(/\s+/).filter(Boolean));
+  args.push(...parseChromeArgs(env.SVA_CHROME_ARGS));
   return opts;
+}
+
+/**
+ * SVA_CHROME_ARGS as a list: a value starting with "[" is a JSON array of
+ * strings (an argument may then hold spaces), anything else splits on whitespace.
+ * @param {string|undefined} value
+ * @returns {string[]}
+ */
+export function parseChromeArgs(value) {
+  if (!value || !value.trim()) return [];
+  const text = value.trim();
+  if (!text.startsWith("[")) return text.split(/\s+/).filter(Boolean);
+  let list;
+  try {
+    list = JSON.parse(text);
+  } catch (e) {
+    throw new Error(`SVA_CHROME_ARGS starts with "[" so it must be a JSON array of strings, e.g. ["--user-agent=My Agent"] (${e.message})`);
+  }
+  if (!Array.isArray(list) || !list.every((a) => typeof a === "string")) {
+    throw new Error('SVA_CHROME_ARGS as JSON must be an array of strings, e.g. ["--user-agent=My Agent"]');
+  }
+  return list.filter(Boolean);
 }
 
 /** Whether a WebGL renderer string names a software rasteriser. */
@@ -501,6 +524,52 @@ export async function captureFrame(page, t) {
 /** Read window.__reel.issues() from the live page. */
 export async function readIssues(page) {
   return page.evaluate(() => (window.__reel.issues ? window.__reel.issues() : []));
+}
+
+// Engine issues that state a fact about the page (a label with no language
+// string, a corner note with no counterpart); the page may mean them.
+const ENGINE_FACT_TYPE = /^(note-|picture-string-missing$|overlay-text-missing$)/;
+
+/**
+ * Splits issues() entries into layout problems and engine facts.
+ * @param {{type?: string}[]} issues
+ * @returns {{layout: object[], facts: object[]}}
+ */
+export function splitEngineFacts(issues) {
+  const layout = [];
+  const facts = [];
+  for (const issue of issues || []) (issue && ENGINE_FACT_TYPE.test(String(issue.type)) ? facts : layout).push(issue);
+  return { layout, facts };
+}
+
+/**
+ * Report lines for engine facts: Reel.safeAreaNote() when set, then each
+ * distinct fact once with how many times it was recorded. Never a verdict.
+ * @param {{note?: string|null, facts?: object[]}} args
+ * @returns {string[]}
+ */
+export function engineFactLines({ note = null, facts = [] }) {
+  const lines = [];
+  if (note) lines.push(`note: ${note}`);
+  const byKey = new Map();
+  for (const f of facts) {
+    const { type, ...rest } = f;
+    const key = `${type} ${Object.entries(rest).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(" ")}`.trim();
+    byKey.set(key, (byKey.get(key) || 0) + 1);
+  }
+  for (const [key, n] of byKey) lines.push(`fact: ${key}${n > 1 ? ` (x${n})` : ""}`);
+  return lines;
+}
+
+/** Reel.safeAreaNote() of the live page, or null (no engine, or nothing to say). */
+export async function readSafeAreaNote(page) {
+  return page.evaluate(() => (window.Reel && typeof window.Reel.safeAreaNote === "function" ? window.Reel.safeAreaNote() : null));
+}
+
+/** Engine facts recorded so far on the live page, as report lines. */
+export async function readEngineFactLines(page) {
+  const { facts } = splitEngineFacts(await readIssues(page));
+  return engineFactLines({ note: await readSafeAreaNote(page), facts });
 }
 
 /**

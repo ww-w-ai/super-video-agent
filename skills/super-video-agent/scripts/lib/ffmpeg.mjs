@@ -259,6 +259,7 @@ export async function applyAtempo(inPath, outPath, rate, range = {}) {
  * Returns {proc, done} where done resolves when the process exits 0.
  */
 export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium", scaleFilter }) {
+  const gop = keyframeInterval(fps);
   const args = [
     "-hide_banner",
     "-loglevel",
@@ -281,6 +282,8 @@ export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium
     String(crf),
     "-preset",
     preset,
+    "-g",
+    String(gop),
     outPath
   );
   const proc = spawn("ffmpeg", args, { stdio: ["pipe", "pipe", "pipe"] });
@@ -294,6 +297,15 @@ export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium
     });
   });
   return { proc, done };
+}
+
+/**
+ * Frames per keyframe for render encodes: about one second (scene-cut keyframes
+ * stay on). x264's default (250 frames) leaves a segment under ~8 s with one
+ * keyframe, so a span cut inside it could copy no GOP at all (planFrameCut).
+ */
+export function keyframeInterval(fps) {
+  return Math.max(1, Math.round(fps));
 }
 
 // ---- temp names, joins and frame-exact cuts without re-encoding -------------
@@ -474,7 +486,7 @@ async function encodeFrames({ src, probe, from, to, fps, crf, preset, outPath })
   const seek = from > 0 ? ["-ss", String(Math.max(0, probe.ptsSec[from] - SEEK_MARGIN_FRAMES / fps))] : [];
   await ffmpeg([
     ...["-y", ...seek, "-i", src, "-an", "-vf", "setpts=PTS-STARTPTS", "-frames:v", String(to - from)],
-    ...["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf), "-preset", preset, "-r", String(fps), outPath],
+    ...["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf), "-preset", preset, "-g", String(keyframeInterval(fps)), "-r", String(fps), outPath],
   ]);
 }
 

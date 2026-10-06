@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo, streamSignature, concatMp4, uniqueTempPath } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, streamSignature, concatMp4, uniqueTempPath, fpsRational, nominalFps } from "./lib/ffmpeg.mjs";
 import { decodeMonoPcm } from "./lib/audio-analysis.mjs";
 import { probeStreamDurations, measureSpansLoudness } from "./lib/join-report-media.mjs";
 import { buildJoinFilter, buildJoinAudioFilter, joinOffsets, joinTimes } from "./lib/join-ffmpeg.mjs";
@@ -79,12 +79,7 @@ async function run(outPath, partPaths, flags) {
   const { width, height, fps } = await probeVideoInfo(partPaths[0]);
 
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
-  if (await canCopyVideo(partPaths)) {
-    await joinCopyingVideo({ outPath, partPaths, durationsSec, fps });
-    process.stderr.write("video: stream copy, no re-encode (the parts share codec, size, frame rate and encoder headers)\n");
-  } else {
-    await joinReencoding({ outPath, partPaths, durationsSec, width, height, fps });
-  }
+  await joinVideo({ outPath, partPaths, durationsSec, width, height, fps });
 
   const offsets = joinOffsets(durationsSec);
   const cuts = joinTimes(durationsSec);
@@ -98,16 +93,47 @@ async function run(outPath, partPaths, flags) {
   process.stdout.write(formatReport(report, { json: !!flags.json }) + "\n");
 }
 
-/** True when every part has the first part's codec, size, pixel format, encoder headers and frame rate: the video can then be joined by packet copy. */
-async function canCopyVideo(partPaths) {
+/**
+ * Joins the video by packet copy when the parts allow it, else re-encodes.
+ * Either way the reason is said on stderr: a part that is variable-frame-rate
+ * or runs at a rate the frame grid cannot hold (concatMp4 refuses it) falls
+ * back to the re-encode instead of failing the join.
+ */
+async function joinVideo({ outPath, partPaths, durationsSec, width, height, fps }) {
+  const blocker = await copyBlocker(partPaths);
+  if (!blocker) {
+    try {
+      await joinCopyingVideo({ outPath, partPaths, durationsSec, fps });
+      process.stderr.write("video: stream copy, no re-encode (the parts share codec, size, frame rate and encoder headers)\n");
+      return;
+    } catch (e) {
+      fs.rmSync(outPath, { force: true });
+      process.stderr.write(`video: stream copy not possible (${firstLine(e.message)}); re-encoding every part to the first part's size and frame rate\n`);
+    }
+  } else {
+    process.stderr.write(`video: re-encoded to the first part's size and frame rate (${blocker})\n`);
+  }
+  await joinReencoding({ outPath, partPaths, durationsSec, width, height, fps });
+}
+
+const firstLine = (text) => String(text).split("\n")[0];
+
+/** Why the video cannot be joined by packet copy, or null when every part has the first part's codec, size, pixel format, encoder headers and a frame rate the frame grid holds. */
+export async function copyBlocker(partPaths) {
   const [first, ...rest] = partPaths;
   const firstInfo = await probeVideoInfo(first);
+  try {
+    fpsRational(nominalFps(firstInfo.fps));
+  } catch {
+    return `${path.basename(first)} runs at ${firstInfo.fps} fps, not an integer or NTSC rate`;
+  }
   const firstSig = await streamSignature(first);
   for (const p of rest) {
     const info = await probeVideoInfo(p);
-    if (Math.abs(info.fps - firstInfo.fps) > 1e-3 || (await streamSignature(p)) !== firstSig) return false;
+    if (Math.abs(info.fps - firstInfo.fps) > 1e-3) return `${path.basename(p)} runs at ${info.fps} fps, the first part at ${firstInfo.fps}`;
+    if ((await streamSignature(p)) !== firstSig) return `${path.basename(p)} differs from the first part in codec, size, pixel format or encoder headers`;
   }
-  return true;
+  return null;
 }
 
 /** Video by packet copy (no decode), audio cut/padded/faded per part and encoded as AAC, muxed with +faststart. */

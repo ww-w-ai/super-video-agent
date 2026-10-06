@@ -7,7 +7,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
 import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 
@@ -130,13 +130,17 @@ function staticChecks(paths) {
 /**
  * The line for a passing scan: what was scanned, or "checked nothing" when
  * the scene block is empty and src/ has no scripts (a pass over no code).
- * @param {{scannedChars: number, srcFiles: number}} result
+ * Bundled libraries the scan left out are named on a second line.
+ * @param {{scannedChars: number, srcFiles: number, skippedLibraries?: string[]}} result
  */
 export function staticScanLine(result) {
+  const skipped = result.skippedLibraries && result.skippedLibraries.length
+    ? `static scan: skipped bundled libraries under src/: ${result.skippedLibraries.join(", ")}\n`
+    : "";
   if (result.scannedChars === 0) {
-    return "static scan: checked nothing (no code between the SCENE markers and no scripts under src/)\n";
+    return "static scan: checked nothing (no code between the SCENE markers and no scripts under src/)\n" + skipped;
   }
-  return `static scan: ok (scene block${result.srcFiles ? ` + ${result.srcFiles} script(s) under src/` : ""})\n`;
+  return `static scan: ok (scene block${result.srcFiles ? ` + ${result.srcFiles} script(s) under src/` : ""})\n` + skipped;
 }
 
 /** Writes the page's WebGL console messages; true when one is a GL error (the frames are wrong). */
@@ -186,6 +190,7 @@ async function determinismChecks(target, scope = null) {
     }
     warm = await warmPasses(session, probeTimes);
     if (reportGl(session, "warm page")) return false;
+    for (const l of await readEngineFactLines(session.page)) process.stdout.write(`${l}\n`);
   } finally {
     await session.close();
   }

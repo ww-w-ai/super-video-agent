@@ -8,7 +8,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, loadTimings, loadPlan, readJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
+import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek, splitEngineFacts, engineFactLines, readSafeAreaNote } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
 import { ffmpeg, probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
@@ -139,6 +139,17 @@ export async function main(argv) {
   }
 }
 
+/**
+ * scanIssuesBySeek with the engine facts (label strings a language lacks,
+ * corner-note gaps) moved out of the layout hits into report lines.
+ */
+async function scanLayoutHits(page, args) {
+  const { times, issuesByTime } = await scanIssuesBySeek(page, args);
+  const split = issuesByTime.map(splitEngineFacts);
+  const facts = engineFactLines({ note: await readSafeAreaNote(page), facts: split.flatMap((s) => s.facts) });
+  return { times, issuesByTime: split.map((s) => s.layout), facts };
+}
+
 /** --scan: seeks the whole film at `stepSec` and groups issues() hits into runs (scripts/lib/layout-scan.mjs). */
 export async function scanLayoutDense({ dir, paths, stepSec }) {
   const server = await serveDir(dir);
@@ -146,7 +157,7 @@ export async function scanLayoutDense({ dir, paths, stepSec }) {
   try {
     session = await openReel(server.url, {});
     const { duration } = session.meta;
-    const { times, issuesByTime } = await scanIssuesBySeek(session.page, { duration, stepSec });
+    const { times, issuesByTime, facts } = await scanLayoutHits(session.page, { duration, stepSec });
     const runs = groupIssueRuns(times, issuesByTime);
     const totalIssues = issuesByTime.reduce((n, arr) => n + arr.length, 0);
     return {
@@ -156,6 +167,7 @@ export async function scanLayoutDense({ dir, paths, stepSec }) {
       sampleCount: times.length,
       totalIssues,
       runs,
+      facts,
       note: "one frame per shot's readAt is not scanned here — this scans every stepSec seconds of the whole film instead.",
     };
   } finally {
@@ -185,7 +197,7 @@ export async function scanCaptionLayer({ dir, paths, stepSec, dub }) {
     // The page reports the base picture's length; a --min-gap dub is longer.
     const duration = Math.max(session.meta.duration, placedDuration(dir, aliases, code) || 0);
     const step = stepSec !== undefined ? stepSec : 1 / fps;
-    const { times, issuesByTime } = await scanIssuesBySeek(session.page, { duration, stepSec: step });
+    const { times, issuesByTime, facts } = await scanLayoutHits(session.page, { duration, stepSec: step });
     const runs = groupIssueRuns(times, issuesByTime);
     const layerDeclared = (layers || []).includes("captions");
     return {
@@ -200,6 +212,7 @@ export async function scanCaptionLayer({ dir, paths, stepSec, dub }) {
       sampleCount: times.length,
       totalIssues: issuesByTime.reduce((n, arr) => n + arr.length, 0),
       runs,
+      facts,
       pageErrors: session.errors.slice(),
       note: layerDeclared
         ? "scanned the page's caption layer only (the scene is not drawn in this mode)."
@@ -231,6 +244,7 @@ function printScanSummary(report) {
     lines.push(`  ${r.startSec.toFixed(2)}s-${r.endSec.toFixed(2)}s (${r.sampleCount} sample(s), types: ${r.types.join(", ")}${texts})`);
   }
   if (report.runs.length === 0) lines.push("no layout issues found across the scan");
+  lines.push(...(report.facts || []));
   if (report.layer) lines.push(report.note);
   process.stdout.write(lines.join("\n") + "\n");
 }
@@ -473,6 +487,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
   let session;
   let contactSheetPath;
   let issuesByShot = [];
+  const engineFacts = [];
   try {
     session = await openReel(server.url, {});
     const { shots, fps, duration } = session.meta;
@@ -484,8 +499,9 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     for (const shot of shots) {
       await session.page.evaluate(() => window.Reel.clearIssues());
       const png = await captureFrame(session.page, shot.readAt);
-      const issues = await session.page.evaluate(() => window.__reel.issues());
-      issuesByShot.push({ shotId: shot.id, readAt: shot.readAt, issues });
+      const split = splitEngineFacts(await session.page.evaluate(() => window.__reel.issues()));
+      engineFacts.push(...split.facts);
+      issuesByShot.push({ shotId: shot.id, readAt: shot.readAt, issues: split.layout });
       shotFrames.push({ png, label: `${shot.id} t=${shot.readAt.toFixed(2)}s` });
     }
 
@@ -513,6 +529,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     const lastLineEndsBeforeFinalFrame = lastLineEnd <= videoDuration;
 
     const allIssues = issuesByShot.flatMap((s) => s.issues);
+    const factLines = engineFactLines({ note: await readSafeAreaNote(session.page), facts: engineFacts });
     // Spans the page declared as intended slow motion / hold (window.__reel.holds) are marked, not flagged,
     // the same way the end hold is.
     const declaredHolds = await session.page.evaluate(() => (window.__reel && window.__reel.holds) || []);
@@ -615,6 +632,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
         },
       },
       checkedNothing,
+      facts: factLines,
       note: "Technical checks do not certify art — this reports what was mechanically checked (motion, sync, layout); a human must read the contact sheet and judge composition, legibility, and taste.",
     };
     return report;
@@ -639,6 +657,7 @@ function printSummary(report) {
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${verdict({ pass: c.audio.silencePass })}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}`),
+    ...(report.facts || []),
     report.note,
   ];
   process.stdout.write(lines.join("\n") + "\n");

@@ -9,7 +9,7 @@ import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
 import { mlxModelCached, MLX_MODEL_REPOS } from "./lib/stt-engine.mjs";
 import { gpuReport } from "./lib/browser.mjs";
 
-const HELP = `usage: setup.mjs [--check] [--stt-models]
+const HELP = `usage: setup.mjs [--check] [--stt-models] [--dir <reel>]
 
 Makes this skill folder ready to run:
   1. Node 22 or newer
@@ -18,15 +18,18 @@ Makes this skill folder ready to run:
   4. ffmpeg and ffprobe on PATH (checked only; install them yourself)
 
 Both modes also report the Playwright browser cache folder (PLAYWRIGHT_BROWSERS_PATH
-or the OS default) and the free disk there and in the current folder: under 0.8 GB
-at the cache blocks the Chromium install (ENOSPC), under 5 GB in the working folder
+or the OS default) and the free disk there and where renders write: under 0.8 GB
+at the cache blocks the Chromium install (ENOSPC), under 5 GB where renders write
 warns. A deleted cache shows as Chromium missing, with the folder named.
+Both limits are set by SVA_MIN_CACHE_GB and SVA_MIN_WORK_GB (GB, e.g. 2).
 They also report whether rendering uses a real GPU or a software renderer
 (SwiftShader), from a WebGL probe in the render browser. SVA_GPU=gpu asks Chromium
 for the real GPU (default = Playwright's flags; swiftshader forces software);
 SVA_CHROME_ARGS adds raw Chromium flags. Information only.
 
 --check        report what is missing without installing anything.
+--dir <reel>   measure the free disk of <reel>/out (where renders write). Without
+               it the current folder is measured and the output says so.
 --stt-models   download the mlx-whisper models (small, turbo) into the Hugging
                Face cache with the Python in SVA_STT_PYTHON. The only step
                that fetches models; several hundred MB to a few GB.
@@ -53,8 +56,16 @@ export async function main(argv) {
 
   if (!nodeIsRecent()) missing.push(`Node 22+ (this is ${process.versions.node})`);
   if (!hasPlaywright() && (!install || !installPlaywright())) missing.push("playwright-core");
-  const cache = browserCacheStatus(process.env);
-  for (const line of diskLines(cache, workStatus())) console.log(line);
+  let cache;
+  try {
+    const limits = diskThresholds(process.env);
+    cache = browserCacheStatus(process.env, limits.cacheBytes);
+    const reelDir = typeof flags.dir === "string" ? flags.dir : undefined;
+    for (const line of diskLines(cache, workStatus(reelDir, limits.workBytes))) console.log(line);
+  } catch (e) {
+    fail(e.message);
+    return;
+  }
   if (hasPlaywright() && !(await hasChromium())) {
     if (install && cache.low) missing.push(chromiumMissingHint(cache, "no room to install it"));
     else if (!install || !installChromium()) missing.push(chromiumMissingHint(cache, install ? "the install failed" : "not installed"));
@@ -74,6 +85,22 @@ export async function main(argv) {
 
 const CHROMIUM_NEED_BYTES = 800 * 1024 ** 2; // a Chromium download plus its unpacked copy
 const WORKDIR_WARN_BYTES = 5 * 1024 ** 3; // renders write PNG frames and mp4 files
+
+/**
+ * The two free-disk thresholds in bytes: SVA_MIN_CACHE_GB (blocks the Chromium
+ * install below it) and SVA_MIN_WORK_GB (warns below it); defaults 0.8 and 5.
+ * @param {Record<string,string|undefined>} env
+ * @returns {{cacheBytes: number, workBytes: number}}
+ */
+export function diskThresholds(env) {
+  const read = (name, fallback) => {
+    if (env[name] === undefined || env[name] === "") return fallback;
+    const gbValue = Number(env[name]);
+    if (!Number.isFinite(gbValue) || gbValue < 0) throw new Error(`${name} takes a number of GB, 0 or more (got "${env[name]}")`);
+    return gbValue * 1024 ** 3;
+  };
+  return { cacheBytes: read("SVA_MIN_CACHE_GB", CHROMIUM_NEED_BYTES), workBytes: read("SVA_MIN_WORK_GB", WORKDIR_WARN_BYTES) };
+}
 
 /**
  * Where Playwright keeps its browsers: PLAYWRIGHT_BROWSERS_PATH when set,
@@ -102,15 +129,22 @@ export function freeBytes(p) {
 }
 
 /** {dir, exists, free, low}: the Playwright cache folder, whether it exists, free bytes, and whether that is too little for a Chromium install. */
-function browserCacheStatus(env) {
+function browserCacheStatus(env, needBytes) {
   const dir = playwrightCacheDir(env);
   const free = freeBytes(dir);
-  return { dir, exists: fs.existsSync(dir), free, low: free !== null && free < CHROMIUM_NEED_BYTES };
+  return { dir, exists: fs.existsSync(dir), free, needBytes, low: free !== null && free < needBytes };
 }
 
-function workStatus() {
-  const free = freeBytes(process.cwd());
-  return { dir: process.cwd(), free, low: free !== null && free < WORKDIR_WARN_BYTES };
+/**
+ * Free disk where renders write: <reel>/out with --dir <reel>, else the current
+ * folder (`measured: "cwd"`, which diskLines says out loud).
+ * @param {string|undefined} reelDir
+ * @param {number} warnBytes
+ */
+export function workStatus(reelDir, warnBytes) {
+  const dir = reelDir ? path.join(path.resolve(reelDir), "out") : process.cwd();
+  const free = freeBytes(dir);
+  return { dir, free, warnBytes, measured: reelDir ? "reel" : "cwd", low: free !== null && free < warnBytes };
 }
 
 const gb = (n) => `${(n / 1024 ** 3).toFixed(1)} GB`;
@@ -118,14 +152,16 @@ const gb = (n) => `${(n / 1024 ** 3).toFixed(1)} GB`;
 /**
  * Lines about the Playwright cache folder and free disk (information; a low
  * cache volume blocks the Chromium install, a low working volume only warns).
- * @param {{dir: string, exists: boolean, free: number|null, low: boolean}} cache
- * @param {{dir: string, free: number|null, low: boolean}} work
+ * @param {{dir: string, exists: boolean, free: number|null, low: boolean, needBytes?: number}} cache
+ * @param {{dir: string, free: number|null, low: boolean, warnBytes?: number, measured?: "reel"|"cwd"}} work
  */
 export function diskLines(cache, work) {
   const lines = [`Playwright browser cache: ${cache.dir} (${cache.exists ? "exists" : "does not exist yet"}), ${cache.free === null ? "free space unknown" : `${gb(cache.free)} free`}`];
-  if (cache.low) lines.push(`  warning: under ${gb(CHROMIUM_NEED_BYTES)} free there — the Chromium install fails with ENOSPC. Free space or set PLAYWRIGHT_BROWSERS_PATH to a roomier folder.`);
-  lines.push(`working folder ${work.dir}: ${work.free === null ? "free space unknown" : `${gb(work.free)} free`}`);
-  if (work.low) lines.push(`  warning: under ${gb(WORKDIR_WARN_BYTES)} free — renders write PNG frames and mp4 files and stop with ENOSPC when the disk fills.`);
+  if (cache.low) lines.push(`  warning: under ${gb(cache.needBytes ?? CHROMIUM_NEED_BYTES)} free there — the Chromium install fails with ENOSPC. Free space, set PLAYWRIGHT_BROWSERS_PATH to a roomier folder, or lower SVA_MIN_CACHE_GB.`);
+  const label = work.measured === "reel" ? "render folder" : "working folder";
+  lines.push(`${label} ${work.dir}: ${work.free === null ? "free space unknown" : `${gb(work.free)} free`}`);
+  if (work.measured === "cwd") lines.push("  measured the current folder; renders write to <reel>/out — pass --dir <reel> to measure that volume.");
+  if (work.low) lines.push(`  warning: under ${gb(work.warnBytes ?? WORKDIR_WARN_BYTES)} free — renders write PNG frames and mp4 files and stop with ENOSPC when the disk fills (threshold: SVA_MIN_WORK_GB).`);
   return lines;
 }
 

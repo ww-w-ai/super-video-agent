@@ -21,20 +21,35 @@ const BANNED = [
 
 const SRC_SKIP = new Set(["node_modules", "out", ".git"]);
 
-/** Every .js/.mjs file under <reel-dir>/src, as [path, text]. */
+/**
+ * Bundled libraries are not scene code (they use timers and fetch for their
+ * own sake): src/vendor/, three* under src/lib/, *.min.js, node_modules.
+ * @param {string} rel path under src/, "/"-separated
+ * @param {string} name entry name
+ */
+function isBundledLibrary(rel, name) {
+  return rel.startsWith("vendor/") || name === "vendor" || /\.min\.m?js$/i.test(name) || (/^lib\//.test(rel) && /^three/i.test(name));
+}
+
+/** Every .js/.mjs file under <reel-dir>/src as [path, text], plus the bundled entries it left out (relative to src/, a folder ends in "/"). */
 function readSrcFiles(reelDir) {
   const out = [];
+  const skipped = [];
+  const root = path.join(reelDir, "src");
   const walk = (d) => {
     if (!fs.existsSync(d)) return;
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       if (SRC_SKIP.has(e.name)) continue;
       const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (/\.m?js$/.test(e.name)) out.push([p, fs.readFileSync(p, "utf8")]);
+      const rel = path.relative(root, p).split(path.sep).join("/");
+      const isScript = /\.m?js$/.test(e.name);
+      if ((e.isDirectory() || isScript) && isBundledLibrary(rel, e.name)) skipped.push(e.isDirectory() ? `${rel}/` : rel);
+      else if (e.isDirectory()) walk(p);
+      else if (isScript) out.push([p, fs.readFileSync(p, "utf8")]);
     }
   };
-  walk(path.join(reelDir, "src"));
-  return out;
+  walk(root);
+  return { files: out, skipped };
 }
 
 /**
@@ -42,13 +57,14 @@ function readSrcFiles(reelDir) {
  * (a reel that keeps its scenes in src/*.js is scene code too). Token counts
  * are summed over all of them against the same limits.
  * @param {string} reelHtmlPath
- * @returns {{ok: boolean, violations: {name:string,count:number,limit:number}[], sceneFound: boolean, srcFiles: number, scannedChars: number}}
+ * Bundled libraries (src/vendor/, src/lib/three*, *.min.js) are left out and listed.
+ * @returns {{ok: boolean, violations: {name:string,count:number,limit:number}[], sceneFound: boolean, srcFiles: number, scannedChars: number, skippedLibraries: string[]}}
  *   scannedChars = scene-block characters + src characters; 0 means nothing was checked.
  */
 export function scanReelHtml(reelHtmlPath) {
   const html = fs.readFileSync(reelHtmlPath, "utf8");
   const { scene, sceneFound } = extractScene(html);
-  const src = readSrcFiles(path.dirname(reelHtmlPath));
+  const { files: src, skipped } = readSrcFiles(path.dirname(reelHtmlPath));
   const code = [scene, ...src.map(([, text]) => text)].join("\n");
   const scannedChars = (sceneFound ? scene.replace(/\/\*\s*SCENE:(?:BEGIN|END)\s*\*\//g, "").trim().length : 0) + src.reduce((n, [, t]) => n + t.trim().length, 0);
 
@@ -70,7 +86,7 @@ export function scanReelHtml(reelHtmlPath) {
     violations.push({ name: "css-animation", count: cssAnim.length, limit: 0 });
   }
 
-  return { ok: violations.length === 0, violations, sceneFound, srcFiles: src.length, scannedChars };
+  return { ok: violations.length === 0, violations, sceneFound, srcFiles: src.length, scannedChars, skippedLibraries: skipped };
 }
 
 /** Isolates the SCENE:BEGIN..SCENE:END block from a reel.html string. */

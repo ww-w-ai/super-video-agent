@@ -9,6 +9,7 @@
 // single page.evaluate hangs Chromium. Streaming keeps page memory
 // bounded regardless of how many frames there are.
 import { getChromium } from "./playwright.mjs";
+import { chromeLaunchOptions } from "./browser.mjs";
 
 /**
  * @param {{png: Buffer, label: string}[]} frames
@@ -22,7 +23,7 @@ export async function buildContactSheet(frames, opts = {}) {
   const labelH = 28;
 
   const chromium = await getChromium();
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch(chromeLaunchOptions(process.env));
   try {
     const page = await browser.newPage();
     await page.setContent("<!doctype html><canvas id='sheet'></canvas>");
