@@ -14,11 +14,15 @@ import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
-import { run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid } from "./lib/ffmpeg.mjs";
+import {
+  run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
+  uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5,
+} from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
+import { DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import {
   computeSegments,
   probeFrameIndices,
@@ -29,12 +33,15 @@ import {
   decideLangUnprobed,
   neighbourIds,
   pendingIds,
+  parseEdl,
+  entryCheckRanges,
 } from "./lib/segments.mjs";
 import { draftsDir, draftSpan, draftSidecar, slotCut } from "./lib/drafts.mjs";
 
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
                  [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
-                 [--span <from>-<to>[,<from>-<to>...]] [--fix-picture-duration]
+                 [--span <from>-<to>[,<from>-<to>...]] [--assemble <edl.json>] [--fix-picture-duration] [--no-plan-cache]
+       render.mjs <reel-dir> --no-captions [--lang <code>] --bed-only
        render.mjs <reel-dir> --check-pair [--lang <code>]
 
 Renders <reel-dir>/reel.html by segment (one segment per tiled run of
@@ -71,7 +78,38 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               puts out/drafts/<id>.mp4 in as the shot: the slot span is cut out
               of the handled clip (no page render) and spliced at the slot start
               like --insert. Needs the same --preview setting the draft had.
---plan        print REUSE/RENDER per segment and exit without rendering.
+--plan        print REUSE/RENDER per segment and exit without rendering. The answer
+              is cached in out/plan-cache.json: asking again with nothing changed
+              (every file of the reel dir outside out/, the segment cache, the
+              options) prints it without opening the page ("page opens: 0").
+              --no-plan-cache probes again. Real renders never read the cache.
+--assemble <edl.json>
+              builds the film from existing runs of frames, no page frame is
+              rendered. {"entries": [...]} in film order, each entry
+              {"segment": "<id>"} (a cached segment mp4 of this quality) or
+              {"src": "<clip.mp4>"} (relative to the reel dir), optionally
+              "from"/"to" (frames of that clip, default all) and "new": true for
+              frames that did not exist before (default true for a clip under
+              out/drafts/). The entries must add up to the page's timeline. This
+              is how a film is rebuilt when the timeline shifted: old segments are
+              copied to their new place, new drafts are put in. Cuts: whole GOPs
+              are packet-copied, only the frames up to the next keyframe are
+              re-encoded; the join is a packet copy. The frame gate hashes (framemd5)
+              only the new frames, re-encoded frames and the first/last two frames
+              of each copied run, never the whole film. Afterwards the film's
+              segments are cut back out into the cache with fresh probe hashes
+              (the page is opened once, three frames per segment captured), then
+              the film is finished as a normal render (voiced film, or with
+              --no-captions a picture + bed + timings). Not with --only, --insert,
+              --use-draft, --handle, --span, --lang, --stub. With --plan: prints
+              the entries and exits.
+--bed-only    with --no-captions [--lang <code>]: rebuilds only the sound bed of
+              the picture in out/. No picture frame is rendered or encoded: the
+              picture file is linked under a new stamp, and its video stream md5
+              must equal the old one's (the render stops otherwise). Writes
+              out/picture-<stamp>.mp4 + .bed.wav, points picture.mp4 and
+              picture.bed.wav at them and keeps picture.timings.json. Stops when
+              the picture's frame count is not the page's timeline.
 --span <from>-<to>[,<from>-<to>...]
               span render: only the frames between the given seconds, widened by
               0.5 s each side (frame grid, merged when they touch), are rendered
@@ -88,7 +126,8 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               differs from the timings duration by more than 50 ms the render
               stops and says which value is right (the picture length); this
               flag writes the picture length into out/picture.timings.json
-              as its duration and continues.
+              as its duration and continues. Refused without --no-captions
+              and with --stub (there is no timings duration to fix).
 --check-pair  checks out/picture.mp4, picture.bed.wav and picture.timings.json
               (with --lang <code>: the picture-<code> files) belong to one
               render and share one length; prints the findings and exits
@@ -137,8 +176,9 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               puts an already rendered clip into the picture: frames from
               <start-sec> (rounded to the frame grid) for the clip's frame
               count are the clip's own frames. Segments the clip covers
-              entirely are not rendered; a segment it covers in part has its
-              remaining frames re-encoded from its own mp4. The clip must have the reel's fps;
+              entirely are not rendered; a segment it covers in part keeps its
+              remaining frames (whole GOPs packet-copied, only the frames up to the
+              next keyframe re-encoded). The clip must have the reel's fps;
               a clip whose size or encoding differs from the segments is
               re-encoded to match first (said in the output). After the join
               the frame count and the framemd5 of the inserted span (equal to
@@ -152,7 +192,12 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
 Every joined video track (picture, preview, final) is re-stamped onto the
 exact 1/fps grid without re-encoding (frame hashes unchanged): a plain
 -c copy join leaves timestamps a few ticks off at segment joins and the
-last frame held long, so a later filter makes one frame too many.
+last frame held long, so a later filter makes one frame too many. Frame
+counts are read from the packets (nothing is decoded for a count gate).
+
+Leftovers of crashed renders (temp names <name>-<microseconds>-<pid> in out/
+and the segment caches whose pid is no longer running) are removed at the
+start of a render, and listed.
 
 A segment is reused only when its stored frame range, fps, size and three
 probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
@@ -204,9 +249,24 @@ export async function main(argv) {
   let insert;
   let handleSec = 0;
   let spans = null;
+  let assemble = null;
+  const bedOnly = !!flags["bed-only"];
   try {
+    if (flags["fix-picture-duration"] !== undefined && (!noCaptions || flags.stub !== undefined)) {
+      throw new Error("--fix-picture-duration fixes the length of a picture render's timings; use it with --no-captions and no --stub");
+    }
     spans = flags.span !== undefined ? parseSpanFlag(flags.span) : null;
-    if (spans) assertSpanCompatible(flags);
+    if (spans) assertWholeFilmFlags("span", flags);
+    if (flags.assemble !== undefined) {
+      if (typeof flags.assemble !== "string") throw new Error("--assemble takes an EDL file, e.g. --assemble edl.json");
+      assertWholeFilmFlags("assemble", flags);
+      assemble = abs(flags.assemble);
+      if (!fs.existsSync(assemble)) throw new Error(`--assemble EDL not found: ${assemble}`);
+    }
+    if (bedOnly) {
+      if (!noCaptions) throw new Error("--bed-only rebuilds a picture's sound bed; add --no-captions (a voiced film's mix is dub.mjs's)");
+      assertWholeFilmFlags("bed-only", flags);
+    }
     stubSec = stubSeconds(flags.stub, paths.timingsJson, fs.existsSync);
     stubSegments = stubSegmentCount(flags.segments, stubSec);
     if (flags["probe-all"] !== undefined && !lang) throw new Error("--probe-all is for a language picture; add --no-captions --lang <code>");
@@ -241,7 +301,8 @@ export async function main(argv) {
   try {
     const probeAll = !!flags["probe-all"];
     const fixPictureDuration = !!flags["fix-picture-duration"];
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration });
+    const planCache = flags["no-plan-cache"] === undefined;
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, planCache });
     const elapsed = (Date.now() - started) / 1000;
     process.stdout.write(summaryLine(result, elapsed));
   } catch (e) {
@@ -256,7 +317,17 @@ export function summaryLine(result, elapsed) {
     const frames = result.drafts.reduce((n, d) => n + d.frameEnd - d.frameStart, 0);
     return `drafts: ${result.drafts.length} clip(s), ${frames} frames  render time: ${elapsed.toFixed(2)}s\n` + opens;
   }
-  if (result.planOnly) return `--plan: ${result.decisions.length} segment(s), nothing rendered\n` + opens;
+  if (result.bedOnly) {
+    return (
+      `wrote ${result.bedPath}\n` +
+      `picture kept: ${result.outPath} (${result.frames} frames, video stream md5 ${result.videoMd5} equals the previous one); ${result.framesRendered} picture frames rendered  render time: ${elapsed.toFixed(2)}s\n` +
+      opens
+    );
+  }
+  if (result.planOnly) {
+    const cached = result.cachedAt ? `  (cached: same inputs as the plan of ${result.cachedAt}; --no-plan-cache probes again)` : "";
+    return `--plan: ${result.decisions.length} segment(s), nothing rendered${cached}\n` + opens;
+  }
   if (result.partial) {
     const done = result.decisions.filter((d) => d.action === "RENDER").length;
     return (
@@ -348,8 +419,16 @@ function readPicturePayload(dir, lang) {
   return payload;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, stubSegments = 1, insert = null, lang = null, handleSec = 0, probeAll = false, spans = null, fixPictureDuration = false }) {
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, stubSegments = 1, insert = null, lang = null, handleSec = 0, probeAll = false, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, planCache = true }) {
   const picture = readPicturePayload(dir, lang);
+  if (!plan) reportStaleTemps(paths.outDir);
+  const wholeFilm = !insert && !handleSec && !spans && !assemble && !bedOnly;
+  const cacheKey = plan && planCache && wholeFilm ? planCacheKey({ dir, paths, preview, noCaptions, lang, only, probeAll, stubSec, stubSegments }) : null;
+  const cached = cacheKey ? readPlanCache(paths.outDir, cacheKey) : null;
+  if (cached) {
+    printDecisions(cached.decisions);
+    return { planOnly: true, decisions: cached.decisions, pageOpens: 0, cachedAt: cached.at };
+  }
   const server = await serveDir(dir);
   const pageUrl = pictureUrl(server.url, noCaptions, lang);
   // Every session is opened cold and warmed only for the shots it will capture (pool.warmFor).
@@ -358,7 +437,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     warm: warmShotsOf,
   });
   try {
-    const result = await renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration });
+    const result = await renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, cacheKey });
     return { ...result, pageOpens: pool.opened };
   } finally {
     await pool.closeAll();
@@ -366,10 +445,11 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
   }
 }
 
-async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans = null, fixPictureDuration = false }) {
+async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, cacheKey = null }) {
   const meta = await probeMeta(pool);
   const fps = meta.fps;
   const duration = meta.duration;
+  if (bedOnly) return await rebuildPictureBed({ paths, pool, meta, lang });
 
   const { segments, warnings } = computeSegments({ shots: meta.shots, fps, duration });
   for (const w of warnings) process.stderr.write(`warning: ${w}\n`);
@@ -393,6 +473,9 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
   if (spans) {
     return await renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
   }
+  if (assemble) {
+    return await renderAssembled({ dir, paths, pool, segments, segDir, edlPath: assemble, plan, fps, crf, preset: cPreset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
+  }
   const pending = onlyIds ? validateOnlyOrThrow({ segments, onlyIds, segDir }) : [];
 
   const insertPlan = insert ? await prepareInsert({ insert, segments, fps }) : null;
@@ -411,12 +494,12 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
     pendingIds: pending,
     langStrings: lang && !probeAll ? picture.strings : null,
   });
-  for (const d of decisions) {
-    if (d.neighbour && d.action === "RENDER") process.stdout.write(`--only: also rendering ${d.segment.id} (its frames changed)\n`);
-    process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
-  }
+  printDecisions(decisions);
 
-  if (plan) return { planOnly: true, decisions };
+  if (plan) {
+    if (cacheKey) writePlanCache(paths.outDir, cacheKey, decisions);
+    return { planOnly: true, decisions };
+  }
 
   copyBaseSegments({ decisions, baseSegDir, segDir });
   await renderNeeded({ pool, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
@@ -441,7 +524,11 @@ async function joinAndFinish({ dir, paths, pool, segments, segDir, decisions, in
       fps
     );
   }
+  return await finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang, quality, fixPictureDuration });
+}
 
+/** What a joined video track becomes: a picture (--no-captions), a stub preview, or a voiced film. */
+async function finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang, quality, fixPictureDuration }) {
   if (noCaptions) {
     return await finishPictureRender({ dir, paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, stubSegments, lang, fixPictureDuration });
   }
@@ -487,7 +574,7 @@ async function joinAndFinish({ dir, paths, pool, segments, segDir, decisions, in
  * over the picture later without re-deriving the shot clock.
  */
 async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, stubSec, stubSegments = 1, lang = null, fixPictureDuration = false }) {
-  const frameCount = await probeFrameCount(videoOnlyPath);
+  const frameCount = await probePacketCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
   }
@@ -509,7 +596,13 @@ async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames,
   if (sfxPath) fs.rmSync(sfxPath, { force: true });
 
   // Publish only a pair that agrees: the video and bed just written plus the clock they were built on.
-  const pairProblem = pairProblems({ videoSec: Number(durationSec), bedSec: await probeDuration(bedStampedPath), timingsSec: stubSec ? null : timings.duration, videoStamp: stamp, bedStamp: stamp });
+  const pairProblem = pairProblems({
+    videoSec: Number(durationSec),
+    bedSec: await probeDuration(bedStampedPath),
+    timingsSec: stubSec ? null : timings.duration,
+    videoStamp: stampOfPictureFile(stampedPath, stem),
+    bedStamp: stampOfPictureFile(bedStampedPath, stem),
+  });
   if (pairProblem.length) throw new Error(`picture/bed/timings mismatch, nothing published: ${pairProblem.join("; ")}`);
   const timingsPath = path.join(paths.outDir, `${stem}.timings.json`);
   const timingsTmp = uniqueTempPath(timingsPath);
@@ -538,7 +631,7 @@ async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames,
  * never mistaken for a voiced final or preview.
  */
 async function finishStubRender({ paths, pool, videoOnlyPath, expectedFrames, fps, segments, decisions, quality }) {
-  const frameCount = await probeFrameCount(videoOnlyPath);
+  const frameCount = await probePacketCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
   }
@@ -810,6 +903,7 @@ async function encodeSegment({ session, segment, outPath, fps, crf, preset, scal
       const ok = proc.stdin.write(png);
       if (!ok) await once(proc.stdin, "drain");
     }
+    reportGl(session, `frames [${segment.frameStart},${segment.frameEnd})`);
     proc.stdin.end();
     await done;
     fs.renameSync(tmpPath, outPath);
@@ -817,6 +911,26 @@ async function encodeSegment({ session, segment, outPath, fps, crf, preset, scal
     proc.stdin.destroy();
     fs.rmSync(tmpPath, { force: true });
     throw e;
+  }
+}
+
+/**
+ * Prints the page's WebGL console messages not yet shown for this session. A
+ * GL error code or a lost context means the frames just captured are wrong:
+ * that stops the step (throws) before the encode is published; any other GL
+ * message is only printed.
+ */
+export function reportGl(session, what) {
+  if (!session.gl) return;
+  const issues = glIssues(session);
+  const shown = session.glShown || (session.glShown = new Set());
+  for (const line of glReportLines(issues)) {
+    if (shown.has(line)) continue;
+    shown.add(line);
+    process.stdout.write(`${line}  (${what})\n`);
+  }
+  if (issues.definite.length) {
+    throw new Error(`the page logged WebGL error(s) while drawing ${what}, so those frames are wrong: ${glReportLines({ definite: issues.definite, warnings: [] }).join("; ")}`);
   }
 }
 
@@ -828,21 +942,48 @@ function once(emitter, event) {
   return new Promise((resolve) => emitter.once(event, resolve));
 }
 
-// ---- temp names: original name + µs timestamp + pid -------------------------
+// ---- temp names: original name + µs timestamp + pid (lib/ffmpeg.mjs) ---------
 
-let lastTempMicros = 0n;
+export { uniqueTempPath, concatMp4 };
+
+const TEMP_NAME = /-\d{15,17}-(\d+)(?:\.[A-Za-z0-9]+)?$/;
 
 /**
- * A unique sibling name for a temp file or directory: `<stem>-<µs>-<pid><ext>`.
- * The µs value never repeats within a process, and the pid separates processes,
- * so concurrent jobs in one reel dir never share a temp name.
+ * Names (of a directory listing) that are temp leftovers of a render that died:
+ * `<stem>-<µs>-<pid><ext>` whose pid is no longer running. A name carrying a
+ * live pid (another render in this reel dir) or `selfPid` is never listed.
  */
-export function uniqueTempPath(p) {
-  const ext = path.extname(p);
-  let micros = BigInt(Date.now()) * 1000n + ((process.hrtime.bigint() / 1000n) % 1000n);
-  if (micros <= lastTempMicros) micros = lastTempMicros + 1n;
-  lastTempMicros = micros;
-  return `${p.slice(0, p.length - ext.length)}-${micros}-${process.pid}${ext}`;
+export function staleTempNames(names, isAlive, selfPid = process.pid) {
+  return names.filter((name) => {
+    const m = TEMP_NAME.exec(name);
+    return m && Number(m[1]) !== selfPid && !isAlive(Number(m[1]));
+  });
+}
+
+function pidIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e.code === "EPERM";
+  }
+}
+
+/** Removes the temp leftovers of crashed renders from out/ and its segment cache dirs; returns the removed paths. */
+export function removeStaleTemps(outDir, isAlive = pidIsAlive) {
+  const dirs = [outDir];
+  for (const top of ["segments"].concat(fs.existsSync(outDir) ? fs.readdirSync(outDir).filter((n) => n.startsWith("segments-")) : [])) {
+    const base = path.join(outDir, top);
+    if (fs.existsSync(base)) dirs.push(...fs.readdirSync(base, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => path.join(base, e.name)));
+  }
+  const removed = [];
+  for (const dir of dirs.filter((d) => fs.existsSync(d))) {
+    for (const name of staleTempNames(fs.readdirSync(dir), isAlive)) {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+      removed.push(path.join(dir, name));
+    }
+  }
+  return removed;
 }
 
 // ---- picture length vs timings, and the picture/bed/timings pair -------------
@@ -953,9 +1094,16 @@ export function parseSpanFlag(value) {
   });
 }
 
-function assertSpanCompatible(flags) {
-  for (const f of ["only", "insert", "use-draft", "handle", "lang", "probe-all"]) {
-    if (flags[f] !== undefined) throw new Error(`--span renders a span of the film; it does not combine with --${f}`);
+const MODE_REFUSES = {
+  span: ["only", "insert", "use-draft", "handle", "lang", "probe-all", "assemble", "bed-only"],
+  assemble: ["only", "insert", "use-draft", "handle", "lang", "probe-all", "span", "bed-only", "stub"],
+  "bed-only": ["only", "insert", "use-draft", "handle", "probe-all", "span", "assemble", "stub", "plan"],
+};
+
+/** Stops (throws) when a mode that works on the whole film is combined with a flag it cannot honour. */
+function assertWholeFilmFlags(mode, flags) {
+  for (const f of MODE_REFUSES[mode]) {
+    if (flags[f] !== undefined) throw new Error(`--${mode} works on the film as a whole; it does not combine with --${f}`);
   }
 }
 
@@ -1033,16 +1181,18 @@ function assertSpanBase({ segments, touched, segDir, fps, width, height }) {
 
 /**
  * Builds one segment's new mp4 from its pieces: `old` pieces are cut out of the
- * cached mp4 at exact frames, `new` pieces come from renderNew(piece, outPath);
- * a new piece whose encoder headers differ from the old cut is re-encoded to
- * match, then all are joined. This is the one place that cuts and joins at the
- * span's frame boundaries. Returns the path of the joined mp4 in workDir.
+ * cached mp4 at exact frames (cutFrames: whole GOPs are packet-copied, only the
+ * frames up to the next keyframe are re-encoded), `new` pieces come from
+ * renderNew(piece, outPath); a new piece whose encoder headers differ from the
+ * old cut is re-encoded to match, then all are joined. This is the one place
+ * that cuts and joins at the span's frame boundaries. Returns the path of the
+ * joined mp4 in workDir.
  */
 export async function spliceSpanPieces({ pieces, oldPath, renderNew, fps, crf, preset, workDir }) {
   const files = [];
   for (const [i, p] of pieces.entries()) {
     const out = path.join(workDir, `${i}-${p.kind}.mp4`);
-    if (p.kind === "old") await encodePart({ src: oldPath, from: p.from, to: p.to, fps, crf, preset, outPath: out });
+    if (p.kind === "old") await cutFrames({ src: oldPath, from: p.from, to: p.to, fps, crf, preset, outPath: out });
     else await renderNew(p, out);
     files.push({ kind: p.kind, path: out });
   }
@@ -1069,7 +1219,7 @@ async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, 
   try {
     const renderNew = (p, outPath) => encodeSegment({ session, segment: { frameStart: p.from, frameEnd: p.to }, outPath, fps, crf, preset, scaleFilter });
     const built = await spliceSpanPieces({ pieces: touched.pieces, oldPath: target, renderNew, fps, crf, preset, workDir });
-    const frames = await probeFrameCount(built);
+    const frames = await probePacketCount(built);
     if (frames !== segment.frameEnd - segment.frameStart) throw new Error(`span splice of ${id} has ${frames} frames, expected ${segment.frameEnd - segment.frameStart}`);
     if (headerRef && !(await sameStream(headerRef, built))) {
       throw new Error(`span splice of ${id} has different encoder headers from the other segments; a -c copy join would not decode`);
@@ -1126,6 +1276,292 @@ async function renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan,
   if (plan) return { planOnly: true, decisions };
   await renderSpans({ pool, segments, touched, segDir, fps, crf, preset, scaleFilter, width: targetWidth, height: targetHeight, workers });
   return await joinAndFinish({ dir, paths, pool, segments, segDir, decisions, fps, crf, preset, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
+}
+
+// ---- the plan printout, its cache, and leftovers of crashed renders -----------
+
+/** One REUSE/RENDER/... line per segment (and the --only neighbour note). */
+function printDecisions(decisions) {
+  for (const d of decisions) {
+    if (d.neighbour && d.action === "RENDER") process.stdout.write(`--only: also rendering ${d.segment.id} (its frames changed)\n`);
+    process.stdout.write(`${d.action}  ${d.segment.id}  [${d.segment.frameStart},${d.segment.frameEnd})  ${d.reason}\n`);
+  }
+}
+
+function reportStaleTemps(outDir) {
+  const removed = removeStaleTemps(outDir);
+  if (removed.length) process.stdout.write(`removed ${removed.length} temp leftover(s) of crashed render(s):\n${removed.map((p) => `  ${p}`).join("\n")}\n`);
+}
+
+const PLAN_CACHE_FILE = "plan-cache.json";
+const FINGERPRINT_SKIP = new Set(["node_modules", ".git", ".backup", ".worktree"]);
+
+/** "relative path, size, mtime" of every file under `root` (the reel's own out/ left out), sorted. */
+function treeStats(root) {
+  const lines = [];
+  const stack = [root];
+  while (stack.length) {
+    const d = stack.pop();
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) {
+        if (!FINGERPRINT_SKIP.has(e.name) && !(d === root && e.name === "out")) stack.push(p);
+      } else {
+        const s = fs.statSync(p, { throwIfNoEntry: false });
+        if (s) lines.push(`${path.relative(root, p)}|${s.size}|${s.mtimeMs}`);
+      }
+    }
+  }
+  return lines.sort();
+}
+
+function segmentCacheStats(segDir) {
+  if (!fs.existsSync(segDir)) return [];
+  return fs.readdirSync(segDir).filter((n) => /\.(json|mp4)$/.test(n)).sort().map((n) => {
+    const s = fs.statSync(path.join(segDir, n));
+    return `${n}|${s.size}|${s.mtimeMs}`;
+  });
+}
+
+/**
+ * What a --plan answer depends on: the options, every file of the reel dir
+ * outside out/ (the page and what it loads) and the segment cache dirs it
+ * compares against. Equal key = the plan would come out the same.
+ */
+function planCacheKey({ dir, paths, preview, noCaptions, lang, only, probeAll, stubSec, stubSegments }) {
+  const quality = preview ? "preview" : "final";
+  const segDir = segmentDirFor(paths.outDir, quality, noCaptions, lang);
+  const baseSegDir = lang ? segmentDirFor(paths.outDir, quality, noCaptions, null) : null;
+  const fingerprint = crypto
+    .createHash("sha256")
+    .update(JSON.stringify([treeStats(dir), segmentCacheStats(segDir), baseSegDir ? segmentCacheStats(baseSegDir) : null]))
+    .digest("hex");
+  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, fingerprint });
+}
+
+function readPlanCache(outDir, key) {
+  try {
+    const stored = JSON.parse(fs.readFileSync(path.join(outDir, PLAN_CACHE_FILE), "utf8"));
+    return stored.key === key ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePlanCache(outDir, key, decisions) {
+  const slim = decisions.map((d) => ({ segment: d.segment, action: d.action, reason: d.reason, neighbour: !!d.neighbour }));
+  const file = path.join(outDir, PLAN_CACHE_FILE);
+  const tmp = uniqueTempPath(file);
+  writeJson(tmp, { key, at: new Date().toISOString(), decisions: slim });
+  fs.renameSync(tmp, file);
+}
+
+// ---- --bed-only: new sound, the same picture ----------------------------------
+
+function linkOrCopy(from, to) {
+  try {
+    fs.linkSync(from, to);
+  } catch {
+    fs.copyFileSync(from, to);
+  }
+}
+
+/** A render stamp no picture or bed file in `outDir` uses yet. */
+function freshStamp(outDir, stem) {
+  let when = new Date();
+  for (;;) {
+    const stamp = timestamp(when);
+    if (!fs.existsSync(path.join(outDir, `${stem}-${stamp}.mp4`)) && !fs.existsSync(path.join(outDir, `${stem}-${stamp}.bed.wav`))) return stamp;
+    when = new Date(when.getTime() + 1000);
+  }
+}
+
+/**
+ * Rebuilds the sound bed of the current picture (out/<stem>.mp4) from the page
+ * and publishes a new picture/bed/timings trio: the picture file is hard-linked
+ * (copied where links fail) under the new stamp, so no frame is rendered or
+ * re-encoded, and its video stream md5 must equal the old one's. The page is
+ * opened once for renderSfx and the sound cues; no frame is captured.
+ */
+async function rebuildPictureBed({ paths, pool, meta, lang }) {
+  const stem = pictureStem(lang);
+  const again = `--no-captions${lang ? ` --lang ${lang}` : ""}`;
+  const link = path.join(paths.outDir, `${stem}.mp4`);
+  const timingsPath = path.join(paths.outDir, `${stem}.timings.json`);
+  if (!fs.existsSync(link) || !fs.existsSync(timingsPath)) throw new Error(`no out/${stem}.mp4 and out/${stem}.timings.json to keep — render the picture first (${again})`);
+  const oldVideo = fs.realpathSync(link);
+  const frames = await probePacketCount(oldVideo);
+  const pageFrames = Math.round(meta.duration * meta.fps);
+  if (frames !== pageFrames) {
+    throw new Error(`--bed-only keeps the picture, but ${path.basename(oldVideo)} has ${frames} frames and the page's timeline is ${pageFrames}: the picture is out of date — render it (${again}; --span for a few seconds)`);
+  }
+  const sfxPath = await maybeRenderSfx(pool, paths);
+  const cueInputs = await resolveSoundCues(pool, paths.root);
+  const stamp = freshStamp(paths.outDir, stem);
+  const stampedVideo = path.join(paths.outDir, `${stem}-${stamp}.mp4`);
+  const stampedBed = path.join(paths.outDir, `${stem}-${stamp}.bed.wav`);
+  try {
+    linkOrCopy(oldVideo, stampedVideo);
+    const durationSec = String(await probeDuration(stampedVideo));
+    await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: stampedBed });
+    await assertBedPair({ oldVideo, stampedVideo, stampedBed, stem, timingsPath, durationSec });
+  } catch (e) {
+    fs.rmSync(stampedVideo, { force: true });
+    fs.rmSync(stampedBed, { force: true });
+    throw e;
+  } finally {
+    if (sfxPath) fs.rmSync(sfxPath, { force: true });
+  }
+  const outPath = pointLatest(paths.outDir, `${stem}.mp4`, stampedVideo);
+  const bedPath = pointLatest(paths.outDir, `${stem}.bed.wav`, stampedBed);
+  return { bedOnly: true, outPath, bedPath, frames, seconds: frames / meta.fps, videoMd5: await videoStreamMd5(stampedVideo), framesRendered: 0 };
+}
+
+/** Throws unless the picture stream is the old one's, byte for byte, and the new picture/bed/timings agree. */
+async function assertBedPair({ oldVideo, stampedVideo, stampedBed, stem, timingsPath, durationSec }) {
+  const [before, after] = await Promise.all([videoStreamMd5(oldVideo), videoStreamMd5(stampedVideo)]);
+  if (before !== after) throw new Error(`--bed-only changed the picture stream (md5 ${before} -> ${after}); nothing published`);
+  const timings = readJson(timingsPath);
+  const problems = pairProblems({
+    videoSec: Number(durationSec),
+    bedSec: await probeDuration(stampedBed),
+    timingsSec: Number.isFinite(timings.duration) ? timings.duration : NaN,
+    videoStamp: stampOfPictureFile(stampedVideo, stem),
+    bedStamp: stampOfPictureFile(stampedBed, stem),
+  });
+  if (problems.length) throw new Error(`picture/bed/timings mismatch, nothing published: ${problems.join("; ")}`);
+}
+
+// ---- --assemble: a film from existing runs of frames (an EDL) ------------------
+
+/** Each EDL entry's clip file, frame range and film position; stops (throws) naming an entry whose clip is missing, off the reel's fps or too short. */
+async function resolveEdlEntries({ entries, dir, segDir, fps }) {
+  const out = [];
+  let outStart = 0;
+  for (const [i, e] of entries.entries()) {
+    const label = e.segment ? `segment ${e.segment}` : e.src;
+    const file = e.segment ? segMp4Path(segDir, e.segment) : path.resolve(dir, e.src);
+    if (!fs.existsSync(file)) throw new Error(`EDL entry ${i + 1} (${label}): ${file} does not exist${e.segment ? " — render that segment first" : ""}`);
+    const info = await probeVideoInfo(file);
+    if (Math.abs(info.fps - fps) > 1e-3) throw new Error(`EDL entry ${i + 1} (${label}) runs at ${info.fps} fps, the reel at ${fps} fps`);
+    const total = await probePacketCount(file);
+    const to = e.to === null ? total : e.to;
+    if (to > total) throw new Error(`EDL entry ${i + 1} (${label}): frames [${e.from},${to}) do not fit its ${total} frames`);
+    out.push({ ...e, label, file, to, frames: to - e.from, whole: e.from === 0 && to === total, outStart });
+    outStart += to - e.from;
+  }
+  return out;
+}
+
+/**
+ * Cuts every entry out of its clip (a whole clip is used as it is) and joins
+ * them with a packet copy. An entry whose encoder headers differ from the
+ * cache's (a segment entry is the reference) is re-encoded like the segments.
+ * @returns {Promise<{checks: {entry: object, file: string, ranges: {from:number,to:number}[]}[], notes: string[]}>}
+ */
+async function assembleTrack({ resolved, fps, crf, preset, workDir, outPath }) {
+  const reference = (resolved.find((r) => r.segment) || resolved[0]).file;
+  const files = [];
+  const checks = [];
+  const notes = [];
+  for (const [i, r] of resolved.entries()) {
+    let file = r.file;
+    let pieces = [{ kind: "copy", from: 0, to: r.frames }];
+    if (!r.whole) {
+      const cut = await cutFrames({ src: r.file, from: r.from, to: r.to, fps, crf, preset, outPath: path.join(workDir, `e${i}.mp4`) });
+      file = cut.outPath;
+      pieces = cut.pieces.map((p) => ({ kind: p.kind, from: p.from - r.from, to: p.to - r.from }));
+    }
+    if (!(await sameStream(reference, file))) {
+      const like = path.join(workDir, `e${i}-like.mp4`);
+      await reencodeLikeSegments({ src: file, like: await streamTags(reference), fps, crf, preset, outPath: like });
+      file = like;
+      pieces = [{ kind: "encode", from: 0, to: r.frames }];
+      notes.push(`${r.label}: encoder headers differ from the cache's; re-encoded (crf ${crf}) before the join`);
+    }
+    files.push(file);
+    checks.push({ entry: r, file, ranges: entryCheckRanges({ frames: r.frames, pieces, fresh: r.fresh }) });
+  }
+  await concatMp4(files, outPath, fps);
+  return { checks, notes };
+}
+
+/**
+ * The frame gate of --assemble: the frame count (from packets), then the
+ * framemd5 of the new entries, the re-encoded pieces and the first/last frames
+ * of every copied piece (the seams), against the same frames in their clips.
+ * The rest of the film is packet-copied and is not decoded. Returns how many
+ * frames were hashed.
+ */
+async function gateAssembled({ outPath, checks, expectedFrames, fps }) {
+  const frames = await probePacketCount(outPath);
+  if (frames !== expectedFrames) throw new Error(`--assemble frame count gate failed: the film has ${frames} frames, expected ${expectedFrames}`);
+  let hashed = 0;
+  for (const { entry, file, ranges } of checks) {
+    for (const r of ranges) {
+      const want = await frameHashRange(file, r.from, r.to, fps);
+      const got = await frameHashRange(outPath, entry.outStart + r.from, entry.outStart + r.to, fps);
+      const bad = got.findIndex((h, i) => h !== want[i]);
+      if (got.length !== want.length || bad !== -1) {
+        throw new Error(`--assemble framemd5 gate failed: film frame ${entry.outStart + r.from + Math.max(0, bad)} (${entry.label}) differs from its clip`);
+      }
+      hashed += r.to - r.from;
+    }
+  }
+  return hashed;
+}
+
+/**
+ * After an assembly the film's own segments are cut back out of the track
+ * (packet copy where the cut is on a keyframe) and their cache entries
+ * rewritten with the page's probe hashes, so a later render, --span or --only
+ * finds every segment current at its new place.
+ */
+async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf, preset, width, height }) {
+  await pool.warmFor(segments.flatMap((s) => s.shotIds));
+  await pool.use(async (session) => {
+    for (const segment of segments) {
+      const mp4Path = segMp4Path(segDir, segment.id);
+      const tmpPath = uniqueTempPath(mp4Path);
+      await cutFrames({ src: videoPath, from: segment.frameStart, to: segment.frameEnd, fps, crf, preset, outPath: tmpPath });
+      fs.renameSync(tmpPath, mp4Path);
+      const probes = [];
+      for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
+      writeJson(segJsonPath(segDir, segment.id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes });
+    }
+  });
+}
+
+async function renderAssembled({ dir, paths, pool, segments, segDir, edlPath, plan, fps, crf, preset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
+  const resolved = await resolveEdlEntries({ entries: parseEdl(readJson(edlPath)), dir, segDir, fps });
+  const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
+  const edlFrames = resolved.reduce((n, r) => n + r.frames, 0);
+  if (edlFrames !== expectedFrames) {
+    throw new Error(`the EDL has ${edlFrames} frames, the page's timeline ${expectedFrames}: entries must tile the film exactly (the shots decide the length)`);
+  }
+  const decisions = resolved.map((r) => ({
+    segment: { id: r.label, frameStart: r.outStart, frameEnd: r.outStart + r.frames },
+    action: r.fresh ? "NEW" : "COPY",
+    reason: `clip frames [${r.from},${r.to})${r.whole ? " (whole clip, used as it is)" : ""}`,
+  }));
+  printDecisions(decisions);
+  if (plan) return { planOnly: true, decisions };
+  const workDir = uniqueTempPath(path.join(segDir, "_assemble"));
+  fs.mkdirSync(workDir, { recursive: true });
+  const videoOnlyPath = uniqueTempPath(path.join(paths.outDir, "_video.mp4"));
+  try {
+    const { checks, notes } = await assembleTrack({ resolved, fps, crf, preset, workDir, outPath: videoOnlyPath });
+    for (const n of notes) process.stdout.write(`note: ${n}\n`);
+    const hashed = await gateAssembled({ outPath: videoOnlyPath, checks, expectedFrames, fps });
+    process.stdout.write(`assemble: ${expectedFrames} frames joined by packet copy; framemd5 checked on ${hashed} (new frames, re-encoded frames, seams)\n`);
+    await refreshSegmentCache({ pool, segments, segDir, videoPath: videoOnlyPath, fps, crf, preset, width: targetWidth, height: targetHeight });
+  } catch (e) {
+    fs.rmSync(videoOnlyPath, { force: true });
+    throw e;
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+  return await finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
 }
 
 // ---- --handle / --use-draft: drafts a little longer than their slot --------
@@ -1193,7 +1629,7 @@ export async function cutDraftSlot({ paths, id, preview }) {
   if (sidecar.quality !== quality) throw new Error(`draft ${id} was rendered as ${sidecar.quality}; render with${sidecar.quality === "preview" ? "" : "out"} --preview to use it`);
   const cut = slotCut(sidecar);
   const clipPath = path.join(dir, `${id}.slot.mp4`);
-  await encodePart({ src: mp4, from: cut.from, to: cut.to, fps: sidecar.fps, crf: preview ? 28 : 18, preset: preview ? "veryfast" : "medium", outPath: clipPath });
+  await cutFrames({ src: mp4, from: cut.from, to: cut.to, fps: sidecar.fps, crf: preview ? 28 : 18, preset: preview ? "veryfast" : "medium", outPath: clipPath });
   process.stdout.write(`use-draft: ${id} slot cut from draft frames [${cut.from},${cut.to}) (${cut.frames} frames) at t=${cut.startSec.toFixed(4)}s\n`);
   return { clipPath, startSec: cut.startSec };
 }
@@ -1269,7 +1705,7 @@ async function prepareInsert({ insert, segments, fps }) {
   if (Math.abs(info.fps - fps) > 1e-3) {
     throw new Error(`--insert clip runs at ${info.fps} fps, the reel at ${fps} fps — render the clip at the reel's fps`);
   }
-  const clipFrames = await probeFrameCount(insert.clipPath);
+  const clipFrames = await probePacketCount(insert.clipPath);
   const plan = { ...planInsert({ segments, startSec: insert.startSec, fps, clipFrames }), clipPath: insert.clipPath };
   if (plan.snapped) {
     process.stdout.write(`note: --insert start ${insert.startSec}s is not on the frame grid; using frame ${plan.startFrame} (t=${(plan.startFrame / fps).toFixed(4)}s)\n`);
@@ -1317,7 +1753,7 @@ async function buildInsertedTrack({ insertPlan, segDir, fps, crf, preset, outPat
   if (result.clipReencoded) {
     process.stdout.write(`note: the clip's size or encoder headers differ from the segments; re-encoded it (crf ${crf}) before the join\n`);
   }
-  await verifyInsertedSpan({ outPath, clipPath: result.clipUsed, startFrame: insertPlan.startFrame, expectedFrames });
+  await verifyInsertedSpan({ outPath, clipPath: result.clipUsed, startFrame: insertPlan.startFrame, expectedFrames, fps });
   process.stdout.write(`insert: ${expectedFrames} frames, framemd5 of frames [${insertPlan.startFrame},${insertPlan.endFrame}) equals the clip\n`);
   fs.rmSync(workDir, { recursive: true, force: true });
 }
@@ -1335,7 +1771,7 @@ export async function spliceTrack({ pieces, segmentPath, clipPath, fps, crf, pre
   const files = [];
   for (const p of pieces) {
     if (p.kind === "segment") files.push(segmentPath(p.id));
-    else if (p.kind === "part") files.push(await encodePart({ src: segmentPath(p.id), from: p.from, to: p.to, fps, crf, preset, outPath: path.join(workDir, `${p.id}-${p.from}-${p.to}.mp4`) }));
+    else if (p.kind === "part") files.push((await cutFrames({ src: segmentPath(p.id), from: p.from, to: p.to, fps, crf, preset, outPath: path.join(workDir, `${p.id}-${p.from}-${p.to}.mp4`) })).outPath);
     else files.push(null);
   }
   const reference = files.find(Boolean);
@@ -1408,32 +1844,6 @@ async function reencodeLikeSegments({ src, like, fps, crf, preset, outPath }) {
   await done;
 }
 
-async function encodePart({ src, from, to, fps, crf, preset, outPath }) {
-  await ffmpeg([
-    "-y", "-i", src, "-an",
-    "-vf", `trim=start_frame=${from}:end_frame=${to},setpts=PTS-STARTPTS`,
-    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", String(crf), "-preset", preset, "-r", String(fps),
-    outPath,
-  ]);
-  return outPath;
-}
-
-// Same codec, size, pixel format and encoder headers (avcC extradata), so
-// a -c copy join decodes every piece correctly.
-async function sameStream(a, b) {
-  const [x, y] = await Promise.all([streamSignature(a), streamSignature(b)]);
-  return x === y;
-}
-
-async function streamSignature(file) {
-  const { stdout } = await ffprobe([
-    "-v", "error", "-select_streams", "v:0", "-show_data_hash", "MD5",
-    "-show_entries", "stream=codec_name,profile,pix_fmt,width,height,extradata_hash",
-    "-of", "compact=p=0", file,
-  ]);
-  return stdout.toString().trim();
-}
-
 /** framemd5 hashes (one per decoded frame) of `file`'s first video stream. */
 export async function frameHashes(file) {
   const { stdout } = await ffmpeg(["-v", "error", "-i", file, "-map", "0:v:0", "-f", "framemd5", "-"]);
@@ -1445,38 +1855,20 @@ export async function frameHashes(file) {
 }
 
 /**
- * Throws unless `outPath` has `expectedFrames` frames and its frames from
- * `startFrame` hash (framemd5) the same as every frame of `clipPath`.
+ * Throws unless `outPath` has `expectedFrames` frames (counted from the packets,
+ * nothing decoded) and its frames from `startFrame` hash (framemd5) the same as
+ * every frame of `clipPath`. Only the inserted span is decoded.
  */
-export async function verifyInsertedSpan({ outPath, clipPath, startFrame, expectedFrames }) {
-  const [out, clip] = await Promise.all([frameHashes(outPath), frameHashes(clipPath)]);
-  if (out.length !== expectedFrames) {
-    throw new Error(`--insert frame count gate failed: joined video has ${out.length} frames, expected ${expectedFrames}`);
+export async function verifyInsertedSpan({ outPath, clipPath, startFrame, expectedFrames, fps }) {
+  const frames = await probePacketCount(outPath);
+  if (frames !== expectedFrames) {
+    throw new Error(`--insert frame count gate failed: joined video has ${frames} frames, expected ${expectedFrames}`);
   }
-  const span = out.slice(startFrame, startFrame + clip.length);
+  const clip = await frameHashes(clipPath);
+  const span = await frameHashRange(outPath, startFrame, startFrame + clip.length, fps || (await probeVideoInfo(outPath)).fps);
   const bad = span.findIndex((h, i) => h !== clip[i]);
   if (span.length !== clip.length || bad !== -1) {
     throw new Error(`--insert framemd5 gate failed: film frame ${startFrame + Math.max(0, bad)} differs from clip frame ${Math.max(0, bad)}`);
-  }
-}
-
-/**
- * Joins segment files with the concat demuxer (-c copy), then re-stamps the
- * joined track onto the exact 1/fps grid (ffmpeg.mjs snapToFrameGrid). The
- * concat alone leaves packets a few ticks off the grid at segment joins and
- * the last frame held long, and a later filter (dub.mjs's caption overlay)
- * then makes one frame more than the picture has.
- */
-export async function concatMp4(segmentPaths, outPath, fps) {
-  const listPath = uniqueTempPath(`${outPath}.concat.txt`);
-  const joinedPath = uniqueTempPath(`${outPath}.concat.mp4`);
-  fs.writeFileSync(listPath, segmentPaths.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n", "utf8");
-  try {
-    await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c", "copy", joinedPath]);
-    await snapToFrameGrid(joinedPath, outPath, fps);
-  } finally {
-    fs.rmSync(listPath, { force: true });
-    fs.rmSync(joinedPath, { force: true });
   }
 }
 
@@ -1495,7 +1887,7 @@ export async function gateAvSync({ videoOnlyPath, narrationPath, expectedFrames 
         `make voice/narration.wav ${videoDur.toFixed(3)}s long (voice.mjs / fit-track.mjs), and set "duration" in voice/timings.json to ${videoDur.toFixed(3)} if it differs`
     );
   }
-  const frameCount = await probeFrameCount(videoOnlyPath);
+  const frameCount = await probePacketCount(videoOnlyPath);
   if (frameCount !== expectedFrames) {
     throw new Error(`frame count gate failed: joined video has ${frameCount} frames, expected ${expectedFrames}`);
   }
@@ -1646,7 +2038,7 @@ async function probePeakDb(filePath, trimSec) {
 // The video decides the length: audio is padded with silence (apad) and cut at
 // the video's end, so a narration shorter than the picture never trims the
 // still tail the way -shortest did.
-async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath, narrationWindows = [], sfxDuckDb = 0 }) {
+async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath, narrationWindows = [], sfxDuckDb }) {
   const videoSec = String(await probeDuration(videoOnlyPath));
   const finalMux = (inputArgs, filterComplex) =>
     ffmpeg([
@@ -1776,10 +2168,10 @@ function narrationWindowsFor(dir, stubSec, stubSegments = 1) {
   return (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
 }
 
-/** plan.meta.sound.sfxDuckDb, default -6dB (references/sound.md "Mix"). Shared with dub.mjs. */
+/** plan.meta.sound.sfxDuckDb, else the gentle duck default (lib/duck.mjs: -2.5 dB, 0.8 s ramps, gaps under 1.5 s held). Shared with dub.mjs. */
 export function sfxDuckDbFromPlan(plan) {
   const sound = plan.meta && plan.meta.sound;
-  return sound && sound.sfxDuckDb != null ? sound.sfxDuckDb : -6;
+  return sound && sound.sfxDuckDb != null ? sound.sfxDuckDb : DUCK_DB_DEFAULT;
 }
 
 function sfxDuckDbFor(dir) {

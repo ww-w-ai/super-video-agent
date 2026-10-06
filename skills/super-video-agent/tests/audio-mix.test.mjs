@@ -102,14 +102,11 @@ test("buildCueMixFilter: includeNarration:false with sfx + one cue mixes sfx and
 
 // ---- ducking (scripts/lib/duck.mjs) — every cue dips under narration ----
 
-test("buildCueMixFilter: duckDb 0 (default) appends no duck stage — byte-identical to before ducking existed", () => {
-  const { filterComplex } = buildCueMixFilter({
-    narrationIndex: 0,
-    hasSfx: false,
-    cues: [{ trimSec: 0.8, peakDb: -12, gainDb: 2, atSec: 1.5 }],
-    narrationWindows: [{ start: 0, end: 1 }],
-  });
-  assert.doesNotMatch(filterComplex, /volume=eval=frame/);
+test("buildCueMixFilter: duckDb 0 appends no duck stage; left out, the duck.mjs defaults duck the cue", () => {
+  const args = { narrationIndex: 0, hasSfx: false, cues: [{ trimSec: 0.8, peakDb: -12, gainDb: 2, atSec: 1.5 }], narrationWindows: [{ start: 0, end: 1 }] };
+  assert.doesNotMatch(buildCueMixFilter({ ...args, duckDb: 0 }).filterComplex, /volume=eval=frame/);
+  assert.match(buildCueMixFilter(args).filterComplex, /volume=eval=frame/);
+  assert.equal(buildCueMixFilter(args).filterComplex, buildCueMixFilter({ ...args, duckDb: -2.5, rampSec: 0.8 }).filterComplex);
 });
 
 test("buildCueMixFilter: a nonzero duckDb with narrationWindows chains the duck filter after adelay, before the label", () => {

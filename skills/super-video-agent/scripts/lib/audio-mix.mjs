@@ -2,8 +2,9 @@
 // (design.md §2.5 "Sound") into a film's audio: each cue is trimmed to
 // maxSec (or its own length), given a 30ms fade-out, peak-normalized to
 // -6 dBFS then `gainDb`, delayed to its cue time, ducked under narration
-// (references/sound.md "Mix" — meta.sound.sfxDuckDb, default -6dB, unless
-// duckDb is 0 or no narrationWindows are given), and summed with narration
+// (references/sound.md "Mix" — meta.sound.sfxDuckDb, else the duck.mjs defaults:
+// -2.5 dB, 0.8 s ramps, gaps under 1.5 s held; no ducking when duckDb is 0 or no
+// narrationWindows are given), and summed with narration
 // (+ optional page SFX) into `[premaster]` — the mix before mastering. A
 // pure function of its inputs so the graph shape can be unit-tested
 // without ffmpeg: render.mjs supplies each cue's measured peak dB and trim
@@ -73,8 +74,8 @@ export async function measureMasterGain(premasterWavPath) {
  *   `narrationWindows`/`duckDb`/`rampSec` (scripts/lib/duck.mjs) duck every
  *   cue — not `hasSfx`'s page-rendered sound, which keeps the mix it
  *   already ducked itself (the music bed's own -10dB duck) — while
- *   narration speaks; omit `narrationWindows` or pass `duckDb: 0` for no
- *   ducking (byte-identical output to before ducking existed).
+ *   narration speaks; `duckDb`/`rampSec` left out use the duck.mjs defaults;
+ *   omit `narrationWindows` or pass `duckDb: 0` for no ducking.
  * @returns {{filterComplex:string, inputCount:number}} `inputCount` is how
  *   many audio `-i` inputs (narration [+ sfx] + cues) the caller must pass,
  *   starting at `narrationIndex`.
@@ -85,7 +86,7 @@ export function buildCueMixFilter({
   cues,
   includeNarration = true,
   narrationWindows = [],
-  duckDb = 0,
+  duckDb,
   rampSec,
 }) {
   const parts = [];

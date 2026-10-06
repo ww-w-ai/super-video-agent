@@ -21,18 +21,37 @@ export function buildJoinFilter({ count, width, height, fps, durationsSec }) {
   const parts = [];
   for (let i = 0; i < count; i++) {
     parts.push(`[${i}:v]scale=${width}:${height},fps=${fps},format=yuv420p,setsar=1[v${i}]`);
-    const d = durationsSec[i];
-    const fadeOutStart = Math.max(0, d - EDGE_FADE_SEC);
-    parts.push(
-      `[${i}:a]aresample=48000,aformat=channel_layouts=stereo,` +
-        `${audioFitFilter(d)},` +
-        `afade=t=in:d=${EDGE_FADE_SEC},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${EDGE_FADE_SEC}[a${i}]`
-    );
+    parts.push(partAudioChain(i, i, durationsSec[i]));
   }
   const labels = [];
   for (let i = 0; i < count; i++) labels.push(`[v${i}][a${i}]`);
   parts.push(`${labels.join("")}concat=n=${count}:v=1:a=1[v][a]`);
   return parts.join(";");
+}
+
+/**
+ * The audio half of buildJoinFilter, for a join whose video is stream-copied:
+ * the same per-part cut/pad/edge-fade, concatenated to `[a]`. `inputOffset`
+ * is the index of the first part among the ffmpeg inputs (the copied video
+ * track is input 0, so the parts start at 1).
+ * @param {{count:number, durationsSec:number[], inputOffset?:number}} args
+ */
+export function buildJoinAudioFilter({ count, durationsSec, inputOffset = 0 }) {
+  const parts = [];
+  for (let i = 0; i < count; i++) parts.push(partAudioChain(i + inputOffset, i, durationsSec[i]));
+  const labels = [];
+  for (let i = 0; i < count; i++) labels.push(`[a${i}]`);
+  parts.push(`${labels.join("")}concat=n=${count}:v=0:a=1[a]`);
+  return parts.join(";");
+}
+
+function partAudioChain(inputIndex, label, d) {
+  const fadeOutStart = Math.max(0, d - EDGE_FADE_SEC);
+  return (
+    `[${inputIndex}:a]aresample=48000,aformat=channel_layouts=stereo,` +
+    `${audioFitFilter(d)},` +
+    `afade=t=in:d=${EDGE_FADE_SEC},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${EDGE_FADE_SEC}[a${label}]`
+  );
 }
 
 /** Audio chain that makes one part's audio exactly `durationSec` long: cut, re-stamp from zero, pad. */

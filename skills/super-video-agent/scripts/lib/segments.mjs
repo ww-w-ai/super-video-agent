@@ -197,6 +197,58 @@ export function neighbourIds({ segments, onlyIds, skipIds = [] }) {
 }
 
 /**
+ * Reads the edit decision list of `render.mjs --assemble`: {"entries": [...]},
+ * each entry one run of frames of an existing clip, in film order. An entry
+ * names `src` (a clip path, relative to the reel dir) or `segment` (a cached
+ * segment id); `from`/`to` are frames of that clip (default: all of it);
+ * `new: true` marks frames that did not exist before (an inserted draft), which
+ * the frame gate checks in full — it defaults to true for a clip under drafts/.
+ * @returns {{src?:string, segment?:string, from:number, to:number|null, fresh:boolean}[]}
+ */
+export function parseEdl(doc) {
+  const entries = doc && Array.isArray(doc.entries) ? doc.entries : null;
+  if (!entries || !entries.length) throw new Error('the EDL must be {"entries": [{"segment": "<id>"}, {"src": "out/drafts/<id>.mp4", "new": true}, ...]} with at least one entry');
+  return entries.map((e, i) => {
+    const label = `EDL entry ${i + 1}`;
+    if (!e || typeof e !== "object") throw new Error(`${label} is not an object`);
+    const hasSrc = typeof e.src === "string" && e.src !== "";
+    const hasSegment = typeof e.segment === "string" && e.segment !== "";
+    if (hasSrc === hasSegment) throw new Error(`${label} names exactly one of "src" (a clip path) or "segment" (a cached segment id)`);
+    const from = e.from === undefined ? 0 : e.from;
+    const to = e.to === undefined ? null : e.to;
+    if (!Number.isInteger(from) || from < 0 || (to !== null && (!Number.isInteger(to) || to <= from))) {
+      throw new Error(`${label}: "from"/"to" are whole frame numbers of the clip with 0 <= from < to (got ${JSON.stringify(e.from)}, ${JSON.stringify(e.to)})`);
+    }
+    const fresh = e.new === undefined ? hasSrc && /(^|[\\/])drafts[\\/]/.test(e.src) : e.new === true;
+    return hasSrc ? { src: e.src, from, to, fresh } : { segment: e.segment, from, to, fresh };
+  });
+}
+
+/**
+ * Entry-relative frame ranges the --assemble frame gate hashes: a new entry in
+ * full; otherwise every re-encoded piece in full and the first and last `edge`
+ * frames of every copied piece (the seams). Frames inside a packet-copied piece
+ * are not hashed: they are the source's packets. Ascending, merged.
+ * @param {{frames:number, pieces:{kind:string,from:number,to:number}[], fresh:boolean, edge?:number}} args
+ */
+export function entryCheckRanges({ frames, pieces, fresh, edge = 2 }) {
+  if (fresh) return [{ from: 0, to: frames }];
+  const raw = [];
+  for (const p of pieces) {
+    if (p.kind === "encode") raw.push({ from: p.from, to: p.to });
+    else raw.push({ from: p.from, to: Math.min(p.to, p.from + edge) }, { from: Math.max(p.from, p.to - edge), to: p.to });
+  }
+  raw.sort((a, b) => a.from - b.from);
+  const merged = [];
+  for (const r of raw) {
+    const last = merged[merged.length - 1];
+    if (last && r.from <= last.to) last.to = Math.max(last.to, r.to);
+    else merged.push({ ...r });
+  }
+  return merged;
+}
+
+/**
  * `--only` ids that don't correspond to any current segment (design point 4).
  * @param {{segments: {id:string}[], onlyIds: string[]}} args
  * @returns {string[]}
