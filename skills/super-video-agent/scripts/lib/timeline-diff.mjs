@@ -77,13 +77,32 @@ export function spanFlag(runs, fps) {
 
 /**
  * An `--assemble` EDL: kept runs come from the old film at their old frames, new runs from `newFilm`, a clip
- * whose frame n is the new film's frame n (so a changed run takes the same frames from it).
+ * whose frame n is the new film's frame n (so a changed run takes the same frames from it), or from `newClips`
+ * (clips that start at a known frame of the new film, such as drafts).
  * @returns {{entries: object[]}}
  */
-export function edlFromRuns(runs, { oldFilm, newFilm }) {
-  return {
-    entries: runs.map((r) => r.kind === "keep"
-      ? { src: oldFilm, from: r.oldFrom, to: r.oldTo }
-      : { src: newFilm, from: r.newFrom, to: r.newTo, new: true }),
-  };
+export function edlFromRuns(runs, { oldFilm, newFilm, newClips }) {
+  const entries = runs.flatMap((r) => {
+    if (r.kind === "keep") return [{ src: oldFilm, from: r.oldFrom, to: r.oldTo }];
+    return newClips ? entriesFromClips(r, newClips) : [{ src: newFilm, from: r.newFrom, to: r.newTo, new: true }];
+  });
+  return { entries };
+}
+
+/**
+ * A changed run cut out of the clips that hold its frames. A clip is {src, frameStart, frameEnd}: its first frame
+ * is the new film's frame `frameStart` (a draft under out/drafts/ records that in its sidecar), so the film frame f
+ * is the clip's frame f - frameStart. A run that no clip holds stops the step: the EDL would not fit.
+ */
+function entriesFromClips(run, clips) {
+  const out = [];
+  let at = run.newFrom;
+  while (at < run.newTo) {
+    const clip = clips.filter((c) => c.frameStart <= at && at < c.frameEnd).sort((a, b) => b.frameEnd - a.frameEnd)[0];
+    if (!clip) throw new Error(`no new clip holds the film's frames [${at},${run.newTo}) (${run.ids.join(",")}); clips hold ${clips.map((c) => `[${c.frameStart},${c.frameEnd})`).join(" ")}`);
+    const to = Math.min(run.newTo, clip.frameEnd);
+    out.push({ src: clip.src, from: at - clip.frameStart, to: to - clip.frameStart, new: true });
+    at = to;
+  }
+  return out;
 }

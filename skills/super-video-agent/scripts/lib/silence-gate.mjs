@@ -72,6 +72,25 @@ export async function measureNarrationGaps(wavPath, lines, planLines, opts = {})
   return gapsFromPcm(samples, sampleRate, lines, planLines, opts);
 }
 
+/**
+ * Why a longest silence over the gate does not fail. The gate counts pauses between voiced audio, so the
+ * silence that runs to the end of the narration span (an end hold; in a film with no narration, the last
+ * scene's tail) and a planned pause are not failures. Null when the longest silence is within the gate or
+ * a gap already fails.
+ * @param {{longestSilenceSec:number, trailingSilenceSec?:number}} silence from longestSilenceAfterFirstSound
+ * @param {{planned:object[], unplanned:object[]}} gaps
+ * @param {number} gateSec
+ * @returns {string|null}
+ */
+export function silenceNote(silence, gaps, gateSec) {
+  const longest = silence.longestSilenceSec;
+  if (!(longest > gateSec) || gaps.unplanned.length) return null;
+  const s = `${longest.toFixed(3)}s`;
+  if ((silence.trailingSilenceSec ?? 0) >= longest - 0.02) return `longest silence ${s} is over the gate but is the tail after the last sound (an end hold), not a pause between sounds`;
+  if (gaps.planned.length) return `longest silence ${s} is over the gate but is a planned pause (pauseAfterMs or meta.gapMs)`;
+  return `longest silence ${s} is over the gate but no pause between two sounds was found`;
+}
+
 const t = (s) => `${s.toFixed(2)}s`;
 
 function describe(g) {

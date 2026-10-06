@@ -330,10 +330,15 @@ moved; every other item is a changed or added span. The tool prints the spans to
 copy with their old and new frames and the shift, the ids only the old timeline has, and a
 `--span <from>-<to>,...` value. When none of the kept frames moved, pass that value to `--span`.
 When some moved (a line got longer), `--span` stops on the moved ranges: build the film with
-`--assemble`. `--edl-out <edl.json> --old-film <mp4> --new-film <mp4>` writes that EDL: kept runs
-come from the old film at their old frames, new runs from the new film (an mp4 whose frame n is
-the new film's frame n, holding the new frames). Entries that name drafts or segments instead can
-be edited into it. The tool reports; whether to draw or copy is your decision.
+`--assemble`. `--edl-out <edl.json> --old-film <mp4> --new-film <mp4>[,<mp4>...]` writes that EDL: kept
+runs come from the old film at their old frames, new runs from the new film. `--new-film` is either an
+mp4 whose frame n is the new film's frame n, or draft clips (`render.mjs --only <id> --handle <sec>`,
+`out/drafts/<id>.mp4`, several separated by commas). A draft's first frame is not the film's frame 0:
+its sidecar `out/drafts/<id>.json` records `frameStart`, the film frame its first frame is, so a new run
+`[a, b)` becomes the clip's frames `[a - frameStart, b - frameStart)`. The tool reads the sidecar next
+to each clip, takes a run that crosses two drafts from both, and stops when a new run is held by no
+clip. A clip with no sidecar is read as the new film itself. Entries that name segments instead can be
+edited into the EDL. The tool reports; whether to draw or copy is your decision.
 
 ### Cuts and joins without re-encoding
 
@@ -778,6 +783,14 @@ one (for example "checked nothing" under `setSafeArea("none")`) and the engine's
   code points and line ids, and this is the one check that exits 1. `--outline-em <n>` compares glyph
   shapes after growing them by half the outline width (n times the font size). When the font did not
   load or cannot be told from a generic family, it prints `not checked: font not loaded`.
+- The overlap, glyph and flicker checks see only text drawn while the page seeks: each `fillText` /
+  `strokeText` call during `seek(t)` on a canvas attached to the document is recorded with its box.
+  Text drawn once at load into an offscreen canvas and copied each frame is not seen, and the report says `checked nothing` for
+  those checks (the glyph line names this cause). To expose it, call `fillText` during `seek()`
+  (draw the label into the canvas the frame is made on), or report the layers through the
+  `visibleAt` hook for the flicker check, and `regions` for `covers`. `langglyphs` reads the plan's
+  text, not the drawn text, so it is not affected. Check text that stays hidden from the checks by eye
+  on a still.
 - Flicker is read in the source first (show/hide windows under 2 frames, one-frame gaps, two clocks),
   with file:line; `--source-only` and `--no-source` choose.
 - Writes `out/state-checks.json`.

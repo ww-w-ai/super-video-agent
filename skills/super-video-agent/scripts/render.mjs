@@ -22,7 +22,7 @@ import {
   run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
   uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5, probeGops, keyframeInterval,
 } from "./lib/ffmpeg.mjs";
-import { buildCueMixFilter, measureMasterGain, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
+import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
 import { DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import {
@@ -2199,22 +2199,31 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
     });
     const audioInputs = [narrationPath, ...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
     const inputArgs = [videoOnlyPath, ...audioInputs].flatMap((p) => ["-i", p]);
-    const { filter } = await measurePremaster(inputArgs, filterComplex, outPath);
+    const { filter, measured, report } = await measurePremaster(inputArgs, filterComplex, outPath);
+    noteMasterCap(report, measured);
     await finalMux(inputArgs, `${filterComplex};[premaster]${filter},apad[aout]`);
     return;
   }
   if (sfxPath) {
     const inputArgs = [videoOnlyPath, narrationPath, sfxPath].flatMap((p) => ["-i", p]);
     const premix = `[1:a]${TO_STEREO}[voice];[2:a]${TO_STEREO}[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]`;
-    const { filter } = await measurePremaster(inputArgs, premix, outPath);
+    const { filter, measured, report } = await measurePremaster(inputArgs, premix, outPath);
+    noteMasterCap(report, measured);
     await finalMux(inputArgs, `${premix};[premaster]${filter},apad[aout]`);
     return;
   }
   // No sfx, no cues: the premix is just the narration file itself, no
   // separate pass-1 render needed.
   const inputArgs = [videoOnlyPath, narrationPath].flatMap((p) => ["-i", p]);
-  const { filter } = await measureMasterGain(narrationPath);
+  const { filter, measured, report } = await measureMasterGain(narrationPath);
+  noteMasterCap(report, measured);
   await finalMux(inputArgs, `[1:a]${filter},apad[aout]`);
+}
+
+/** Prints the master-gain fact when the boost cap held the gain (the film then sits under the target level). */
+function noteMasterCap(report, measured) {
+  const line = formatMasterCap(report, measured);
+  if (line) process.stdout.write(line);
 }
 
 /** Runs pass 1 (renders `filterComplex`'s `[premaster]` label to a temp wav

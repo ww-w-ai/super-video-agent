@@ -32,7 +32,8 @@ import {
   SILENCE_GATE_SEC,
   SILENCE_THRESHOLD_DB,
 } from "./lib/audio-analysis.mjs";
-import { gapsFromPcm } from "./lib/silence-gate.mjs";
+import { gapsFromPcm, silenceNote } from "./lib/silence-gate.mjs";
+import { loudnessUnderTarget } from "./lib/audio-mix.mjs";
 import { describeDefects } from "./voice/take-check.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
@@ -630,6 +631,8 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           silenceGateSec: SILENCE_GATE_SEC,
           silencePass,
           silenceGaps: { unplanned: silenceGaps.unplanned, planned: silenceGaps.planned },
+          silenceNote: nothingOf("silence") ? null : silenceNote(silence, silenceGaps, SILENCE_GATE_SEC),
+          underTarget: loudnessUnderTarget(loudness.integratedLufs),
           marks: markResults,
           voiceClipFacts: voiceClipFacts(timings),
           onsetSourceNote:
@@ -681,6 +684,8 @@ function printSummary(report) {
     `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${verdict(c.deadAir)}]${c.deadAir.intendedHolds.map((h) => ` intended hold ${h.startSec.toFixed(2)}s+${h.durationSec.toFixed(2)}s (not flagged)`).join(";")}`,
     `layout issues: ${c.layout.issueCount} [${verdict(c.layout)}]`,
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${verdict({ pass: c.audio.silencePass })}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
+    ...(c.audio.silenceNote ? [`  note: ${c.audio.silenceNote}`] : []),
+    ...(c.audio.underTarget ? [`  note: ${c.audio.underTarget.text}`] : []),
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
     ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}. ${checkedNothingNext()}`),
     ...(report.facts || []),

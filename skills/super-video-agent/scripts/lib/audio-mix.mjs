@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import { buildDuckVolumeExpr } from "./duck.mjs";
 import { measureLoudness } from "./audio-analysis.mjs";
-import { computeLineGainDb, lineNeedsLimiter, lineLevelFilter } from "./line-level.mjs";
+import { computeLineGainDb, lineNeedsLimiter, lineLevelFilter, LINE_MAX_BOOST_DB } from "./line-level.mjs";
 
 const FADE_OUT_SEC = 0.03;
 const TARGET_PEAK_DB = -6;
@@ -55,11 +55,48 @@ export function masterGainFilter(measured) {
   return `${lineLevelFilter(gainDb, limit, { maxTruePeakDb: MASTER_MAX_TRUE_PEAK_DB })},${MASTER_TAIL}`;
 }
 
+/**
+ * What the master gain did, as facts: the gain it applied, whether the boost cap (LINE_MAX_BOOST_DB, +12 dB) held it
+ * under what MASTER_TARGET_LUFS needs, and by how many dB the film then sits under the target. Pure.
+ * @param {{integratedLufs:number|null}} measured
+ * @returns {{gainDb:number, wantedDb:number, capped:boolean, shortDb:number}|null} null when the mix has no loudness
+ */
+export function masterGainReport(measured) {
+  const lufs = measured && measured.integratedLufs;
+  if (lufs == null || !Number.isFinite(lufs)) return null;
+  const wantedDb = MASTER_TARGET_LUFS - lufs;
+  const gainDb = computeLineGainDb(measured, { targetLufs: MASTER_TARGET_LUFS });
+  return { gainDb, wantedDb, capped: wantedDb > LINE_MAX_BOOST_DB + 0.05, shortDb: Math.max(0, wantedDb - gainDb) };
+}
+
+/**
+ * review.mjs's loudness fact: how far a finished file sits under the master target. Null when it is within
+ * 0.5 dB or has no loudness. The cap is named because it is the usual cause in a sparse mix. Pure.
+ * @param {number|null} integratedLufs
+ * @returns {{targetLufs:number, underDb:number, text:string}|null}
+ */
+export function loudnessUnderTarget(integratedLufs) {
+  if (integratedLufs == null || !Number.isFinite(integratedLufs)) return null;
+  const underDb = MASTER_TARGET_LUFS - integratedLufs;
+  if (underDb <= 0.5) return null;
+  return {
+    targetLufs: MASTER_TARGET_LUFS,
+    underDb,
+    text: `loudness: I=${integratedLufs.toFixed(1)} LUFS sits ${underDb.toFixed(1)} dB under the ${MASTER_TARGET_LUFS} LUFS master target; the master gain is capped at +${LINE_MAX_BOOST_DB} dB and peaks are held at ${MASTER_MAX_TRUE_PEAK_DB} dBTP, so a sparse mix stays under it (raise the page's own sound level, references/sound.md "Mix")`,
+  };
+}
+
+/** The line render.mjs prints when the cap held the master gain; "" when it did not. */
+export function formatMasterCap(report, measured) {
+  if (!report || !report.capped) return "";
+  return `master gain capped at +${LINE_MAX_BOOST_DB} dB: the mix measured ${measured.integratedLufs.toFixed(1)} LUFS, so the film sits ${report.shortDb.toFixed(1)} dB under ${MASTER_TARGET_LUFS} LUFS (raise the page's own sound level; references/sound.md "Mix")\n`;
+}
+
 /** Measures `premasterWavPath` (pass 1's rendered mix) and returns both the
- * measurement (for logging/reporting) and the pass-2 filter string. */
+ * measurement (for logging/reporting), the pass-2 filter string and the gain report. */
 export async function measureMasterGain(premasterWavPath) {
   const measured = await measureLoudness(premasterWavPath);
-  return { measured, filter: masterGainFilter(measured) };
+  return { measured, filter: masterGainFilter(measured), report: masterGainReport(measured) };
 }
 
 /**

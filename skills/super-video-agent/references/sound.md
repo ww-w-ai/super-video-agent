@@ -83,7 +83,10 @@ sfx cue times are measured from the film's t = 0, lead included.
 
 - Master to **-16 LUFS integrated**, true peak ≤ -1 dBTP (render does this) with one static gain
   measured over the whole mix, never a single-pass `loudnorm`: it ramps its gain as it reads, so
-  the start comes out quiet.
+  the start comes out quiet. The gain is capped at **+12 dB**: a mix that measures under -28 LUFS
+  stays under -16. `render.mjs` prints `master gain capped at +12 dB: ...` with the gap in dB when
+  that happens, and `review.mjs` prints a `note:` under the audio line when a file sits more than
+  0.5 dB under -16 LUFS. Both are facts; raise the page's own sound level (below) or accept the level.
 - If you mix with ffmpeg yourself, every `amix` sets `normalize=0`. Its default divides the sum by
   the inputs still playing, so the voice gets louder each time a line or an effect ends.
   `tests/amix-normalize.test.mjs` fails on any bundled `amix` without it.
@@ -121,6 +124,15 @@ sfx cue times are measured from the film's t = 0, lead included.
   page's level to sit that far under the voice, with a note when the peak after it passes -1 dBTP.
   The gap you want is your decision; the tool computes none without `--under`. Apply the offset in
   the page's audio code, render again, and read `review.mjs`'s integrated loudness and true peak.
+- **The silence gate on a film with no narration.** `review.mjs` and `voice.mjs` count a quiet
+  stretch over 1 s between two sounds (the gate) as a gap, unless the plan asks for it
+  (`pauseAfterMs`, `meta.gapMs`). In a film with no narration the lines are the scenes of
+  `voice/timings.json` (`references/assembly.md` "A film with no narration"), the sound is the page's
+  own, and a gap is quiet between two of its sounds, usually at a scene boundary. It is closed by
+  sound under the join (an air or a motion sound under each scene), or the pause is declared in the
+  plan. The quiet after the last sound (an end hold) is not a gap: when the longest silence is over
+  the gate and the film still passes, `review.mjs` prints a `note:` that says why (the tail after the
+  last sound, or a planned pause).
 - `master` soft-clips with tanh; if the review shows true peak over the limit, lower the effect
   gain, not the voice.
 
