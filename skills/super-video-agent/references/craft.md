@@ -1,5 +1,7 @@
 # Craft — what made earlier code films work, and what viewers rejected
 
+Contents: Aliveness · Marks are made · One picture per line · Fill the frame with the subject · Rhythm (fit the words to the picture, lists, captions) · A promo makes the viewer want to go · A character holding the camera · Named 2D techniques · Failures real viewers called out
+
 These are observations, not settings. The user's direction comes first. The user may give exact numbers (sizes, layout, line length, coordinates); when they
 do, use them. When they do not, decide from the content and the look you chose.
 
@@ -54,7 +56,53 @@ card before the Short loops. Most popular Shorts cut on the last sound, but a cl
 caption on the last frame was the norm in the viral code-drawn demos.
 
 A starting point for a cut's first frame: show what the shot is before moving into detail; an
-ambiguous close-up as the first frame read as noise in one film.
+ambiguous close-up as the first frame read as noise in one film. As one example, open a scene
+wide to give the viewer the context first (where we are, what the subject is), then move in to
+the detail the line is about. A film that opens every scene wide reads as one repeated move; a
+scene whose context is already clear can start close.
+
+### Fit the words to the picture
+
+The picture sets the pace; the words fit it. When a line lands before the viewer could read the
+frame, slow the line down: give it a pause before (`pauseBeforeMs` on the line), a shorter text, or
+a longer shot. Do not speed the voice up to fit the picture in. Rushing is the most common reason
+viewers say the pacing is too fast.
+
+Silence is a technique. A pause after a punchline lets it land: hold the picture with no voice for
+a beat (a few tenths of a second to a couple of seconds, set per line with `pauseBeforeMs` on the
+next line, or with a hold in the picture). The same holds for the frame: empty space around one
+element is a placement choice, as a pause is for sound. Length depends on the medium: a talk or
+a presentation can hold a long pause; a short vertical film or a TV-style piece feels
+awkward when a pause runs long. The film chooses; these are not rules.
+
+Declare a deliberate slow movement or hold so the review does not flag it as dead air:
+`window.__reel.holds = [{from, to, id?, reason?}]`, or `review.mjs --file <mp4> --holds a-b,c-d`.
+A flagged span is judged from the code and the intent, not from the frame alone. A slow hold can
+carry a small push-in (about 3 % scale across the span) so the frame is not frozen; this is one
+way, not a requirement.
+
+### Lists: one picture per item
+
+One technique for a line that lists several things: each listed item gets its own picture, landing
+on the word that names it (word times in `voice/timings.json`), one after another. The viewer
+sees each item arrive as it is spoken. This is one technique among many. Before using it, ask
+whether it suits this line: three short items fit it; a list of twelve, or items with nothing to
+show, do not. You may use a different technique, or invent one, if it serves the content better
+(a single picture that fills as items are named, a row that scrolls, one image for the whole
+group). Do not pick this one only because it is written here.
+
+### Captions
+
+- **No single-word captions.** A caption piece of one word reads as a flash. An automatic cut that
+  leaves one word alone joins it to its neighbour whenever the joined piece fits the row.
+- **A forced break `|` is kept.** Write `|` in a line's `text` where a caption must break (never
+  mid-phrase); it is removed before the voice reads the text. A piece cut by `|` is never merged
+  with its neighbour, even when it is one word, so choose breaks that leave whole phrases.
+- **The comma rule runs per `|` piece.** When a piece fits one row, its comma stays in the row;
+  a comma splits a piece only when that piece does not fit. The test is on each `|` piece, not on
+  the whole line.
+- Never split a phrase across pieces, in any language. `validate-plan.mjs <dir> --breaks` lists
+  every caption break of the film so you can read them.
 
 ## A promo makes the viewer want to go
 
@@ -73,6 +121,26 @@ the camera behaves like one: a small handheld drift (keyed, smooth noise, not ra
 a selfie flip as a fast whip-pan, cuts or whips placed in the longer pauses between lines, and
 key beats landed on the word times. Whether a film uses this framing at all is a choice for that
 film.
+
+## Named 2D techniques
+
+Users often describe a look by a technique seen on TV. These names mean different things; use
+the right one when you talk with the user and in `FILM.md`.
+
+| Name | What it is | Known examples |
+|---|---|---|
+| Cut-out animation (paper-puppet animation) | a figure cut into parts (head, torso, upper and lower limbs) that rotate at overlapping joints | early *South Park*; many current TV cartoons |
+| Collage animation | scraps of magazines or photos pasted together, the cut-and-paste texture shown on purpose | Terry Gilliam's *Monty Python* animation |
+| Photo animation | a real person's photo cut out; only the head or arms move | documentary, news and explainer videos |
+| 2.5D parallax | a still split into near and far layers; a camera move gives depth | the "living photo" shot in documentaries |
+
+Studio tools for these are Toon Boom Harmony, Moho and Adobe Character Animator; setting up the
+joints is called cut-out rigging. A cut-out figure moves well when its parts share one fabric and
+shade at every overlap, and when motion is eased with follow-through (a forearm trailing its
+shoulder) rather than switched pose to pose. A drawn figure that looks crude next to the rest of
+the frame can often be replaced by generated images cut into such parts. Name the technique for
+each scene in `FILM.md`; the rigs, the 3D route and the keyword rule for characters are in
+`references/characters.md`.
 
 ## Failures real viewers called out on Opus-made films
 
