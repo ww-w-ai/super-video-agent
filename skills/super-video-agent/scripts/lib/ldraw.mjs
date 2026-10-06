@@ -170,6 +170,11 @@ export function openLibrary(root) {
     if (text.has(rel)) return text.get(rel);
     for (const dir of dirs) {
       const p = path.join(dir, rel);
+      // A model file names its sub-files; a name that climbs out of the library is refused, never read.
+      const inside = path.relative(dir, p);
+      if (!inside || inside.startsWith("..") || path.isAbsolute(inside)) {
+        throw new Error(`library file name leaves the library: ${name}`);
+      }
       if (fs.existsSync(p) && fs.statSync(p).isFile()) {
         text.set(rel, fs.readFileSync(p, "utf8"));
         return text.get(rel);
