@@ -255,6 +255,21 @@ cuts exactly the slot frames out of the clip (re-encoded, no page render) and sp
 the slot start through the `--insert` path, with the same frame-count and framemd5 checks. Use
 the same `--preview` setting for the draft and for `--use-draft`.
 
+`<id>.json` also records a stamp of what the page was made from (a hash over every file of the
+reel folder outside `out/`: path, size and content up to 8 MB per file, no modified time) and the
+hashes of the slot's first, middle and last frame. `scripts/draft-check.mjs <dir>` compares each
+draft with the page now and prints one state per draft:
+
+| state | meaning |
+|---|---|
+| `current` | the stamp is the same; the page is as it was |
+| `slot-unchanged` | the stamp moved, the page still draws the slot's frames the same; the draft is usable |
+| `stale` | the page draws the slot differently now; draw the draft again |
+| `unstamped` | the draft has no stamp; draw it again to record one |
+
+The page is opened only when a stamp moved. `--use-draft` warns, without stopping, when the stamp
+moved. Whether to use a stale draft is your decision.
+
 ### Render reuse
 
 Render reuse is the base principle of this stage: render and encode only what changed, stream-copy
@@ -294,6 +309,24 @@ updated, so a later full render reuses it.
   frames read.
 - `--plan --span` prints the span plan and exits.
 
+**Finding the changed spans.** Keep the old `voice/timings.json` (or a dump of the page's shots,
+`{duration, fps, shots: [{id, start, end}]}`) before the voice or the page changes. Then:
+
+```
+changed-spans.mjs <old-timeline.json> <new-timeline.json> [--fps <n>] [--out <json>]
+```
+
+Each timeline item owns the frames from its start to the next item's start. An item is kept when
+the other timeline has the same id with the same text, hash, word times and owned length, even if it
+moved; every other item is a changed or added span. The tool prints the spans to draw, the runs to
+copy with their old and new frames and the shift, the ids only the old timeline has, and a
+`--span <from>-<to>,...` value. When none of the kept frames moved, pass that value to `--span`.
+When some moved (a line got longer), `--span` stops on the moved ranges: build the film with
+`--assemble`. `--edl-out <edl.json> --old-film <mp4> --new-film <mp4>` writes that EDL: kept runs
+come from the old film at their old frames, new runs from the new film (an mp4 whose frame n is
+the new film's frame n, holding the new frames). Entries that name drafts or segments instead can
+be edited into it. The tool reports; whether to draw or copy is your decision.
+
 ### Cuts and joins without re-encoding
 
 A cut of frames `[from, to)` packet-copies the whole closed GOPs between clean keyframes and
@@ -319,7 +352,11 @@ lengths. Use it when the timeline shifted: old segments are copied to their new 
 are put in, with no page frame rendered. The gate hashes only new frames, re-encoded frames and the
 first and last two frames of every copied run. Afterwards the segment cache is rewritten at the new
 places (the page is opened once, three frames per segment), so the next render, `--span` or `--only`
-sees every segment current. A missing clip, an fps mismatch, a range past the clip, an EDL that does
+sees every segment current. Before a segment is recorded, its first, middle and last frame are
+decoded from the copied clip and compared, in greyscale at a small size, with what the page draws
+at that frame now. A segment whose frames differ (more than 3% of pixels) is reported on stderr
+with the share of pixels and is left out of the cache, so the next render draws it again; a probe
+hash alone cannot say the copied frames are the page's. The film itself is written. A missing clip, an fps mismatch, a range past the clip, an EDL that does
 not tile, or a count or hash mismatch stops the run and publishes nothing. Not with `--only`,
 `--insert`, `--use-draft`, `--handle`, `--span`, `--lang` or `--stub`.
 

@@ -38,12 +38,35 @@ soft bodies"; `overlap.mjs`).
 
 Further assembly techniques, each an example; a different or better way may be chosen:
 
+- **Step order from the part hierarchy.** A model file often stores a tree: a main model that
+  references sub-models, each with its own steps. Read that tree from the source file and take the
+  order from it: a sub-assembly's steps run together, then the sub-assembly joins its parent as one
+  piece. A loader that flattens the file into one list of steps mixes a sub-model's parts into its
+  parent's steps and gives a wrong order, so list the tree first (which model contains which, in
+  which order) and build the step list from that, not from the flattened loader output. When the
+  file has no tree, say so in `FILM.md` and show the order you chose in a sheet of stills before the
+  voice is written.
+- **Press direction from the connection.** A part is pressed in along the line its connection lines
+  up on (the axis of the peg and its socket, the screw's axis, the hinge pin), toward the part it
+  joins. It is not the direction from where it first appears to where it ends, and not an axis of
+  its bounding box. Take the direction from the connection's own geometry, and let the part arrive
+  along it for the length of one connection before it rests.
+- **Collision by surface, not by box.** To check that a part's path is clear, cast the part's
+  surface (its triangles, or a dense sample of points on them) against the surfaces of the parts
+  already placed. A bounding-box sweep cannot tell a crossing (a part cutting through another) from
+  a socket contact (a part seating into a socket it is meant to enter): both overlap the box.
+  Use the box only to skip pairs that are clearly apart, then decide on the surfaces. Report each
+  pair that crosses with the step and the frames, and decide by eye whether it is meant.
+- **Turn-over icon in the booklet.** When the model is turned over (see below), the manual side
+  shows a turn-over icon on that step (a curved arrow around a small model of the part, or a
+  half-turn symbol), so the viewer reads the flip as an instruction and not as a jump.
+
 - **Sub-assemblies.** A group of parts built on its own, shown as a small inset or in its own steps,
   then moved onto the main build as one piece. Give the group an id and let the step list place it
   once, so the viewer sees it finished before it joins.
 - **Turning the model over.** When the next parts go on the other side, turn the whole model over
-  (or move the camera round it) in its own short step, with a visible arrow or a pause. Do not
-  change the view silently between two steps.
+  (or move the camera round it) in its own short step, with a visible arrow or a pause, and the
+  turn-over icon in the booklet. Do not change the view silently between two steps.
 - **Hidden parts.** A part that ends up behind others cannot be seen at the moment it is placed.
   Show it from the side it can be seen from, make the covering parts see-through for that step, or
   cut away the cover, then restore them. Check each step in a still: every part added in the step
@@ -141,11 +164,18 @@ per scene (`references/unattended.md`) does the same.
 Render reuse is a base principle: when step data changes, render only the changed spans, copy
 the rest, and build what versions share once.
 
+- Find what changed from the timelines, not by hand: keep the old `timeline.json` (or
+  `voice/timings.json`), then `changed-spans.mjs <old.json> <new.json> --fps <n>` lists the steps
+  that changed or were added as seconds, the runs that only moved (old and new frames, shift), and a
+  `--span` value. A step is kept when its id, text and owned length are the same; a changed length
+  moves every step after it, and those are copied, not drawn.
 - A few seconds changed: `render.mjs <dir> --span <from>-<to>`. Untouched frames are reused.
 - A timeline that shifted (a step added or removed): `render.mjs <dir> --assemble <edl.json>`
   copies the old scenes to their new places and puts in the new drafts; no page frame is
   rendered for the copied scenes. After a successful assemble the segment cache follows the new
-  timeline, and a failed finish leaves the cache untouched.
+  timeline, and a failed finish leaves the cache untouched. `changed-spans.mjs --edl-out` writes
+  the EDL for this (`references/pipeline.md` "Re-rendering only some seconds"). A copied scene whose
+  frames are not what the page draws now is reported and left out of the cache.
 - Segments carry a keyframe every second, so a cut copies whole groups of pictures and re-encodes
   only the frames up to the next keyframe. Joining scenes is a stream copy, not a re-encode.
 - Language versions: the picture is rendered once and each language is laid over it

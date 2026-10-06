@@ -383,7 +383,15 @@ test("end to end: picture render, plan cache, --span (publish or throw), --bed-o
     fs.writeFileSync(edl, JSON.stringify({ entries: [{ src: "out/new-a.mp4", new: true }, { segment: "b" }, { segment: "c" }] }));
     const planned = await quiet(() => pictureRender(dir, { assemble: edl, plan: true }));
     assert.match(planned.text, /NEW  out\/new-a\.mp4  \[0,30\)/);
-    const asm = await quiet(() => pictureRender(dir, { assemble: edl }));
+    const err = [];
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (s) => (err.push(String(s)), true);
+    let asm;
+    try {
+      asm = await quiet(() => pictureRender(dir, { assemble: edl }));
+    } finally {
+      process.stderr.write = origErr;
+    }
     assert.equal(asm.result.frames, 70);
     assert.match(asm.text, /assemble: 70 frames joined by packet copy; framemd5 checked on \d+/);
     const hashed = Number(/framemd5 checked on (\d+)/.exec(asm.text)[1]);
@@ -392,8 +400,15 @@ test("end to end: picture render, plan cache, --span (publish or throw), --bed-o
     assert.ok(same(film.slice(30, 50), bHashes) && same(film.slice(50, 70), cHashes), "b and c keep their frames at their new place");
     assert.match(asm.text, /note: out\/new-a\.mp4: encoder headers differ from the cache's; re-encoded/, "a clip of another family is re-encoded like the segments");
     const json = (id) => JSON.parse(fs.readFileSync(path.join(segDir, `${id}.json`), "utf8"));
-    assert.deepEqual([json("a").frameEnd, json("b").frameStart, json("c").frameStart], [30, 30, 50]);
-    assert.ok((await quiet(() => pictureRender(dir, { plan: true }))).result.decisions.every((d) => d.action === "REUSE"), "the cache follows the new timeline");
+    // The clip for shot a is a test pattern, not what the page draws. Segment b still holds the paint of
+    // step 3 (a span render) that the page no longer draws. The cache must not record either as current.
+    assert.match(err.join(""), /warning: segment a: 3 of 3 copied probe frames differ from what the page draws now/);
+    assert.match(err.join(""), /warning: segment b: 1 of 3 copied probe frames differ from what the page draws now \(clip frame 9:/);
+    assert.doesNotMatch(err.join(""), /segment c:/);
+    for (const id of ["a", "b"]) assert.equal(fs.existsSync(path.join(segDir, `${id}.json`)), false, `no cache entry for ${id}: its frames are not the page's`);
+    assert.equal(json("c").frameStart, 50);
+    const afterAsm = (await quiet(() => pictureRender(dir, { plan: true }))).result.decisions;
+    assert.deepEqual(afterAsm.map((d) => d.action), ["RENDER", "RENDER", "REUSE"], "the next render draws a and b again; c follows the new timeline");
     assert.deepEqual(await checkPicturePair({ outDir: out }), { ok: true, problems: [] });
     assert.equal(fs.readdirSync(out).filter((n) => /^_/.test(n)).length, 0, "no temp file is left");
 
@@ -408,6 +423,20 @@ test("end to end: picture render, plan cache, --span (publish or throw), --bed-o
     // an EDL that does not tile the page's timeline stops the step
     fs.writeFileSync(edl, JSON.stringify({ entries: [{ segment: "b" }, { segment: "c" }] }));
     await assert.rejects(quiet(() => pictureRender(dir, { assemble: edl })), /the EDL has 40 frames, the page's timeline 70/);
+
+    // frames that are the page's own are recorded: render a from the page, assemble the three segments, the cache is current
+    await quiet(() => pictureRender(dir));
+    fs.writeFileSync(edl, JSON.stringify({ entries: [{ segment: "a" }, { segment: "b" }, { segment: "c" }] }));
+    const own = [];
+    process.stderr.write = (s) => (own.push(String(s)), true);
+    try {
+      await quiet(() => pictureRender(dir, { assemble: edl }));
+    } finally {
+      process.stderr.write = origErr;
+    }
+    assert.doesNotMatch(own.join(""), /copied probe frames differ/);
+    assert.deepEqual([json("a").frameEnd, json("b").frameStart, json("c").frameStart], [30, 30, 50]);
+    assert.ok((await quiet(() => pictureRender(dir, { plan: true }))).result.decisions.every((d) => d.action === "REUSE"), "the cache follows the new timeline");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

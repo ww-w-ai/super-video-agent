@@ -59,6 +59,33 @@ export function retakeFitMessage(id, takeSec, slot, fit) {
   return `${head} — fits (${how}; ${notes.join("; ")})`;
 }
 
+/**
+ * The seconds each line has on the picture, for the lines of a reel kept with `--retime` or a dub folder:
+ * a reel's own previous slots, or in a dub folder the base reel's lines (`<reel>/voice/timings.json`, each
+ * line to the next line's start, the last to the film's end). Empty when there is no such timings file.
+ * @param {string} dir the reel (or dub) directory voice.mjs ran on
+ * @param {Map<string, {slotSec:number}>} oldSlots previousSlots of the reel being edited
+ * @returns {Map<string, number>}
+ */
+export function pictureSlotSecs(dir, oldSlots) {
+  if (!dubCode(dir)) return new Map([...oldSlots].map(([id, s]) => [id, s.slotSec]));
+  const baseFile = path.join(path.resolve(dir), "..", "..", "voice", "timings.json");
+  if (!fs.existsSync(baseFile)) return new Map();
+  const base = JSON.parse(fs.readFileSync(baseFile, "utf8"));
+  const lines = base.lines || [];
+  return new Map(lines.map((l, i) => [l.id, (i === lines.length - 1 ? base.duration : lines[i + 1].start) - l.start]));
+}
+
+/**
+ * The line printed when a take is installed without being fitted (`--retime`, or a dub folder): its length
+ * against the slot it has on the picture, as a ratio. Over 1 means the take is longer than the slot.
+ */
+export function retimeRatioMessage(id, takeSec, slotSec, reason) {
+  const ratio = takeSec / slotSec;
+  const verdict = ratio > 1 ? `${((ratio - 1) * 100).toFixed(1)}% over its slot` : `${((1 - ratio) * 100).toFixed(1)}% under its slot`;
+  return `${id}: take ${takeSec.toFixed(2)}s against slot ${slotSec.toFixed(2)}s = ${ratio.toFixed(3)}x (${verdict}); installed at its own length (${reason})`;
+}
+
 /** The "slot" column of the takes table: what fitting this take into its slot takes. */
 export function fitColumn(fit) {
   if (!fit) return "-";

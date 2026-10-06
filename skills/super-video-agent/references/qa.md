@@ -108,6 +108,12 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   `cue-word-not-heard` (the speech-to-text transcript lacks it), `cue-word-uncertain` (interpolated
   word times, or no clear onset), `cue-word-moved` (the waveform puts the word elsewhere).
   Without `narration.wav` only the text checks run. Writes `out/cue-check.json`.
+  Sound events the page makes itself (`window.__reel.marks`, `{at, kind}`) are read with `--page`
+  (opens the reel) or `--marks <json>`. Each is printed as a fact: the line it lands in, the
+  nearest recorded word and the offset in ms. A mark that also carries `word` (and optionally
+  `line`) is checked like a `word:` cue: `page-cue-moved` beyond `--threshold`,
+  `page-cue-word-missing`; any mark outside 0 to the film's duration gives
+  `page-cue-outside-timeline`. A film with no word cue and no page event still says `checked nothing`.
 - **Text overlap, glyph fallback, one-frame flicker, covered content, language glyphs** —
   `scripts/state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--step
   <frames>] [--range <t0>-<t1>] [--outline-em <n>]`. It wraps the canvas text calls while the page

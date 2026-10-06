@@ -38,7 +38,8 @@ import {
   parseEdl,
   entryCheckRanges,
 } from "./lib/segments.mjs";
-import { draftsDir, draftSpan, draftSidecar, slotCut } from "./lib/drafts.mjs";
+import { clipVersusPage } from "./lib/segment-verify.mjs";
+import { draftsDir, draftSpan, draftSidecar, slotCut, reelStamp, slotProbeFrames, compareDraft } from "./lib/drafts.mjs";
 
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
                  [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
@@ -74,12 +75,15 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               with --only: renders each named shot as a separate draft clip,
               from (slot start - sec) to (slot end + sec) clamped to the film,
               to out/drafts/<id>.mp4 + <id>.json (slot start/end, handle, frames
-              gained each side). The film is not joined and out/segments/ is
+              gained each side, the page stamp and three slot probe hashes it was
+              drawn from; draft-check.mjs reports drafts stale against the page).
+              The film is not joined and out/segments/ is
               not touched. Default 0: --only splices the full film as before.
 --use-draft <id>
               puts out/drafts/<id>.mp4 in as the shot: the slot span is cut out
               of the handled clip (no page render) and spliced at the slot start
               like --insert. Needs the same --preview setting the draft had.
+              Warns (does not stop) when the page stamp moved since the draft.
 --plan        print REUSE/RENDER per segment and exit without rendering. The answer
               is cached in out/plan-cache.json: asking again with nothing changed
               (every file of the reel dir outside out/, the segment cache, the
@@ -100,7 +104,10 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               only the new frames, re-encoded frames and the first/last two frames
               of each copied run, never the whole film. Afterwards the film's
               segments are cut back out into the cache with fresh probe hashes
-              (the page is opened once, three frames per segment captured), then
+              (the page is opened once, three frames per segment captured and
+              compared with the copied frames; a segment whose copied frames
+              differ from the page is reported and left out of the cache, so the
+              next render draws it again), then
               the film is finished as a normal render (voiced film, or with
               --no-captions a picture + bed + timings). Not with --only, --insert,
               --use-draft, --handle, --span, --lang, --stub. With --plan: prints
@@ -485,7 +492,7 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
 
   const onlyIds = only ? only.split(",").map((s) => s.trim()).filter(Boolean) : null;
   if (onlyIds && handleSec > 0) {
-    const drafts = await renderDrafts({ pool, segments, onlyIds, handleSec, fps, meta, quality, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, outDir: paths.outDir, workers });
+    const drafts = await renderDrafts({ pool, segments, onlyIds, handleSec, fps, meta, quality, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, outDir: paths.outDir, root: paths.root, workers });
     return { draftsOnly: true, drafts };
   }
   if (spans) {
@@ -1616,9 +1623,15 @@ async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf
       // An mp4 with no meta is "never rendered"; the old meta must not outlive the old mp4.
       fs.rmSync(segJsonPath(segDir, segment.id), { force: true });
       fs.renameSync(tmpPath, mp4Path);
-      const probes = [];
-      for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
-      writeJson(segJsonPath(segDir, segment.id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes });
+      const items = [];
+      for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) items.push({ index: f - segment.frameStart, image: await captureFrame(session.page, f / fps) });
+      const bad = await clipVersusPage({ mp4: mp4Path, items, width, height });
+      if (bad.length) {
+        // No meta = "never rendered": the next render draws this segment instead of trusting frames that are not the page's.
+        process.stderr.write(`warning: segment ${segment.id}: ${bad.length} of ${items.length} copied probe frames differ from what the page draws now (${bad.map((b) => `clip frame ${b.index}: ${(b.fraction * 100).toFixed(1)}% of pixels`).join("; ")}); not recorded as current, the next render draws it again\n`);
+        continue;
+      }
+      writeJson(segJsonPath(segDir, segment.id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes: items.map((i) => sha256Hex(i.image)) });
     }
   });
 }
@@ -1687,13 +1700,14 @@ export function parseHandleFlag(value) {
  * Renders each shot of `onlyIds` as out/drafts/<id>.mp4 (+ <id>.json) over its
  * slot widened by the handle. Nothing else is written: no segment cache, no join.
  */
-async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, crf, preset, scaleFilter, targetWidth, targetHeight, outDir, workers }) {
+async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, crf, preset, scaleFilter, targetWidth, targetHeight, outDir, root, workers }) {
   const unknown = unknownOnlyIds({ segments, onlyIds });
   if (unknown.length) throw new Error(`--only references unknown segment(s): ${unknown.join(", ")}`);
   const filmStart = segments[0].frameStart;
   const filmEnd = segments[segments.length - 1].frameEnd;
   const dir = draftsDir(outDir);
   fs.mkdirSync(dir, { recursive: true });
+  const stamp = reelStamp(root);
   const jobs = onlyIds.map((id) => {
     const segment = segments.find((s) => s.id === id);
     const span = draftSpan({ segment, fps, filmStart, filmEnd, handleSec });
@@ -1708,7 +1722,9 @@ async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, 
         const job = jobs[idx++];
         if (!session) session = await pool.acquire();
         await encodeSegment({ session, segment: job.span, outPath: job.mp4Path, fps, crf, preset, scaleFilter });
-        writeJson(job.jsonPath, draftSidecar({ segment: job.segment, span: job.span, fps, handleSec, quality, width: targetWidth, height: targetHeight }));
+        const probes = [];
+        for (const f of slotProbeFrames(job.segment)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
+        writeJson(job.jsonPath, draftSidecar({ segment: job.segment, span: job.span, fps, handleSec, quality, width: targetWidth, height: targetHeight, stamp, probes }));
         process.stdout.write(
           `DRAFT  ${job.segment.id}  frames [${job.span.frameStart},${job.span.frameEnd})  slot [${job.segment.frameStart},${job.segment.frameEnd})  handle -${job.span.handleBefore}/+${job.span.handleAfter} frames\n`
         );
@@ -1727,7 +1743,7 @@ async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, 
  * exact, no page render) into out/drafts/<id>.slot.mp4 and returns it as the
  * --insert clip, placed at the slot's start.
  */
-export async function cutDraftSlot({ paths, id, preview }) {
+export async function cutDraftSlot({ dir: reelDir, paths, id, preview }) {
   if (typeof id !== "string" || !id) throw new Error("--use-draft takes a shot id");
   const dir = draftsDir(paths.outDir);
   const mp4 = path.join(dir, `${id}.mp4`);
@@ -1737,6 +1753,9 @@ export async function cutDraftSlot({ paths, id, preview }) {
   const quality = preview ? "preview" : "final";
   if (sidecar.quality !== quality) throw new Error(`draft ${id} was rendered as ${sidecar.quality}; render with${sidecar.quality === "preview" ? "" : "out"} --preview to use it`);
   const cut = slotCut(sidecar);
+  const root = reelDir || paths.root;
+  const state = root ? compareDraft({ sidecar, stamp: reelStamp(root), probes: null }) : { state: "current" };
+  if (state.state !== "current") process.stderr.write(`warning: draft ${id}: ${state.detail} (draft-check.mjs compares its slot frames with the page)\n`);
   const clipPath = path.join(dir, `${id}.slot.mp4`);
   await cutFrames({ src: mp4, from: cut.from, to: cut.to, fps: sidecar.fps, crf: preview ? 28 : 18, preset: preview ? "veryfast" : "medium", outPath: clipPath });
   process.stdout.write(`use-draft: ${id} slot cut from draft frames [${cut.from},${cut.to}) (${cut.frames} frames) at t=${cut.startSec.toFixed(4)}s\n`);

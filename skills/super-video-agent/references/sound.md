@@ -112,9 +112,13 @@ sfx cue times are measured from the film's t = 0, lead included.
   to -16 LUFS integrated, so the page's own mix sets how loud the film is. The scaffold's
   `renderSfx` masters (bed + cues) to -15 dBFS peak; in a sparse mix the master gain that reaches
   -16 LUFS rises, and the loudest event can come near or over the true-peak limit. Mix the page
-  against a reference: measure the page's mix against a leveled narration line
-  (`voice/line-<id>.wav`, -16 LUFS), set the page's level from that, and read `review.mjs`'s
-  integrated loudness and true peak after the render.
+  against a reference: `scripts/mix-level.mjs <dir> [--under <dB>]` measures the page's sound alone
+  (`out/picture.bed.wav`) against a leveled narration line (`voice/line-<id>.wav`, -16 LUFS; the
+  median of all lines by default, `--line <id>` for one, `--voice-lufs <n>` when no line exists).
+  It prints the gap in dB, the page's true peak and, with `--under <dB>`, the offset to add to the
+  page's level to sit that far under the voice, with a note when the peak after it passes -1 dBTP.
+  The gap you want is your decision; the tool computes none without `--under`. Apply the offset in
+  the page's audio code, render again, and read `review.mjs`'s integrated loudness and true peak.
 - `master` soft-clips with tanh; if the review shows true peak over the limit, lower the effect
   gain, not the voice.
 

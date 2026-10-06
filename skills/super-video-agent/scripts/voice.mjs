@@ -37,6 +37,8 @@ import {
   previousSlots,
   planRetakeFit,
   retakeFitMessage,
+  pictureSlotSecs,
+  retimeRatioMessage,
   fitColumn,
   SAME_LENGTH_SEC,
 } from "./voice/line-edit.mjs";
@@ -103,6 +105,9 @@ speaker summary.
 --retime      with --lines: let regenerated lines keep their own length
                (use after a wording change, not a pronunciation fix); later
                lines move and their shots re-render. Implied in a dub folder.
+               Each take installed this way prints its length against the slot
+               the line has on the picture as a ratio (1.357x = 35.7% over its
+               slot; in a dub folder the slot is the base reel's line slot).
 
 After a line is made, its own audio is read for facts the STT check cannot
 hear and printed: HEAD (the first 150 ms is cut or swallowed), DIP (a stretch
@@ -536,6 +541,7 @@ export async function synthesizeAll({
       previousById = new Map();
     }
   }
+  const pictureSlots = onlySet && !keepTiming ? pictureSlotSecs(dir, oldSlots) : new Map();
   // Re-made lines that did not fit their slot (the old clip is back), and lines whose gap after them shrinks.
   const refused = [];
   const slotGaps = new Map();
@@ -635,6 +641,7 @@ export async function synthesizeAll({
     }
 
     const durationSec = await probeDuration(wavPath);
+    if (onlySet && !keepTiming && !reused) reportRetimeRatio(line.id, durationSec, pictureSlots, dir);
     const start = offset;
     const end = start + durationSec;
 
@@ -1432,6 +1439,14 @@ async function fitRetake(id, wavPath, slot, { borrow }) {
   await ffmpeg(["-y", "-i", prefitPath, ...(filters ? ["-filter:a", filters] : []), ...(fillsOld ? ["-t", slot.oldClipSec.toFixed(4)] : []), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", wavPath]);
   fs.rmSync(prefitPath, { force: true });
   return { ok: true, fit };
+}
+
+/** An install that is not fitted (--retime, dub folder) says how long the take is against the slot it has on the picture. */
+function reportRetimeRatio(id, takeSec, pictureSlots, dir) {
+  const slot = pictureSlots.get(id);
+  if (!slot || !(slot > 0)) return;
+  const reason = dubCode(dir) ? "dub folder: dub.mjs fits it to the picture" : "--retime";
+  process.stdout.write(retimeRatioMessage(id, takeSec, slot, reason) + "\n");
 }
 
 /** timings start moves under this (s) are rounding, not a shifted line. */

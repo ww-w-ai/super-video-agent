@@ -469,6 +469,12 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   flag needed). The line's real limit is the base-language slot on the picture, which `dub.mjs`
   fits by the same steps (`--min-gap`); the picture does not move, and `dub.mjs` re-places the
   lines. `voice.mjs` prints one line saying so.
+- A take installed unfitted (`--retime`, or in a dub folder) prints its length against the slot the
+  line has on the picture, as a ratio: `<id>: take 3.21s against slot 2.37s = 1.354x (35.4% over
+  its slot); installed at its own length (--retime)`. A reel's slot is the old line's slot; in a
+  dub folder it is the base reel's line slot (`voice/timings.json` two folders up). Over 1x means
+  `dub.mjs` has to speed it up (limit 1.1x) or the picture needs room; read it before running
+  `dub.mjs`. Nothing is refused.
 - The lines you did not touch keep their measured word times (shifted with their start), with
   `--lines`, `--pick` and `--use` alike.
 - A finished take that needs a breath inside it gets one without re-synthesis:
