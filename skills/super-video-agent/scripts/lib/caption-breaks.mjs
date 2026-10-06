@@ -4,6 +4,7 @@
 // maxChars) the engine's even split of a long phrase — the same decisions
 // reel-engine.js captionChunks makes. Facts only; whether a break cuts a
 // phrase is the reviewer's judgement.
+import { checkedNothingNext } from "./checked-nothing.mjs";
 
 const CONTEXT_WORDS = 3;
 let reelPromise = null;
@@ -66,9 +67,9 @@ export function formatCaptionBreaks(rows, { label = "caption breaks" } = {}) {
   // Every line one piece: there was no break to read, so nothing was checked
   // (an all-"one piece" table must not read as a pass).
   if (rows.length && rows.every((r) => r.before === null)) {
-    return `${label}: checked nothing — every line is one piece (${rows.length} lines), so there is no break to read\n`;
+    return `${label}: checked nothing — every line is one piece (${rows.length} lines), so there is no break to read. ${checkedNothingNext("a caption break (a | marker, a newline or phrase punctuation) in the plan text")}\n`;
   }
-  if (!rows.length) return `${label}: checked nothing — the plan has no lines\n`;
+  if (!rows.length) return `${label}: checked nothing — the plan has no lines. ${checkedNothingNext("the plan's lines")}\n`;
   const out = [`${label} (read each: does the break cut a phrase?):`];
   for (const r of rows) {
     out.push(r.before === null ? `  ${r.id}: (one piece)` : `  ${r.id}: …${r.before} | ${r.after}…`);

@@ -177,6 +177,14 @@ measure and uses the default. It reports only and exits 0.
 This is a length check, nothing more. The measured voice still sets the clock: never time scenes
 from the estimate.
 
+**Languages that run longer when translated.** If the film will be dubbed, some languages need more
+syllables or words than the base language for the same meaning, so their lines run longer. At this
+stage, consider shorter wording where the base line is already tight (a clause that can go, a
+shorter word for the same fact), so those languages fit without a faster voice. `dub.mjs --min-gap`
+slows the picture of one language to open the gaps between its lines; that language then runs longer
+than the others, which breaks equal length across languages (a track made for one video stops fitting
+the others). Prefer shorter wording first; read the `--min-gap` help before using it.
+
 After synthesis, change a line only for a real error — an STT flag, a misread name or number.
 
 ## A film with no narration

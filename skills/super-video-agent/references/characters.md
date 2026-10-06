@@ -33,35 +33,50 @@ A figure cut into parts (head, torso, upper and lower limbs), each part an image
 its joint, parented in a chain, each rotating about its pivot. Parts come from generated images
 of the figure, cut out and separated; they share one fabric and shade at every overlap.
 
-A pattern for the page (not a bundled helper):
+A bundled helper, offered as an example and not a required look: copy
+`scripts/engine/reel-rig.js` into the reel's `src/` and load it with `<script src="src/reel-rig.js">`
+(no dependencies; it adds `globalThis.ReelRig`). Use it, change it or build a different rig.
 
-- A part is `{id, image, pivot: [x, y], parent, rest: {x, y, rot}}`. Joint angles are pure
-  functions of `t` (keyed poses, eased, with a trailing forearm), never accumulated.
-- Compute each part's joint point in canvas pixels from the chain at time `t`.
-- **Numeric joint check.** For each joint, measure the distance between the child's joint point
-  and the parent's joint point at sampled times. A gap larger than a few pixels means a part has
-  come apart; an angle past the limb's natural range means a pose that reads wrong. Print the
-  numbers per joint and time.
-- The check reports and never blocks: a joint left apart on purpose (a part that flies off) is
-  a choice, and the model decides whether a reported gap is a flaw.
+- `ReelRig.makeRig(parts)`: a part is `{id, parent, pivot: [x, y], anchor: [x, y], z, size: [w, h], image | draw, limits}`.
+  `pivot` is the joint in the part's own image, `anchor` is where that joint sits in the parent's image.
+  It throws on a duplicate id, an unknown parent or a loop.
+- `ReelRig.poseAt(tracks, t)`: joint angles (degrees, `rot`), offsets (`dx`, `dy`) and `scale` as pure
+  functions of `t` from keyed values (`ReelRig.keyed`, eased); never accumulated. Sample at `t - lag` to
+  trail a forearm behind its parent.
+- `ReelRig.draw(ctx, rig, pose, images)` paints the parts in z order; the root's `dx`, `dy` place the figure.
+- **Numeric joint check.** `ReelRig.jointCheck(rig, t => pose, times)` returns, per joint, the largest
+  gap in canvas px between the child's pivot and the parent's anchor, when it happened and how many
+  samples were over 2 px, plus a count of angles outside a part's `limits`. Expose it from the page as
+  `window.__reel.rigCheck = (times) => ReelRig.jointCheck(rig, poseAt, times)`; then
+  `scripts/rig-check.mjs <reel-dir> [--step <sec>] [--out <json>]` samples the film and prints one line per joint.
+- The check reports and never blocks, and `jointCheck` never throws: a joint left apart on purpose
+  (a part that flies off, `dx`/`dy` on a child) is a choice, and the model decides whether a reported
+  gap is a flaw.
 
 Once a rig works, keep the part images, the pivots and the pose list with the film's assets so a
 later film can reuse the figure.
 
 ## Mouth shapes (example)
 
-A talking character needs a mouth that follows the voice. A mouth-shape schedule is a list
-`[{from, to, shape}]` per line, built from that line's word times in `voice/timings.json` (a
-shape per word or syllable span, `closed` between words), read as a pure function of `t`.
+A talking character needs a mouth that follows the voice. `scripts/mouth.mjs <reel-dir>` writes, per
+line, when the mouth is open: `{mode, params, lines: [{id, start, end, spans: [{from, to, open}]}], skipped}`,
+in film seconds, closed between spans. It knows no phonemes and no language: the default `--mode amplitude`
+follows how loud each line's audio (`voice/line-<id>.wav`) is, measured against that line's own loud level
+(`--threshold`, `--step`); a closed gap under 50 ms is bridged and an open run under 60 ms is dropped. A
+line with no clip is listed under `skipped`. The page reads it with `ReelRig.mouthTrack(schedule)(t)`,
+a pure function of `t` from 0 (closed) to 1 (open); `ReelRig` is in `scripts/engine/reel-rig.js` (above).
 
 The AI decides whether to use it. In a film with several languages the mouth shapes of one language
 do not match another's speech, so lips may not match, or may need to be made again for each
 language. Options:
 
-- A per-language overlay layer: draw the mouth in the language's caption layer from that language's
-  own timings (`dub/<code>/timings.placed.json`), so each dub gets its own schedule.
-- A simple open and close not tied to sound: the mouth opens and closes at a steady rate while
-  the line is spoken. It fits any language and avoids a mismatch the viewer can see.
+- A per-language overlay layer: run `mouth.mjs <reel-dir> --dub <code>` (it reads
+  `dub/<code>/voice/timings.json` and writes `mouth.json` beside it) and draw the mouth in that
+  language's caption layer, so each dub gets its own schedule. Check that the schedule's times match
+  the placed times of that dub (`--timings` takes another timings file).
+- A simple open and close not tied to sound: `mouth.mjs <reel-dir> --mode steady [--rate <hz>]`
+  opens and closes at a steady rate from each line's start to its end. It fits any language and
+  avoids a mismatch the viewer can see.
 - No visible mouth (a character seen from behind, a mask, a puppet that nods).
 
 Choose by how close the viewer sees the face and by how many languages the film ships.

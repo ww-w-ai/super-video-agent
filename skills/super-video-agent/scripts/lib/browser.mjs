@@ -296,6 +296,7 @@ export async function openReel(url, opts = {}) {
       duration: r.duration,
       shots: r.shots || [],
       layers: r.layers || [], // e.g. ["captions"] — dub.mjs's own-caption-layer support (references/pipeline.md "Picture first")
+      drift: typeof r.driftReport === "function" ? r.driftReport() : null, // reel-drift.js: graded notes for the model to judge
     };
   });
   // Headless Chromium's text/font rendering caches are not fully warm the
@@ -564,6 +565,19 @@ export function engineFactLines({ note = null, facts = [] }) {
 /** Reel.safeAreaNote() of the live page, or null (no engine, or nothing to say). */
 export async function readSafeAreaNote(page) {
   return page.evaluate(() => (window.Reel && typeof window.Reel.safeAreaNote === "function" ? window.Reel.safeAreaNote() : null));
+}
+
+/**
+ * Report lines for the drift guard's report (window.__reel.driftReport(), engine/reel-drift.js).
+ * A thrown guard stops the page load before this is read, so only graded notes arrive here.
+ * @param {{errors?: string[], notes?: string[], steps?: number}|null} report
+ * @returns {string[]}
+ */
+export function driftReportLines(report) {
+  if (!report) return [];
+  const notes = report.notes || [];
+  const head = `drift guard: ${report.steps ?? "?"} steps checked, ${notes.length ? `${notes.length} graded note(s) for you to judge` : "no drift"}`;
+  return [head, ...notes.map((n) => `drift note: ${n}`)];
 }
 
 /** Engine facts recorded so far on the live page, as report lines. */

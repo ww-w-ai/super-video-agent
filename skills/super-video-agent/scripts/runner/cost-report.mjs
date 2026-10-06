@@ -14,7 +14,7 @@ result-<stage>.json name also works), one file per session or resume, and prints
 then the totals. Flags: is_error true, a subtype other than "success" (for example error_max_turns),
 a file that is empty or not JSON, a result with no cost field.
 Stage wall time (start to finish, waits included) is added when <film-dir>/.runner/state.json exists.
-TTS usage: reads the optional <film-dir>/voice/tts-usage.jsonl and <film-dir>/dub/<code>/tts-usage.jsonl, one JSON
+TTS usage: reads the optional <film-dir>/voice/tts-usage.jsonl, <film-dir>/dub/<code>/voice/tts-usage.jsonl (where voice.mjs writes it) and <film-dir>/dub/<code>/tts-usage.jsonl, one JSON
 object per synthesis: {"provider": "...", "chars": 120, "seconds" or "audioSec": 8.4, "cost": 0.012} (cost may be missing). It prints
 syntheses, characters, seconds and known cost per folder and provider, or "not logged" when no such file exists.
 --json prints the same numbers as JSON.
@@ -98,11 +98,14 @@ export function formatReport(agg) {
 
 const TTS_LOG = "tts-usage.jsonl";
 
-/** The folders a film's voice synthesis logs to: voice/ and every dub/<code>/. */
+/** The folders a film's voice synthesis logs to: voice/ and, per language, dub/<code>/voice/ (where voice.mjs writes) and dub/<code>/. */
 function ttsScopes(filmDir) {
   const scopes = [{ scope: "voice", dir: path.join(filmDir, "voice") }];
   try {
-    for (const code of fs.readdirSync(path.join(filmDir, "dub")).sort()) scopes.push({ scope: `dub/${code}`, dir: path.join(filmDir, "dub", code) });
+    for (const code of fs.readdirSync(path.join(filmDir, "dub")).sort()) {
+      scopes.push({ scope: `dub/${code}/voice`, dir: path.join(filmDir, "dub", code, "voice") });
+      scopes.push({ scope: `dub/${code}`, dir: path.join(filmDir, "dub", code) });
+    }
   } catch {
     /* no dub folder */
   }

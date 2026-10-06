@@ -7,6 +7,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { ffmpeg } from "./ffmpeg.mjs";
+import { checkedNothingNext } from "./checked-nothing.mjs";
 
 export const CONTRAST_LOW = 3;
 export const CONTRAST_MARGINAL = 4.5;
@@ -279,6 +280,29 @@ export function readCaptionPixels(pngPath, width, height) {
   return readRaw(["-i", pngPath, "-vf", `format=rgba,scale=${width}:${height}:flags=neighbor`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]);
 }
 
+/** A PNG held in memory (a captured canvas) as raw RGB at width x height. */
+export function readPngPixels(png, width, height) {
+  return readRaw(["-i", "pipe:0", "-vf", `scale=${width}:${height}:flags=neighbor`, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], png);
+}
+
+const DIFF_TOLERANCE = 12; // summed channel difference at or below it is the same pixel (encoder or dither noise)
+
+/**
+ * The caption as an RGBA layer, from one frame drawn with the caption and the same instant drawn without it
+ * (both RGB, same size). A pixel that differs is caption, opaque, in the colour it was drawn; the rest is clear.
+ */
+export function layerFromDifference(withCaption, without) {
+  const n = withCaption.length / 3;
+  const layer = new Uint8Array(n * 4);
+  for (let p = 0; p < n; p++) {
+    const j = p * 3;
+    const d = Math.abs(withCaption[j] - without[j]) + Math.abs(withCaption[j + 1] - without[j + 1]) + Math.abs(withCaption[j + 2] - without[j + 2]);
+    if (d <= DIFF_TOLERANCE) continue;
+    layer.set([withCaption[j], withCaption[j + 1], withCaption[j + 2], 255], p * 4);
+  }
+  return layer;
+}
+
 /** One picture frame at second `t` as raw RGB at width x height. */
 export function readPictureFrame(pictureMp4, t, width, height) {
   return readRaw(["-ss", String(t), "-i", pictureMp4, "-frames:v", "1", "-vf", `scale=${width}:${height}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
@@ -310,7 +334,7 @@ const hex = (c) => `#${c.map((v) => v.toString(16).padStart(2, "0")).join("")}`;
 /** The rows as text: flagged rows one by one, then a count. Facts and grades; whether it matters is the reader's call. */
 export function formatContrastReport(rows) {
   const measured = rows.filter((r) => Number.isFinite(r.ratio));
-  if (!measured.length) return "caption contrast: checked nothing — no sampled frame has a drawn caption over a measurable picture\n";
+  if (!measured.length) return "caption contrast: checked nothing — no sampled frame has a drawn caption over a measurable picture. " + checkedNothingNext("a rendered segment that draws a caption (segments reused from the cache are not drawn again)") + "\n";
   const flagged = measured.filter((r) => r.grade !== "ok");
   const out = [`caption contrast (WCAG ratio, each text vs the picture behind its own box; low < ${CONTRAST_LOW}, marginal < ${CONTRAST_MARGINAL}): ${measured.length} frames measured, ${flagged.length} flagged`];
   for (const r of flagged) {

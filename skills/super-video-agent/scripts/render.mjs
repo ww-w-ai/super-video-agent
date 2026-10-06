@@ -15,8 +15,9 @@ import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
+import { createContrastCollector, measureDrawnFrame, reportRenderContrast } from "./lib/render-contrast.mjs";
 import {
   run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
   uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5, probeGops, keyframeInterval,
@@ -212,6 +213,15 @@ probe-frame hashes (first/middle/last, sha256 of the captured PNG) all
 match the current timeline and its .mp4 exists; otherwise it is
 re-rendered. Every render prints one REUSE or RENDER line per segment with
 the reason.
+
+Caption contrast: a render with captions on (voice-first, real narration) measures, for up to
+three frames per line it draws, the caption's colour against the picture behind its text box
+as a WCAG contrast ratio (the same measure dub.mjs prints), in both directions (light on
+light, dark on dark). The frame is drawn once more without captions
+(window.Reel.setCaptionsOn(false)) and the pixels that differ are the caption; no screenshots.
+Frames under 3:1 are LOW, under 4.5:1 marginal, per line id and time; rows go to
+out/contrast.json. A report, never a stop. Segments reused from the cache are not drawn
+again, so a fully cached render prints "checked nothing"; re-render the segments to measure.
 
 One render opens the reel page once (once per --workers worker) and uses
 that session for the shot list, the probes, the frames, the page sound and
@@ -510,7 +520,9 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
   }
 
   copyBaseSegments({ decisions, baseSegDir, segDir });
-  await renderNeeded({ pool, decisions, fps, crf, preset: cPreset, scaleFilter, workers });
+  const contrast = contrastCollectorFor({ noCaptions, stubSec, paths, meta });
+  await renderNeeded({ pool, decisions, fps, crf, preset: cPreset, scaleFilter, workers, contrast });
+  if (contrast) reportRenderContrast(contrast, path.join(paths.outDir, "contrast.json"));
   if (pending.length) return { partial: true, pending, decisions };
 
   return await joinAndFinish({ dir, paths, pool, segments, segDir, decisions, insertPlan, fps, crf, preset: cPreset, noCaptions, stubSec, stubSegments, lang, quality, fixPictureDuration });
@@ -693,6 +705,7 @@ async function probeMeta(pool) {
     if (session.errors.length) {
       throw new Error(`page errors on load: ${session.errors.join("; ")}`);
     }
+    for (const l of driftReportLines(session.meta.drift)) process.stdout.write(`${l}\n`);
     return session.meta;
   });
 }
@@ -849,7 +862,14 @@ function copyBaseSegments({ decisions, baseSegDir, segDir }) {
   }
 }
 
-async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, workers }) {
+/** A caption-contrast collector for a voice-first render (captions on, real narration), else null. */
+function contrastCollectorFor({ noCaptions, stubSec, paths, meta }) {
+  if (noCaptions || stubSec || !fs.existsSync(paths.timingsJson)) return null;
+  const lines = readJson(paths.timingsJson).lines;
+  return Array.isArray(lines) && lines.length ? createContrastCollector({ lines, fps: meta.fps, width: meta.width, height: meta.height }) : null;
+}
+
+async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, workers, contrast = null }) {
   const toRender = decisions.filter((d) => d.action === "RENDER");
   let idx = 0;
 
@@ -869,7 +889,7 @@ async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, wo
         await withTransportRetry(
           async () => {
             if (!session) session = await pool.acquire();
-            await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter });
+            await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter, contrast });
             reads = await sessionPictureReads(session);
           },
           {
@@ -900,7 +920,7 @@ export { mergePictureReads };
 
 // Encodes to a temp name and renames when done, so an interrupted encode never
 // leaves a truncated mp4 under the name a cached segment json points at.
-async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter }) {
+async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter, contrast = null }) {
   const tmpPath = uniqueTempPath(outPath);
   const { proc, done } = spawnImagePipeEncoder({ fps, outPath: tmpPath, crf, preset, scaleFilter });
   done.catch(() => {});
@@ -910,6 +930,7 @@ async function encodeSegment({ session, segment, outPath, fps, crf, preset, scal
       const png = await captureFrame(session.page, t);
       const ok = proc.stdin.write(png);
       if (!ok) await once(proc.stdin, "drain");
+      if (contrast) await measureDrawnFrame(contrast, { page: session.page, frame, withPng: png, capture: (page) => captureFrame(page, t) });
     }
     reportGl(session, `frames [${segment.frameStart},${segment.frameEnd})`);
     proc.stdin.end();

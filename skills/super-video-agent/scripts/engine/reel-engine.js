@@ -173,6 +173,37 @@
   }
 
   // ---------------------------------------------------------------------
+  // clip blend (references/3d.md "Switching between clips")
+  // ---------------------------------------------------------------------
+
+  // clipBlend(switches, t, clips, opts) -> [{clip, weight, time}]
+  // switches: [{at, clip}] sorted by `at`. clips: {name: {duration, loop?}} with the loaded clip's real
+  // length (clip.duration), never a number typed into the page. A pure function of t, so any seek order
+  // gives the same pose: the current clip is the last switch with at <= t, the previous clip is the one
+  // before it, weight w = ease(clamp01((t - at) / blend)) for the current clip and 1 - w for the previous;
+  // the previous clip is left out once w is 1. `time` is the clip's own local time: a looping clip wraps
+  // at its length, any other holds its last pose. The first clip has no previous one: weight 1 throughout.
+  // opts: {blend: seconds, default 0.25 (a starting point for a body action; a slow one wants longer),
+  // ease: (u) => u, default linear}.
+  function clipBlend(switches, t, clips, opts) {
+    const o = opts || {};
+    const blend = o.blend == null ? 0.25 : o.blend;
+    const ease = o.ease || function (u) { return u; };
+    let cur = 0;
+    for (let i = 0; i < switches.length; i++) if (switches[i].at <= t) cur = i;
+    const localTime = function (sw) {
+      const c = clips[sw.clip];
+      if (!c || !(c.duration > 0)) throw new Error("clipBlend: clips[" + JSON.stringify(sw.clip) + "] needs a duration from the loaded clip");
+      const elapsed = Math.max(0, t - sw.at);
+      return c.loop ? elapsed % c.duration : Math.min(elapsed, c.duration);
+    };
+    const w = cur === 0 || !(blend > 0) ? 1 : clamp01(ease(clamp01((t - switches[cur].at) / blend)));
+    const out = [{ clip: switches[cur].clip, weight: w, time: localTime(switches[cur]) }];
+    if (cur > 0 && w < 1) out.push({ clip: switches[cur - 1].clip, weight: 1 - w, time: localTime(switches[cur - 1]) });
+    return out;
+  }
+
+  // ---------------------------------------------------------------------
   // keyframe tracks
   // ---------------------------------------------------------------------
 
@@ -290,6 +321,11 @@
   }
   function captionsOn() {
     return _captionsOn;
+  }
+  // For tools only: render.mjs turns captions off for one extra capture of a frame it already drew, so the
+  // caption's pixels can be told from the picture behind them (caption contrast). A page never calls this.
+  function setCaptionsOn(on) {
+    _captionsOn = !!on;
   }
 
   // ---------------------------------------------------------------------
@@ -458,7 +494,7 @@
   // issue: a clean report then proves nothing. Says so (a fact, not a pass).
   function safeAreaNote() {
     return _safeKind === "none"
-      ? 'checked nothing: the safe area is "none", so no text can fall outside it (text-outside-safe-area is never recorded)'
+      ? 'checked nothing: the safe area is "none", so no text can fall outside it (text-outside-safe-area is never recorded). Confirm this video needs this check; if it does, make a safe-area preset (not "none") and rerun only this check.'
       : null;
   }
 
@@ -1621,6 +1657,7 @@
     captionBreaksFromText,
     caption,
     captionsOn,
+    setCaptionsOn,
     layer,
     dubCode,
     layerFiles,
@@ -1646,6 +1683,7 @@
     transformedBBox,
     easeOutCubic,
     easeOutBack,
+    clipBlend,
     settle,
     monotoneTrack,
     inWindows,

@@ -7,9 +7,10 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
 import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines, driftReportLines } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
+import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
 const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check] [--range <t0>-<t1> | --only <shotIds> | --world <key>]
 
@@ -138,7 +139,7 @@ export function staticScanLine(result) {
     ? `static scan: skipped bundled libraries under src/: ${result.skippedLibraries.join(", ")}\n`
     : "";
   if (result.scannedChars === 0) {
-    return "static scan: checked nothing (no code between the SCENE markers and no scripts under src/)\n" + skipped;
+    return "static scan: checked nothing (no code between the SCENE markers and no scripts under src/). " + checkedNothingNext("scene code between the SCENE markers or scripts under src/") + "\n" + skipped;
   }
   return `static scan: ok (scene block${result.srcFiles ? ` + ${result.srcFiles} script(s) under src/` : ""})\n` + skipped;
 }
@@ -191,6 +192,7 @@ async function determinismChecks(target, scope = null) {
     warm = await warmPasses(session, probeTimes);
     if (reportGl(session, "warm page")) return false;
     for (const l of await readEngineFactLines(session.page)) process.stdout.write(`${l}\n`);
+    for (const l of driftReportLines(session.meta.drift)) process.stdout.write(`${l}\n`);
   } finally {
     await session.close();
   }

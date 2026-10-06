@@ -25,7 +25,8 @@ reason): neither PASS nor FAIL. Other tools print `checked nothing: <reason>` th
 font. Zero targets is a true pass only if the film really has nothing for that check to look at.
 So ask whether the film needs it. If it does, make what the check looks at (a word cue, a `|`
 break, a safe area, a named font) and run only that check again; if it does not, write in
-`FILM.md` that it did not apply.
+`FILM.md` that it did not apply. The printed message carries the same sentence ("Confirm this
+video needs this check; if it does, make … and rerun only this check").
 
 **Show a gate fail before you trust it pass.** A check that has never failed is unproven. Before
 relying on a new or changed check, run it on an old output that is known to be wrong (a render
@@ -147,13 +148,15 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   `[{character, closed: 0..1}]` is sampled every frame (`references/3d.md`). `--glb` reads a clip's
   own morph-weight keyframes for the blink targets, with no page. A screenshot cannot catch a
   blink that lasts two frames; this does.
-- **Caption contrast** — `dub.mjs` (`--no-contrast` skips it). For up to three frames per line it
-  compares the caption layer's drawn colour with the picture behind the text box as a WCAG
-  contrast ratio, from pixels already drawn, with no screenshot. It works in both directions: light
-  text on a bright picture, and dark text on a dark one. Under 3:1 is `LOW`, under 4.5:1
-  `marginal`, per line id and time; the full rows go to `dub/<code>/contrast.json`. The grade is
-  a number for the reviewer to act on; it never stops a run. It says `checked nothing` when no
-  sampled frame has a caption over a measurable picture.
+- **Caption contrast** — `dub.mjs` for a language layer (`--no-contrast` skips it) and `render.mjs`
+  for a voice-first film's own render. For up to three frames per line it compares the caption's
+  drawn colour with the picture behind the text box as a WCAG contrast ratio, from pixels already
+  drawn, with no screenshot (`render.mjs` draws the same instant once more without captions and
+  takes the pixels that differ). It works in both directions: light text on a bright picture, and
+  dark text on a dark one. Under 3:1 is `LOW`, under 4.5:1 `marginal`, per line id and time; the
+  full rows go to `dub/<code>/contrast.json` or `out/contrast.json`. The grade is a number for the
+  reviewer to act on; it never stops a run. It says `checked nothing` when no sampled frame has a
+  caption over a measurable picture (a render that reuses every cached segment draws none).
 - **Waveform cut check** — `dub.mjs` lists each placed line whose start or end is still loud in
   the final narration, an abrupt cut the silence gate cannot see. A report, not a stop. After
   the cut is found, re-make the line or give it room (`references/voice.md` "Fixing one line").

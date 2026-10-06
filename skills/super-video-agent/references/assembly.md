@@ -36,6 +36,25 @@ Order the steps so that a part a later part sits on appears first (a base before
 Check each step in a still for parts that pass through each other (`references/3d.md` "Covers and
 soft bodies"; `overlap.mjs`).
 
+Further assembly techniques, each an example; a different or better way may be chosen:
+
+- **Sub-assemblies.** A group of parts built on its own, shown as a small inset or in its own steps,
+  then moved onto the main build as one piece. Give the group an id and let the step list place it
+  once, so the viewer sees it finished before it joins.
+- **Turning the model over.** When the next parts go on the other side, turn the whole model over
+  (or move the camera round it) in its own short step, with a visible arrow or a pause. Do not
+  change the view silently between two steps.
+- **Hidden parts.** A part that ends up behind others cannot be seen at the moment it is placed.
+  Show it from the side it can be seen from, make the covering parts see-through for that step, or
+  cut away the cover, then restore them. Check each step in a still: every part added in the step
+  is visible in at least one frame.
+- **Opened pose.** For a part with joints or hinges (a lid, a door, a folding arm), place the
+  pieces in the opened pose, and close it in a later step. Parts placed inside need the opened
+  pose to be reachable.
+- **Load tips.** A large step list makes a heavy page. Load each part's geometry once and reuse it
+  for repeats, group parts that never move apart into one object, and warm only the steps a segment
+  draws (render in short scenes, see below).
+
 ## Timeline JSON and the drift guard
 
 Generate `timeline.json` from the step data with one script, and have the page read it. Do not
@@ -45,16 +64,28 @@ type step times into the page by hand: with many steps a hand edit goes unnotice
 {"steps": [{"id": "s01", "start": 0, "end": 4.2, "parts": ["p1", "p2"]}, ...], "duration": 312.4}
 ```
 
-A drift guard in the page compares what the page declares (its step ids, its shot list, its
-duration) with `timeline.json` when it loads:
+A drift guard in the page compares what the page declares (its step ids, its duration) and the
+measured voice timings with `timeline.json` when it loads. It is a bundled example helper: copy
+`scripts/engine/reel-drift.js` into the reel's `src/` and load it with `<script src="src/reel-drift.js">`
+(no dependencies; it adds `globalThis.ReelDrift`). In the page's `ready`:
 
-- A definite drift stops that step: a step id in the page that is not in the timeline, a step count
-  that differs, a duration that differs by more than one frame. The guard throws in `ready`, so the
-  render stops and the error names the step. A film built on a wrong timeline has to be made again,
-  so stopping early is right.
-- A graded difference is reported, not stopped: a step shorter than the viewer can read, a tempo
-  factor far from 1 (below). Record these in the page's `issues()` and decide in the review whether
-  they matter.
+```
+ReelDrift.guard(timeline, {duration, fps, timings, pageStepIds, toleranceSec, minStepSec})
+window.__reel.driftReport = ReelDrift.report
+```
+
+A step may name the voice line it starts with (`"line": "<id>"`).
+
+- A definite drift stops that step: a step that starts after it ends or before 0, a step ending
+  beyond the film, overlapping steps, steps out of order, a repeated id, a page step id that is not in
+  the timeline, a step count that differs, a duration that differs by more than one frame, a step
+  naming a line that is not in the voice timings or starting more than `toleranceSec` (0.5 s) from it.
+  The guard throws in `ready`, so the render stops and the error names the step. A film built on a
+  wrong timeline has to be made again, so stopping early is right. (Only this step stops; the
+  autonomous run goes on with what the error says.)
+- A graded difference is reported, not stopped: a step shorter than `minStepSec` (0.5 s), a step
+  starting within the tolerance but more than a frame from its line. `render.mjs` and `verify.mjs`
+  print them as `drift note: ...` after the page loads, for you to judge in the review.
 
 The AI chooses whether to activate the guard. On a film with many steps (dozens) it earns its cost;
 on a film with a handful of hand-timed scenes it is not needed.
@@ -69,12 +100,19 @@ tempo = natural_total / target_total          (greater than 1 = faster)
 step_duration = natural_duration / tempo
 ```
 
+- `scripts/tempo.mjs --target <sec> --timeline <timeline.json> [--floor <sec>] [--report <json>]`
+  prints the plain factor, the factor with the floor, and each step's factor and new times. It changes
+  nothing unless you add `--out <file>`, which writes the fitted timeline (new `start`/`end`,
+  `duration` = the target, the applied `tempo`). `--timings <voice/timings.json>` fits a voice
+  timings file instead (report only). Whether to apply the factor is your call.
 - Apply it in the generator that writes `timeline.json`, so the page and the voice slots read one
   clock.
 - Report the factor. A factor beyond roughly 0.7 to 1.5 means the steps are too many or too long
   for the target: cut or merge steps, or ask whether the target should change, rather than
   speeding up until steps cannot be read.
-- Keep a floor for each step (long enough to read a change) and let the floor, not the tempo, win.
+- Keep a floor for each step (long enough to read a change) and let the floor, not the tempo, win
+  (`--floor`): the steps at the floor stay there, the others take the rest, and the report says when
+  the target cannot be reached because of the floors.
 
 ## Short scenes, each rendered and marked done
 

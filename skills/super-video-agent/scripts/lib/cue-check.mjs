@@ -1,6 +1,7 @@
 // Sound-effect cue check: for each `word:<text>` cue, warns when the word it lands on is missing
 // from the line, was not heard by the speech-to-text check, has an interpolated time, or sits where
 // the waveform says the sound starts elsewhere. Pure; warnings only, nothing fails.
+import { checkedNothingNext } from "./checked-nothing.mjs";
 
 const letters = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
@@ -57,7 +58,7 @@ export function checkWordCues(plan, timings, onsets) {
 
 /** One line per warning, or a clean line. */
 export function formatCueWarnings(warnings, cueCount) {
-  if (cueCount === 0) return "checked nothing: plan.json has no cue keyed to a word (at: \"word:<text>\"), so no cue was looked at\n";
+  if (cueCount === 0) return "checked nothing: plan.json has no cue keyed to a word (at: \"word:<text>\"), so no cue was looked at. " + checkedNothingNext("a cue keyed to a word in plan.json") + "\n";
   if (!warnings.length) return `${cueCount} word cue${cueCount === 1 ? "" : "s"} checked, no warnings\n`;
   return `${cueCount} word cue${cueCount === 1 ? "" : "s"} checked, ${warnings.length} warning${warnings.length === 1 ? "" : "s"}\n` +
     warnings.map((w) => `${w.lineId} ${w.asset ?? "?"} at word:${w.word}: ${w.type}: ${w.detail}\n`).join("");

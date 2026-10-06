@@ -637,7 +637,10 @@ All reports below print facts and never stop the run; a stop is only for a defin
   with the picture behind the text as a WCAG contrast ratio, in both directions (light text on a
   bright picture, dark text on a dark one); a note panel is composited over the picture first. Under
   3:1 is `LOW`, under 4.5:1 `marginal`, per line id, time and region. The rows go to
-  `dub/<code>/contrast.json`. `--no-contrast` skips it.
+  `dub/<code>/contrast.json`. `--no-contrast` skips it. A voice-first render (`render.mjs` with
+  captions on) measures the same way for the frames it draws, by drawing each sampled instant once
+  more with captions off (`Reel.setCaptionsOn(false)`) and taking the pixels that differ as the
+  caption; rows go to `out/contrast.json`. Segments reused from the cache are not drawn again.
 - **Audio only.** `dub.mjs <dir> --lang <code> --audio-only [--audio-format m4a|wav]` writes only that
   language's track (`out/audio-<code>-<stamp>.m4a`, AAC 192k, or 48 kHz PCM wav, plus
   `out/audio-<code>.<ext>` pointing at the newest): the same trim, fit, place and mix, no caption
@@ -714,6 +717,33 @@ one (for example "checked nothing" under `setSafeArea("none")`) and the engine's
 - Flicker is read in the source first (show/hide windows under 2 frames, one-frame gaps, two clocks),
   with file:line; `--source-only` and `--no-source` choose.
 - Writes `out/state-checks.json`.
+
+### Punctuation and script table: `punct-check.mjs`
+
+`punct-check.mjs <dir> [--lang <code>,...]` reads the caption text of `plan.json` and of each
+`dub/<code>/plan.json` (the languages come from the film, not from this table) and checks each line
+against its language's row. Findings print as `<lang> <line id>: <rule> [wrong|check]`; `wrong` exits
+1 for that step, `check` is for the language's editor session to judge (see `SKILL.md` on languages you
+cannot read). It writes `out/punct-check.json`. A language with no row prints `checked nothing`; add a
+row to `scripts/lib/punct-rules.mjs` and to this table.
+
+| Code | Letters expected | Wrong (exit 1) | Check (reported) | Quotes written |
+|---|---|---|---|---|
+| en | Latin | full-width marks, `¿ ¡` | space before `, .`, straight and curly quotes mixed | curly or straight, not mixed |
+| de | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | „…“ |
+| es | Latin | full-width marks, a `?` or `!` without its `¿` or `¡` | space before `, .`, straight quote | «…» or “…” |
+| fr | Latin | full-width marks, `¿ ¡` | no space before `? ! ; :`, straight quote | «…» |
+| it | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | «…» or “…” |
+| pt | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | “…” or «…» |
+| ru | Cyrillic, Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | «…» |
+| ko | Hangul, Latin | full-width marks, `¿ ¡` | space before `, .`; Han, Kana or Cyrillic letters | “…” or '…' |
+| ja | Hiragana, Katakana, Han, Latin | half-width `, . ! ? : ;` straight after a CJK character, `¿ ¡` | space between CJK characters; Hangul or Cyrillic letters; straight quote | 「…」 |
+| zh | Han, Latin | half-width `, . ! ? : ;` straight after a CJK character, `¿ ¡` | space between CJK characters; Kana, Hangul or Cyrillic letters; straight quote | “…” or 「…」 |
+
+Every row also reports two or more spaces in a row, and letters of a script the row does not list. The
+table is a starting point: a rule that does not fit a film (a brand spelled in another script, a
+quoted name) is the editor's call, and a language or rule the table lacks may be added. `zh` covers
+both `zh-Hans` and `zh-Hant`; the script of a Han text is not told apart by this check.
 
 ### Reviewing: `review.mjs`
 

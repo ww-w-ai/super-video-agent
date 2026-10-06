@@ -71,7 +71,7 @@ use, adapt or ignore; none of it is a template.
    film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
    opening line first (default when nobody can answer: no), if not given; start
    FILM.md with one line naming the skill version (`version` in the skill's `package.json`,
-   e.g. `super-video-agent 1.9.0`), then (the listener: who watches and what they should think or do, and who speaks if a
+   e.g. `super-video-agent <version>`, the version the skill reports), then (the listener: who watches and what they should think or do, and who speaks if a
    character does — the voice, how the character refers to themselves and how they look on
    screen agree, and the delivery fits that speaker; with several speakers, a line takes its own
    `voice` over `meta.voice` (`references/voice.md`); facts with where
@@ -177,11 +177,13 @@ Add passes where a language needs them; the creation stages keep their repeated 
 
 A language you cannot read yourself is reviewed by a separate session that acts as that language's
 editor: it reads the lines as a native editor would (idiom, register, meaning, caption breaks) and
-fixes what it finds, so no language ships unread. Add a check script for that language's punctuation
-and script rules (for example quote and dash forms, spacing, numerals, the characters its writing
-system allows; examples, not a menu: pick what that language needs), read from the film's own list of dub languages, not from a fixed set. Before you trust the script,
-show it fails: run it on a deliberately wrong sentence and see it report that sentence. A script
-that has never failed proves nothing. Its findings are facts; the editor session judges them.
+fixes what it finds, so no language ships unread. Run `scripts/punct-check.mjs <dir>`: it checks each
+language's punctuation and script rules from the table in `references/pipeline.md` ("Punctuation and
+script table"), reading the languages from the film's own plan and dub folders, not from a fixed set.
+Extend the table when a language needs a rule it lacks (examples, not a menu: quote and dash forms,
+spacing, numerals, the characters its writing system allows). Before you trust a new rule, show it
+fails: run it on a deliberately wrong sentence and see it report that sentence. A check that has
+never failed proves nothing. Its findings are facts; the editor session judges them.
 
 A stage ends only when its files are written, and its notes count as files: a stage or a probe
 writes what it found (in `FILM.md` or the probe's own notes) before it ends, because the next
@@ -325,7 +327,12 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | word times | `scripts/word-times.mjs <dir> [--threshold <ms>]` | re-measures word starts from `narration.wav` and lists words whose sound is off the recorded time; reports only (`references/qa.md`) |
 | sound cue words | `scripts/cue-check.mjs <dir>` | warns when a `word:` cue's word is missing from the line, not heard, interpolated or moved; reports only |
 | text, glyphs, flicker | `scripts/state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--range <t0>-<t1>]` | text boxes that overlap, characters drawn by a fallback font, one-frame flicker (source windows first, then every frame's state), labels over declared key regions (`covers`), characters a language's font lacks (`langglyphs`, the one check that exits 1); `--range` reads only those seconds; reports otherwise (`references/pipeline.md` "Checks and reports") |
+| punctuation and script | `scripts/punct-check.mjs <dir> [--lang <code>,...]` | each language's caption text (plan.json and each dub/<code>/plan.json) against that language's row of the table in `references/pipeline.md`; a form that cannot be right exits 1 for that step, the rest is reported for the editor session |
 | blink | `scripts/blink-check.mjs <dir> [--glb <file>]` | per character blink count, intervals, durations; flags blinks under ~100 ms, under 1.5 s apart, flutter; source first, then the page hook `window.__reel.blink(t)` (`references/3d.md`); reports only |
+| cut-out rig joints (example) | `scripts/rig-check.mjs <dir> [--step <sec>] [--out <json>]` | per joint, the largest gap in px between a child's pivot and its parent's anchor over the film, and angles outside limits, from the page hook `window.__reel.rigCheck`; reports only; helper `scripts/engine/reel-rig.js` (`references/characters.md`) |
+| mouth schedule (example) | `scripts/mouth.mjs <dir> [--dub <code>] [--mode amplitude\|steady] [--threshold <0-1>] [--rate <hz>] [--out <json>]` | per line, when the mouth is open (from the audio level, or at a steady rate), as JSON the page reads; no language model, and with several languages it may not match (`references/characters.md`) |
+| tempo | `scripts/tempo.mjs --target <sec> --timeline <json>\|--timings <json> [--floor <sec>] [--out <json>]` | the speed factor that fits a timeline to a length, per step, floors respected; reports unless `--out` writes the fitted timeline (`references/assembly.md`) |
+| drift guard (example) | page helper `scripts/engine/reel-drift.js`; `render.mjs` and `verify.mjs` print its notes | a timeline against the page's duration and the voice timings: a definite mismatch throws in the page and stops the render, graded drift is printed as `drift note:` for you to judge (`references/assembly.md`) |
 | review | `scripts/render.mjs <dir> --preview` then `scripts/review.mjs <dir>` | contact sheet, dead-air runs, A/V sync, loudness, sync marks |
 | dense layout scan | `scripts/review.mjs <dir> --scan [stepSec] [--layer captions [--dub <code>]]` | issue runs with times from seeking the whole film every `stepSec` (default 0.1s), catching a layout bug the once-per-shot Layout gate misses; `--layer captions` scans only the overlay layer, fast on a slow 3D picture |
 | file review | `scripts/review.mjs --file <mp4> [--holds a-b,c-d]` | a finished or joined file with no page: A/V stream lengths, loudness whole and per part, dead air (intended holds listed apart), black frames (`references/qa.md`) |

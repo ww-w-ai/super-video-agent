@@ -34,6 +34,7 @@ import {
 } from "./lib/audio-analysis.mjs";
 import { gapsFromPcm } from "./lib/silence-gate.mjs";
 import { describeDefects } from "./voice/take-check.mjs";
+import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
@@ -449,11 +450,11 @@ function formatFileReport(r) {
   }
   const nothing = (name) => (r.checkedNothing || []).find((c) => c.check === name);
   lines.push(nothing("deadAir")
-    ? `picture dead air: checked nothing (${nothing("deadAir").reason})`
+    ? `picture dead air: checked nothing (${nothing("deadAir").reason}). ${checkedNothingNext()}`
     : `picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs.map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s`).join(",")}`);
   for (const h of r.deadAir.intendedHolds || []) lines.push(`  intended hold (not flagged): ${f(h.startSec, 2)}s+${f(h.durationSec, 2)}s`);
   lines.push(nothing("silence")
-    ? `audio: silence checked nothing (${nothing("silence").reason})`
+    ? `audio: silence checked nothing (${nothing("silence").reason}). ${checkedNothingNext("an audio stream")}`
     : `audio: longest silence after first sound ${f(r.silence.longestSilenceSec)}s (first sound at ${f(r.silence.firstSoundSec)}s)`);
   lines.push(`black picture: ${r.black.runs.length} run(s)${r.black.runs.map((x) => ` ${f(x.startSec, 2)}-${f(x.endSec, 2)}s`).join(",")}`);
   return lines.join("\n");
@@ -681,7 +682,7 @@ function printSummary(report) {
     `layout issues: ${c.layout.issueCount} [${verdict(c.layout)}]`,
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${verdict({ pass: c.audio.silencePass })}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
-    ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}`),
+    ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}. ${checkedNothingNext()}`),
     ...(report.facts || []),
     ...voiceClipFactLines(c.audio.voiceClipFacts),
     report.note,

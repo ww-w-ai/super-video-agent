@@ -2,6 +2,7 @@
 // glyphs drawn by a fallback font, and elements visible for a single frame. No browser here, so
 // the logic is unit-tested on plain data. Facts only; nothing here fails a reel.
 import { overlapSpans } from "./overlap.mjs";
+import { checkedNothingNext } from "./checked-nothing.mjs";
 
 /** A text drawn with canvas alpha under this counts as not visible. */
 export const VISIBLE_ALPHA = 0.05;
@@ -176,7 +177,7 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
     s += flicker.length ? `one-frame flicker: ${flicker.length}\n` : skip.has("one-frame flicker") ? "" : `one-frame flicker: none (${hooks ? "texts and layer hook" : "texts only; no window.__reel.visibleAt hook"})\n`;
     for (const f of flicker) s += `  ${f.t.toFixed(3)} s (frame ${f.frame}): ${f.key}\n`;
   }
-  for (const n of nothing || []) s += `${n.check}: checked nothing (${n.reason})\n`;
+  for (const n of nothing || []) s += `${n.check}: checked nothing (${n.reason}). ${checkedNothingNext()}\n`;
   if (covers && covers.length) {
     s += `label or overlay over key content: ${covers.length}\n`;
     for (const c of covers) s += `  ${c.label} over ${c.key}: ${c.from.toFixed(3)}–${c.to.toFixed(3)} s, ${c.sharePx} px² (${Math.round(c.shareOfKey * 100)}% of the key area)${c.alwaysOn ? ", always on" : ""}\n`;
@@ -317,9 +318,9 @@ export function langGlyphReport({ entries, noFont }, covered, langs) {
 function formatLangGlyphs(r) {
   let s = "";
   for (const l of r.languages) {
-    if (l.noFont) s += `glyphs ${l.lang}: checked nothing (no named font for this language, a generic family cannot be told from the fallback: set window.__reel.captionFonts or plan style.fonts)\n`;
+    if (l.noFont) s += `glyphs ${l.lang}: checked nothing (no named font for this language, a generic family cannot be told from the fallback: set window.__reel.captionFonts or plan style.fonts). ${checkedNothingNext("a named caption font for this language")}\n`;
     else if (l.fontNotLoaded && l.checkedChars === 0) s += `glyphs ${l.lang}: not checked: font not loaded (${l.fontNotLoaded}: not declared, not installed, or drawn like the browser default face)\n`;
-    else if (l.checkedChars === 0) s += `glyphs ${l.lang}: checked nothing (no caption characters)\n`;
+    else if (l.checkedChars === 0) s += `glyphs ${l.lang}: checked nothing (no caption characters). ${checkedNothingNext("caption text in this language")}\n`;
     else if (!l.missing.length) s += `glyphs ${l.lang}: ${l.checkedChars} characters, all in the font${l.fontNotLoaded ? ` (the rest not checked: font not loaded: ${l.fontNotLoaded})` : ""}\n`;
     else {
       s += `glyphs ${l.lang}: ${l.missing.length} of ${l.checkedChars} characters are not in the font — definitely wrong for ${l.lang}\n`;
