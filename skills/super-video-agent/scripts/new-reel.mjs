@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, ensureDir, writeJson } from "./lib/reeldir.mjs";
-import { findPretendard, findHandwritingFont } from "./lib/fonts.mjs";
+import { findPretendard, findHandwritingFont, pretendardRemedy } from "./lib/fonts.mjs";
 import { ffmpeg } from "./lib/ffmpeg.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -19,7 +19,9 @@ const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..
 Scaffolds <dir>/ with:
   reel.html          template scene + engine inlined
   plan.json          starter 3-line plan
-  assets/fonts/       Pretendard (+ handwriting font if installed)
+  assets/fonts/       Pretendard (+ handwriting font if installed), copied from
+                      $SVA_FONT_DIR or the system/user font folders; when it
+                      is not installed a WARNING with the fix goes to stderr
   assets/images/      generated placeholder.png
   source/ voice/ out/  empty working directories
 
@@ -109,6 +111,7 @@ export async function main(argv) {
     return;
   }
   process.stdout.write(`scaffolded ${dir}\n`);
+  if (result.fontStatus.warning) process.stderr.write(result.fontStatus.warning + "\n");
   if (threeD) {
     process.stdout.write(result.vendor ? vendorReport(result.vendor) : threeInstallSteps(dir));
   }
@@ -226,7 +229,7 @@ Record the installed three.js version and its MIT license in FILM.md (references
 `;
 }
 
-export async function scaffold({ dir, width, height, fps, title, ratio, threeD }) {
+export async function scaffold({ dir, width, height, fps, title, ratio, threeD, fontDirs }) {
   const paths = reelPaths(dir);
   ensureDir(paths.root);
   ensureDir(path.join(paths.root, "source"));
@@ -239,8 +242,9 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
   ensureDir(imagesDir);
 
   // ---- fonts ---------------------------------------------------------
-  const { regular, bold } = findPretendard();
-  const fontStatus = { pretendard: false, handwriting: null };
+  const fontSearch = fontDirs ? { dirs: fontDirs } : undefined;
+  const { regular, bold, searched } = findPretendard(fontSearch);
+  const fontStatus = { pretendard: false, handwriting: null, fontsDir, searched };
   if (regular) {
     fs.copyFileSync(regular, path.join(fontsDir, "Pretendard-Regular.otf"));
     fontStatus.pretendard = true;
@@ -253,7 +257,11 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
     fontStatus.pretendard = false;
   }
 
-  const handwriting = findHandwritingFont();
+  // reel.html always declares Pretendard; without both files the page draws
+  // in a fallback face. Say so (main() prints it) instead of staying quiet.
+  fontStatus.warning = fontStatus.pretendard ? null : pretendardRemedy(fontsDir, searched);
+
+  const handwriting = findHandwritingFont(fontSearch);
   let handwritingFontFace = "";
   let hasHandwriting = false;
   if (handwriting) {
