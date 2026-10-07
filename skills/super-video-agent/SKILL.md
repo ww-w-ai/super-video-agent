@@ -129,6 +129,10 @@ use, adapt or ignore; none of it is a template.
    slot and cutting it to fit is the same practice as generated video clips, which are made long
    and trimmed in the edit. The handle costs the extra frames (+25% for a 4 s shot at 0.5 s), and
    a film with slow 3D pictures may choose smaller handles
+   For familiar reactions or gestures, try a stronger expression specific to this
+   moment first. If it does not communicate better, use a familiar example: a brief
+   celebration for a payoff, or a directional gesture toward comments or a description.
+   These are examples, not a visual template or a required reusable hand asset.
 4. Render → look at a contact sheet → fix → repeat until it holds. After the sounds are built:
    write `sound-cards.json` → `sfx-cards.mjs measure`, `judge`, `report` (`references/sound.md`
    "Sound cards"); redesign any sound scoring fit < 8, re-measure, re-judge, up to 3 rounds
