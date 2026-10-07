@@ -147,3 +147,39 @@ absolute path), and what not to run: a voice or review session never starts `dub
 `render.mjs`, because those are runner jobs. Examples, not a menu: shape the stage list and the
 prompts to the film; any split that keeps one judgment job per session and every heavy job in the
 runner works.
+
+## Watching a long stage
+
+Use the waiting coordinator as a watcher, separate from the stage session. Keep a
+small record beside the runner state: stage, session ID, owned PID, last event,
+last progress time, lock owner, wait reason, retry count and next action.
+The runner state and the actual event stream are evidence; a success reply is not.
+
+Track three clocks separately: host session lifetime, time waiting for the render
+slot or GPU, and active job time. A host time limit includes waiting. A long lock
+wait alone does not show a stalled render. Inspect `lock.mjs status`, the runner's
+`status.txt`, the stage log and its latest result before deciding.
+
+While waiting, sample those signals at a modest interval. Look for an advancing
+frame count, a tool result, a live lock owner or a new stage event. File size and
+modification time are supporting signals, not proof of progress or completion.
+Compare active time with that stage's observed baseline when one exists. Without
+a baseline, record uncertainty instead of inventing a universal timeout.
+
+If the host call is interrupted, keep its session ID and check whether its owned
+job still runs. Resume that same session with the current stage, last event and
+missing done-file after the heavy job releases its slot. Avoid starting a duplicate
+render. Use the current host's supported resume mechanism; adapters and flags can
+differ. The bundled runner's session adapter and `maxResumes` behavior are described
+above. A different host adapter needs its own verified resume command.
+
+On repeated unchanged signals, ask the stage for its current operation and blocker.
+Continue when there is evidence of progress. Stop only an owned process when a
+terminal failure is confirmed. Record the reason and preserve resumable state.
+Notify the owner when a required input or external condition blocks progress;
+continue independent stages. Keep retries within the plan's cap.
+
+A useful watcher record is `{stage, sessionId, pid, phase, lastEvent, waitReason,
+retry, action}`. `phase` can be waiting, running, interrupted, blocked or done.
+For example, a live lock held by another render means waiting. An exited job with
+no valid done-file means interrupted or blocked. It never means done.
