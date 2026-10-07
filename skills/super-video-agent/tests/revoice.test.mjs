@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {fitFrozenLines} from "../scripts/lib/dub-timing.mjs";
 import {replaceDubAudio} from "../scripts/dub.mjs";
+import {decodeMonoPcm} from "../scripts/lib/audio-analysis.mjs";
 import {ffmpeg,probeDuration} from "../scripts/lib/ffmpeg.mjs";
 
 const frozen={duration:2,lines:[{id:"a",text:"Hello",start:0.2,end:1.2}]};
@@ -28,10 +29,10 @@ test("revoice copies final video bytes, preserves source/timings, and needs no r
  const video=path.join(dir,"final.mp4"),bed=path.join(dir,"bed.wav"),timings=path.join(dir,"frozen.json");
  try {
   fs.writeFileSync(timings,JSON.stringify(frozen));
-  fs.writeFileSync(path.join(dir,"dub/en/plan.json"),JSON.stringify({meta:{lang:"en"},lines:[{id:"a",text:"Hello"}]}));
+  fs.writeFileSync(path.join(dir,"dub/en/plan.json"),JSON.stringify({meta:{lang:"en",sound:{fadeOutSec:0}},lines:[{id:"a",text:"Hello"}]}));
   fs.writeFileSync(path.join(vd,"timings.json"),JSON.stringify({duration:0.5,lines:voice}));
   await ffmpeg(["-y","-f","lavfi","-i","testsrc2=size=64x64:rate=10:duration=2","-c:v","libx264","-pix_fmt","yuv420p",video]);
-  await ffmpeg(["-y","-f","lavfi","-i","anullsrc=r=48000:cl=stereo","-t","2",bed]);
+  await ffmpeg(["-y","-f","lavfi","-i","sine=frequency=1000:sample_rate=48000:duration=2","-t","2",bed]);
   await ffmpeg(["-y","-f","lavfi","-i","sine=frequency=500:sample_rate=48000:duration=0.5",path.join(vd,"line-a.wav")]);
   const original=fs.readFileSync(video),clock=fs.readFileSync(timings);
   const result=await replaceDubAudio({dir,lang:"en",videoPath:video,timingsPath:timings,bedPath:bed,maxSpeed:1.2});
@@ -39,6 +40,9 @@ test("revoice copies final video bytes, preserves source/timings, and needs no r
   assert.equal(await hash(result.outPath),await hash(video));
   assert.deepEqual(fs.readFileSync(video),original);assert.deepEqual(fs.readFileSync(timings),clock);
   assert.ok(Math.abs(await probeDuration(result.outPath)-2)<0.03);
+  const pcm=await decodeMonoPcm(result.outPath,48000);
+  const rms=(from,to)=>Math.sqrt(pcm.subarray(Math.round(from*48000),Math.round(to*48000)).reduce((sum,x)=>sum+x*x,0)/Math.round((to-from)*48000));
+  assert.ok(rms(1.995,2)>rms(1.96,1.965)*0.7,"replacement must preserve explicit fadeOutSec:0 instead of applying a default tail fade");
   assert.equal(JSON.parse(fs.readFileSync(result.outPath+".json")).videoMode,"stream-copy");
   const outputCount=fs.readdirSync(path.join(dir,"out")).length;
   fs.writeFileSync(timings,JSON.stringify({duration:2,lines:[{id:"a",text:"Hello",start:1,end:2}]}));

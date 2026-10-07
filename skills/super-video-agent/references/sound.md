@@ -122,7 +122,9 @@ sfx cue times are measured from the film's t = 0, lead included.
   breath between two lines (a bed that rises and drops again there is heard as pumping). The
   music bed keeps its own, deeper **-10 dB** duck inside the page (`reel-audio.js` `duck()`, 120 ms
   ramps): words stay clear, effects stay audible, the bed all but disappears under speech.
-- **Fades.** A file cue (a library file or a clip's sound) takes optional fade fields, in `plan.json`
+- **Fades.** Fade every decrease in sound level. Choose `fadeOutSec: 0` only for an intentional hard cut.
+  `meta.sound.fadeOutSec` sets the final bed fade (default 30 ms); narration keeps its own clip fades.
+  A file cue (a library file or a clip's sound) takes optional fade fields, in `plan.json`
   `cues` and in the entries `__reel.soundCues()` returns: `fadeInSec`, `fadeOutSec`, `endsAtCut`
   (the sound ends where the picture cuts) and, for cues on one `track`, `crossfadeSec`. The default
   fade-out is 30 ms; with `endsAtCut` it is 0.6 s (at most half the cue), so music or a clip's

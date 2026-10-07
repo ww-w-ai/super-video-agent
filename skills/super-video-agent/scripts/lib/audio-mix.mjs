@@ -102,6 +102,16 @@ export async function measureMasterGain(premasterWavPath) {
   return { measured, filter: masterGainFilter(measured), report: masterGainReport(measured) };
 }
 
+/** A sound's final decrease at the picture boundary. Zero explicitly chooses a hard cut. */
+export function endFadeFilter(durationSec, fadeOutSec = FADE_OUT_SEC) {
+  const duration = Number(durationSec);
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("fade duration must be positive seconds");
+  if (!Number.isFinite(fadeOutSec) || fadeOutSec < 0) throw new Error("fadeOutSec must be nonnegative seconds");
+  if (fadeOutSec === 0) return "anull";
+  const fade = Math.min(fadeOutSec, duration);
+  return `afade=t=out:st=${Math.max(0, duration - fade)}:d=${fade}`;
+}
+
 /**
  * A cue's fade-in, fade-out and length, from its own fields and the cue that follows it on its track.
  * Fade-out: `fadeOutSec`, else CUT_FADE_OUT_SEC (at most half the cue) when `endsAtCut`, else the
@@ -143,7 +153,7 @@ function crossfadePartner(cues, i) {
 }
 
 /**
- * @param {{narrationIndex?:number, hasSfx:boolean, cues:{trimSec:number, peakDb:number, gainDb?:number, atSec:number, leadSec?:number, fadeInSec?:number, fadeOutSec?:number, endsAtCut?:boolean, crossfadeSec?:number, track?:string}[], includeNarration?:boolean, narrationWindows?:{start:number,end:number}[], duckDb?:number, rampSec?:number}} args
+ * @param {{narrationIndex?:number, hasSfx:boolean, cues:{trimSec:number, peakDb:number, gainDb?:number, atSec:number, leadSec?:number, fadeInSec?:number, fadeOutSec?:number, endsAtCut?:boolean, crossfadeSec?:number, track?:string}[], includeNarration?:boolean, narrationWindows?:{start:number,end:number}[], duckDb?:number, rampSec?:number, durationSec?:number, fadeOutSec?:number}} args
  *   `narrationIndex` is narration's `-i` position in the ffmpeg command
  *   (default 1: video is always input 0). Sfx (if `hasSfx`) is assumed to
  *   be the next input, then one input per cue, in `cues` order.
@@ -156,6 +166,8 @@ function crossfadePartner(cues, i) {
  *   already ducked itself (the music bed's own -10dB duck) — while
  *   narration speaks; `duckDb`/`rampSec` left out use the duck.mjs defaults;
  *   omit `narrationWindows` or pass `duckDb: 0` for no ducking.
+ *   `durationSec` fades sounds at the picture boundary; `fadeOutSec: 0` deliberately cuts them.
+ *   Narration retains its own clip edges.
  * @returns {{filterComplex:string, inputCount:number}} `inputCount` is how
  *   many audio `-i` inputs (narration [+ sfx] + cues) the caller must pass,
  *   starting at `narrationIndex`.
@@ -168,7 +180,10 @@ export function buildCueMixFilter({
   narrationWindows = [],
   duckDb,
   rampSec,
+  durationSec,
+  fadeOutSec,
 }) {
+  const endFade = durationSec == null ? "" : `,${endFadeFilter(durationSec, fadeOutSec)}`;
   const parts = [];
   const sumLabels = [];
   let nextInput = narrationIndex;
@@ -178,7 +193,7 @@ export function buildCueMixFilter({
     nextInput = narrationIndex + 1;
   }
   if (hasSfx) {
-    parts.push(`[${nextInput}:a]${TO_STEREO}[sfx]`);
+    parts.push(`[${nextInput}:a]${TO_STEREO}${endFade}[sfx]`);
     sumLabels.push("[sfx]");
     nextInput++;
   }
@@ -197,13 +212,14 @@ export function buildCueMixFilter({
     const trim = leadSec > 0 ? `atrim=${leadSec}:${leadSec + trimSec},asetpts=PTS-STARTPTS` : `atrim=0:${trimSec}`;
     // The source is leveled first (volume), then faded: a fade is never undone by the level.
     const fadeIn = fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec},` : "";
+    const fadeOut = fadeOutSec > 0 ? `afade=t=out:st=${fadeStart}:d=${fadeOutSec},` : "";
     // adelay shifts this cue's samples onto the absolute narration
     // timeline, so a duck filter chained right after it reads `t` as the
     // film's own absolute seconds — the same seconds narrationWindows uses.
     const duckStage = duckFilter ? `,${duckFilter}` : "";
     parts.push(
       `[${inIdx}:a]${trim},${TO_STEREO},volume=${gainDb}dB,${fadeIn}` +
-        `afade=t=out:st=${fadeStart}:d=${fadeOutSec},adelay=${delayMs}:all=1${duckStage}[${label}]`
+        `${fadeOut}adelay=${delayMs}:all=1${duckStage}${endFade}[${label}]`
     );
     sumLabels.push(`[${label}]`);
   });

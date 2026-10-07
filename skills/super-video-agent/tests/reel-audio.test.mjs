@@ -148,3 +148,24 @@ test("mix: L/R length is exactly round(duration * sampleRate) — the renderSfx 
     assert.equal(m.R.length, expected);
   }
 });
+
+test("kit sound decreases retain their existing natural decay before the buffer ends", () => {
+  for (const kind of [...SFX_KINDS, "pluck"]) {
+    const buffer = ReelAudio.sfx[kind](SR);
+    const win = Math.max(1, Math.round(buffer.length / 20));
+    let loudest = 0;
+    for (let i = 0; i + win <= buffer.length; i += win) loudest = Math.max(loudest, rms(buffer, i, i + win));
+    assert.ok(rms(buffer, buffer.length - win, buffer.length) < loudest * 0.15,
+      `${kind} must decay before its natural end`);
+  }
+});
+
+test("engine duck decreases the bed through its default ramp, without a gain step", () => {
+  const bed = {sampleRate:SR,L:new Float32Array(SR).fill(1),R:new Float32Array(SR).fill(1)};
+  ReelAudio.duck(bed, [{start:0.4,end:0.7}]);
+  assert.equal(bed.L[Math.round(0.27*SR)], 1);
+  assert.ok(bed.L[Math.round(0.34*SR)] < 1 && bed.L[Math.round(0.34*SR)] > bed.L[Math.round(0.4*SR)]);
+  let maxStep = 0;
+  for (let i = 1; i < bed.L.length; i++) maxStep = Math.max(maxStep, Math.abs(bed.L[i] - bed.L[i-1]));
+  assert.ok(maxStep < 0.001, `default decrease must be a ramp, got step ${maxStep}`);
+});

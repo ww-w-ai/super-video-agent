@@ -22,7 +22,7 @@ import {
   run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
   uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5, probeGops, keyframeInterval,
 } from "./lib/ffmpeg.mjs";
-import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
+import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
 import { cueFadeFields } from "./lib/cues.mjs";
 import { DUCK_DB_DEFAULT } from "./lib/duck.mjs";
@@ -583,6 +583,7 @@ async function finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, se
     outPath: stampedPath,
     narrationWindows,
     sfxDuckDb,
+    fadeOutSec: fadeOutSecFor(dir),
   });
   fs.rmSync(videoOnlyPath, { force: true });
   if (sfxPath) fs.rmSync(sfxPath, { force: true });
@@ -620,7 +621,7 @@ async function finishPictureRender({ paths, pool, videoOnlyPath, expectedFrames,
 
   const durationSec = String(await probeDuration(stampedPath));
   const bedStampedPath = path.join(paths.outDir, `${stem}-${stamp}.bed.wav`);
-  await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: bedStampedPath });
+  await muxBedOnly({ sfxPath, cueInputs, durationSec, fadeOutSec: fadeOutSecFor(paths.root), outPath: bedStampedPath });
   if (sfxPath) fs.rmSync(sfxPath, { force: true });
 
   // Publish only a pair that agrees: the video and bed just written plus the clock they were built on.
@@ -667,7 +668,7 @@ async function finishStubRender({ paths, pool, videoOnlyPath, expectedFrames, fp
   const cueInputs = await resolveSoundCues(pool, paths.root);
   const durationSec = String(await probeDuration(videoOnlyPath));
   const bedPath = uniqueTempPath(path.join(paths.outDir, "_stub-bed.wav"));
-  await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: bedPath });
+  await muxBedOnly({ sfxPath, cueInputs, durationSec, fadeOutSec: fadeOutSecFor(paths.root), outPath: bedPath });
   if (sfxPath) fs.rmSync(sfxPath, { force: true });
   const stampedPath = path.join(paths.outDir, `${quality}-stub-${timestamp()}.mp4`);
   await ffmpeg([
@@ -1500,7 +1501,7 @@ async function rebuildPictureBed({ paths, pool, meta, lang }) {
   try {
     linkOrCopy(oldVideo, stampedVideo);
     const durationSec = String(await probeDuration(stampedVideo));
-    await muxBedOnly({ sfxPath, cueInputs, durationSec, outPath: stampedBed });
+    await muxBedOnly({ sfxPath, cueInputs, durationSec, fadeOutSec: fadeOutSecFor(paths.root), outPath: stampedBed });
     videoMd5 = await assertBedPair({ oldMd5, stampedVideo, stampedBed, stem, timingsPath, durationSec });
   } catch (e) {
     fs.rmSync(stampedVideo, { force: true });
@@ -2168,7 +2169,13 @@ async function probePeakDb(filePath, trimSec) {
 // The video decides the length: audio is padded with silence (apad) and cut at
 // the video's end, so a narration shorter than the picture never trims the
 // still tail the way -shortest did.
-async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath, narrationWindows = [], sfxDuckDb }) {
+/** A picture-only stub may have no plan; a malformed existing plan still fails. */
+export function fadeOutSecFor(dir) {
+  if (!fs.existsSync(reelPaths(dir).planJson)) return undefined;
+  return loadPlan(dir).meta?.sound?.fadeOutSec;
+}
+
+async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outPath, narrationWindows = [], sfxDuckDb, fadeOutSec }) {
   const videoSec = String(await probeDuration(videoOnlyPath));
   const finalMux = (inputArgs, filterComplex) =>
     ffmpeg([
@@ -2198,6 +2205,8 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
       cues: cueInputs,
       narrationWindows,
       duckDb: sfxDuckDb,
+      durationSec: videoSec,
+      fadeOutSec,
     });
     const audioInputs = [narrationPath, ...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
     const inputArgs = [videoOnlyPath, ...audioInputs].flatMap((p) => ["-i", p]);
@@ -2208,7 +2217,7 @@ async function muxAudio({ videoOnlyPath, narrationPath, sfxPath, cueInputs, outP
   }
   if (sfxPath) {
     const inputArgs = [videoOnlyPath, narrationPath, sfxPath].flatMap((p) => ["-i", p]);
-    const premix = `[1:a]${TO_STEREO}[voice];[2:a]${TO_STEREO}[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]`;
+    const premix = `[1:a]${TO_STEREO}[voice];[2:a]${TO_STEREO},${endFadeFilter(videoSec, fadeOutSec)}[sfx];[voice][sfx]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[amixed];[amixed]anull[premaster]`;
     const { filter, measured, report } = await measurePremaster(inputArgs, premix, outPath);
     noteMasterCap(report, measured);
     await finalMux(inputArgs, `${premix};[premaster]${filter},apad[aout]`);
@@ -2250,7 +2259,7 @@ async function measurePremaster(inputArgs, filterComplex, outPath) {
  * mastered: it keeps the page's own level, so its balance against a -16 LUFS
  * voice is the same as in a normal render. dub.mjs masters the final mix.
  */
-async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
+async function muxBedOnly({ sfxPath, cueInputs, durationSec, fadeOutSec, outPath }) {
   if (!sfxPath && (!cueInputs || cueInputs.length === 0)) {
     // The page has no sound of its own: a silent bed at the picture's length.
     await ffmpeg([
@@ -2268,7 +2277,7 @@ async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
     return;
   }
   if (cueInputs && cueInputs.length > 0) {
-    const { filterComplex } = buildCueMixFilter({ narrationIndex: 0, hasSfx: !!sfxPath, cues: cueInputs, includeNarration: false });
+    const { filterComplex } = buildCueMixFilter({ narrationIndex: 0, hasSfx: !!sfxPath, cues: cueInputs, includeNarration: false, durationSec, fadeOutSec });
     const audioInputs = [...(sfxPath ? [sfxPath] : []), ...cueInputs.map((c) => c.absPath)];
     const inputArgs = audioInputs.flatMap((p) => ["-i", p]);
     await ffmpeg([
@@ -2292,7 +2301,7 @@ async function muxBedOnly({ sfxPath, cueInputs, durationSec, outPath }) {
     "-i",
     sfxPath,
     "-filter:a",
-    "apad",
+    `apad,${endFadeFilter(durationSec, fadeOutSec)}`,
     "-c:a",
     "pcm_s16le",
     "-t",

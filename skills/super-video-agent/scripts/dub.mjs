@@ -21,7 +21,7 @@ import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeld
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
 import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
-import { measureMasterGain, TO_STEREO } from "./lib/audio-mix.mjs";
+import { measureMasterGain, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr, measureDuckSwing, formatDuckSwingReport, DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import { measureNarrationCuts, formatCutReport } from "./lib/audio-analysis.mjs";
 import {
@@ -333,7 +333,7 @@ export async function replaceDubAudio({ dir, lang, videoPath, timingsPath, bedPa
     await verifyReplacementDurations(fit.lines, clips);
     const audioPath = path.join(workDir, "audio.wav");
     await mixDubAudio({ placedClips: clips, bedPath, narrationWindows: fit.lines,
-      duckDb: bedDuckDb(plan), durationSec: frozen.duration, outPath: audioPath });
+      duckDb: bedDuckDb(plan), fadeOutSec: plan.meta?.sound?.fadeOutSec, durationSec: frozen.duration, outPath: audioPath });
     const outPath = path.join(paths.outDir, `revoice-${lang}-${timestamp()}-${crypto.randomBytes(4).toString("hex")}.mp4`);
     await muxVideoAudio({ videoPath, audioPath, durationSec: videoDuration, outPath });
     await verifyFreshOutput({ filePath: outPath, startedMs, expectedSec: videoDuration, toleranceSec: tolerance + 0.05 });
@@ -451,6 +451,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       bedPath: pictureBedWav,
       narrationWindows: fit.lines.map((l) => ({ start: l.start, end: l.end })),
       duckDb: bedDuckDb(dubPlan),
+      fadeOutSec: dubPlan.meta?.sound?.fadeOutSec,
       durationSec: baseTimings.duration,
       outPath: audioPath,
     });
@@ -1147,7 +1148,7 @@ async function overlayCaptions({ pictureMp4, captionsDir, fps, outPath }) {
  * quiet at the start and jump louder later even though every line wav had
  * already been leveled to -16 LUFS individually).
  */
-export async function mixDubAudio({ placedClips, bedPath, narrationWindows, duckDb, durationSec, outPath }) {
+export async function mixDubAudio({ placedClips, bedPath, narrationWindows, duckDb, durationSec, fadeOutSec, outPath }) {
   const duckFilter = buildDuckVolumeExpr(narrationWindows, { duckDb });
   const inputs = [...placedClips.map((c) => c.path), bedPath];
   const inputArgs = inputs.flatMap((p) => ["-i", p]);
@@ -1158,7 +1159,7 @@ export async function mixDubAudio({ placedClips, bedPath, narrationWindows, duck
   // Both are padded to the picture's length so the bed after the last line
   // (the ending's sounds and music fade) is never cut.
   const pad = `apad=whole_dur=${durationSec}`;
-  const bedStage = `[${bedIdx}:a]${TO_STEREO}${duckFilter ? `,${duckFilter}` : ""},${pad}[bed]`;
+  const bedStage = `[${bedIdx}:a]${TO_STEREO}${duckFilter ? `,${duckFilter}` : ""},${pad},${endFadeFilter(durationSec, fadeOutSec)}[bed]`;
   const narrStage =
     placedClips.length > 1
       ? // normalize=0: each placed clip is already leveled to -16 LUFS
