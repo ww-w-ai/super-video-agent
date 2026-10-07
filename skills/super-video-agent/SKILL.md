@@ -160,6 +160,13 @@ request). Before a round starts, read the whole list and plan the round against 
 not undo an earlier one. After the round, check the result against the same list and mark each item;
 report any earlier request that no longer holds.
 
+Before a revision round, choose a small tool-call budget for the requested changes.
+Use the existing checks and the smallest useful preview. Avoid new measurement tables
+or one-off analysis scripts for an ordinary revision. Measurements remain useful for
+protecting an irreversible output or fixing a confirmed skill defect. When the budget
+is spent, report what is unresolved and plan the next round. Group non-blocking findings
+into that next planned step instead of starting a new investigation for each one.
+
 For a changed line, preview from the preceding line's end to the following line's
 start. At the film edges, use the film boundary. Prefer the current mixed encode so
 picture, narration and bed are heard together. `scripts/preview-changes.mjs <reel-dir>
