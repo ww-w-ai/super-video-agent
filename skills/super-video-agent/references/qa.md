@@ -11,7 +11,7 @@
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
-| Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its frame |
+| Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its picture beat: where the largest burst of frame-to-frame change within ±0.3 s of the mark starts. A mark whose window has no clear beat (no change, or steady motion throughout) prints `not measured` with the reason — check it by eye on stills, it is not a pass |
 | Silence | `review.mjs` | every silence over 1 s inside the narration (first sound to last line end) is listed with the line ids around it; FAIL unless the plan asks for it (`pauseAfterMs`, or a long `meta.gapMs`) — a planned pause is listed, not failed. Same measurement as the voice stage's silence gate (`voice.mjs`, `dub.mjs`, `fit-track.mjs`), which runs before the voice is locked |
 | Caption breaks | `validate-plan.mjs --breaks [--dub <code>]` | not a gate — the table lists every break; the reviewer finds none that cuts a phrase (`script-review.md` "Caption breaks"; a dub reads it once per language) |
 
@@ -21,9 +21,12 @@ A frame that changes with the seek history usually carries state from an earlier
 texture built lazily on the first seek, or a blur or glow drawn with soft transparent edges over
 whatever the canvas held before. Draw blur and glow over an opaque copy of the frame first.
 
-A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...]`
+A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...] [--tail <sec>]`
 reviews it directly: audio and video stream lengths, integrated loudness of the whole file and of
-each part, dead air and black frames (`references/bookends.md`).
+each part, dead air and black frames (`references/bookends.md`). The film's still end card
+(`meta.tailSec`) is reported as `end hold`, not dead air, when the file sits in its reel's `out/`
+or `--tail <sec>` is given; otherwise a still run that reaches the end is labelled as a possible
+end hold.
 
 ## Reading the contact sheet
 

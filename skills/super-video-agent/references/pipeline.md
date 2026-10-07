@@ -499,8 +499,12 @@ search will hit, its measured `durationSec` (and `width`/`height`, `hasAudio` fo
 
 ## Fonts
 
-`new-reel.mjs` copies Pretendard into `assets/fonts/`. For another face, drop a licensed font
-file there and register it in the page's `@font-face`.
+`new-reel.mjs` copies Pretendard into `assets/fonts/` from `$SVA_FONT_DIR` or the installed font
+folders (macOS `~/Library/Fonts`, `/Library/Fonts`; Linux `~/.local/share/fonts`, `~/.fonts`,
+`/usr/local/share/fonts`, `/usr/share/fonts`, searched into subfolders; Windows `Fonts`). When
+Pretendard is not installed it prints a `WARNING: Pretendard not found` with the fix: copy the
+files into `assets/fonts/` before the first still. For another face, drop a licensed font file
+there and register it in the page's `@font-face`.
 
 - **Symbols the font lacks show as boxes.** Pretendard covers Korean and Latin. Phonetic symbols
   (ˈ ʊ ə), arrows, math signs or another script may fall back or render as □. Look at a still of

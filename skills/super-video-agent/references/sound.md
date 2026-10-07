@@ -53,7 +53,8 @@ that needs an alarm-like sound should come from the asset library instead (below
 
 Cues live in the page as `SFX_CUES` (`{at, kind, gain, pan, sync}`) and read their times from the same timeline the picture uses
 (`tl.phrase(i, "단 한 줄")`, `tl.word(i, j)`). Each cue with `sync: true` also records a mark in
-`__reel.marks`, which `review.mjs` checks against the rendered audio.
+`__reel.marks`, which `review.mjs` checks against the picture: the cue's onset (on its own stem)
+against the frame where the picture changes most near the mark (`references/qa.md` "Sync marks").
 
 ## 3. Music bed (optional)
 
