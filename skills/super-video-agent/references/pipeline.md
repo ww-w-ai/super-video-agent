@@ -1058,3 +1058,12 @@ current base `voice/timings.json`. Same-language copies also report base text
 changes. Translated lines are compared with their own plan, using each line's
 language override. Warnings do not stop output or rewrite files. Refresh copied
 timings and matching audio before shipping. A missing base timing file is reported.
+
+### Retain base picture text deliberately
+
+Use `dub.mjs <reel-dir> --lang <code> --keep-base-picture-text` only when the
+base-language text inside the picture should stay visible. This explicitly picks
+the base picture, bed and timing pair, even when a language picture exists.
+Translated captions still come from the dub. The command reports the retained
+picture text. Without the flag, cross-language `in:"scene"` spans still require a
+language picture. Pair checks remain mandatory.

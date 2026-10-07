@@ -157,7 +157,9 @@ Text INSIDE the picture (a sign or screen in a 3D world) cannot be drawn by the 
 layer: list it as {start,end,in:"scene"}. For a language other than the base one such a
 span needs that language's own picture (render.mjs <reel-dir> --no-captions --lang <code>);
 with the base picture the run stops and says so, because the base language's text would
-stay in the picture. Text outside the scene is drawn in the caption layer from
+stay in the picture. --keep-base-picture-text explicitly keeps the matched base
+picture and its scene text for this language; caption text is still translated.
+Text outside the scene is drawn in the caption layer from
 dub/<code>/plan.json (labels in its meta.overlay, corner notes in a line's \`notes\`).
 
 Caption contrast: for up to three frames per line the caption layer's drawn colour is
@@ -236,7 +238,7 @@ export async function main(argv) {
     if (!["m4a", "wav"].includes(audioFormat)) throw new Error(`--audio-format must be m4a or wav, got "${audioFormat}"`);
     const result = replacing
       ? await replaceDubAudio({ dir, lang, videoPath: abs(flags["replace-audio"]), timingsPath: abs(flags.timings), bedPath: abs(flags.bed), maxSpeed })
-      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined, audioOnly, audioFormat, contrast: flags["no-contrast"] === undefined });
+      : await dub({ dir, lang, minGap, maxSpeed, table: flags.table !== undefined, audioOnly, audioFormat, contrast: flags["no-contrast"] === undefined, keepBasePictureText: flags["keep-base-picture-text"] === true });
     process.stdout.write(
       `wrote ${result.outPath}\n` +
         (result.captionNote ? `note: ${result.captionNote}\n` : "") +
@@ -257,10 +259,10 @@ export async function main(argv) {
  * @param {(p: string) => boolean} [exists]
  * @returns {{source: "lang"|"base", pictureMp4: string, bedWav: string, timingsJson: string}}
  */
-export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
+export function pickPictureFiles(outDir, lang, exists = fs.existsSync, keepBasePictureText = false) {
   const own = (name) => path.join(outDir, `picture-${lang}${name}`);
   const base = (name) => path.join(outDir, `picture${name}`);
-  const useLang = exists(own(".mp4"));
+  const useLang = keepBasePictureText !== true && exists(own(".mp4"));
   const pick = (name) => (useLang && exists(own(name)) ? own(name) : base(name));
   return {
     source: useLang ? "lang" : "base",
@@ -275,7 +277,7 @@ export function pickPictureFiles(outDir, lang, exists = fs.existsSync) {
  * (render.mjs checkPicturePair): the result would be out of sync with no warning.
  * Only a set that is wholly one language's or wholly the base picture's can be checked.
  */
-async function requireMatchedPair({ outDir, picked, lang }) {
+export async function requireMatchedPair({ outDir, picked, lang }) {
   if (!fs.existsSync(picked.pictureMp4)) return;
   const ownBed = path.basename(picked.bedWav) === `picture-${lang}.bed.wav`;
   const ownTimings = path.basename(picked.timingsJson) === `picture-${lang}.timings.json`;
@@ -357,12 +359,12 @@ async function verifyReplacementDurations(lines, clips) {
   }
 }
 
-export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false, audioOnly = false, audioFormat = "m4a", contrast = true }) {
+export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAULT, table = false, audioOnly = false, audioFormat = "m4a", contrast = true, keepBasePictureText = false }) {
   const startedMs = Date.now();
   const paths = reelPaths(dir);
   const dubDir = path.join(dir, "dub", lang);
   const dubVoiceDir = path.join(dubDir, "voice");
-  const picked = pickPictureFiles(paths.outDir, lang);
+  const picked = pickPictureFiles(paths.outDir, lang, fs.existsSync, keepBasePictureText);
   let pictureMp4 = picked.pictureMp4;
   let pictureBedWav = picked.bedWav;
   const pictureTimingsJson = picked.timingsJson;
@@ -377,6 +379,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       : `picture: ${path.basename(pictureMp4)} (base picture; no out/picture-${lang}.mp4)\n`
   );
   await requireMatchedPair({ outDir: paths.outDir, picked, lang });
+  if (keepBasePictureText) process.stdout.write("note: --keep-base-picture-text intentionally retains base-language text inside the picture; translated captions remain separate\n");
   requireFile(path.join(dubDir, "plan.json"), `no ${path.join(dubDir, "plan.json")} — create dub/${lang}/plan.json with this reel's line ids, in ${lang}`);
   requireFile(dubTimingsPath, `no ${dubTimingsPath} — run voice.mjs ${dubDir} first`);
 
@@ -477,7 +480,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     await snapToFrameGrid(pictureMp4, gridPictureMp4, fps);
     const { videoPath: videoNoAudioPath, captionNote } = await buildCaptionedVideo({
       dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir,
-      pictureSource: picked.source, contrast,
+      pictureSource: picked.source, contrast, keepBasePictureText,
     });
 
     const expectedFrames = Math.round(baseTimings.duration * fps);
@@ -735,13 +738,13 @@ function formatSpanReport(plan, fps) {
 }
 
 /** Caption layer + picture -> a video-only file; language-neutral spans come from the shared cache. */
-async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir, pictureSource, contrast }) {
+async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, fps, pictureMp4, gridPictureMp4, workDir, pictureSource, contrast, keepBasePictureText }) {
   const captionsDir = path.join(workDir, "captions");
   ensureDir(captionsDir);
   const duration = baseTimings.duration;
   const planFor = (labelSpans) => planCaptionSpans({ lines: fit.lines, duration, fps, labelSpans });
   const baseLang = readBaseLang(dir);
-  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor, lines: fit.lines });
+  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor, lines: fit.lines, keepBasePictureText });
   if (ownLayer.fatal) throw new Error(ownLayer.fatal);
   let plan = ownLayer.plan;
   let captionNote = null;
@@ -776,9 +779,9 @@ function readBaseLang(dir) {
  * picture: the base language's text would stay in the picture.
  * @param {{spans: {start:number,end:number,in?:string}[], lang: string, baseLang: string|null, pictureSource: "lang"|"base", dir: string}} o
  */
-export function sceneSpanVerdict({ spans, lang, baseLang, pictureSource, dir }) {
+export function sceneSpanVerdict({ spans, lang, baseLang, pictureSource, dir, keepBasePictureText = false }) {
   const scene = spans.filter((s) => s.in === "scene");
-  if (!scene.length || pictureSource === "lang") return null;
+  if (!scene.length || pictureSource === "lang" || keepBasePictureText === true) return null;
   if (sameLanguageTag(lang, baseLang) !== false) return null;
   const list = scene.map((s) => `${s.start}-${s.end}`).join(", ");
   return (
@@ -791,8 +794,9 @@ export function sceneSpanVerdict({ spans, lang, baseLang, pictureSource, dir }) 
  * A fact about scene spans this run could not settle (never a stop): the base language is unreadable, the two
  * tags cannot be told apart by script, or the page's spans could not be read at all (spans === null).
  */
-export function sceneSpanNote({ spans, lang, baseLang, pictureSource }) {
+export function sceneSpanNote({ spans, lang, baseLang, pictureSource, keepBasePictureText = false }) {
   if (pictureSource === "lang") return null;
+  if (keepBasePictureText === true) return `base picture text intentionally retained (${baseLang || "base language"}); captions use ${lang}.`;
   if (spans === null) return 'langSpans could not be read from reel.html, so scene spans (in:"scene") were not checked against the base picture.';
   if (!spans.some((s) => s.in === "scene")) return null;
   if (!parseLangTag(baseLang)) return `the base language of the reel is not readable (meta.lang ${JSON.stringify(baseLang)}), so scene spans were not compared with ${lang}; check that the picture used shows ${lang} text.`;
@@ -957,7 +961,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string, fatal?:string, plan?:object}>} fatal stops the step; note is a fact to print
  */
-async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines }) {
+async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines, keepBasePictureText }) {
   const server = await serveDir(reelDir);
   let session;
   let declared = null; // stays null when the page's spans were never read
@@ -966,9 +970,9 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
     session = await openReel(url, {});
     // Scene spans are checked whether or not the page draws its own caption layer: the picture is wrong either way.
     declared = await declaredLangSpans(session.page);
-    const fatal = sceneSpanVerdict({ spans: declared, lang, baseLang, pictureSource, dir: reelDir });
+    const fatal = sceneSpanVerdict({ spans: declared, lang, baseLang, pictureSource, dir: reelDir, keepBasePictureText });
     if (fatal) return { ok: false, fatal };
-    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource });
+    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource, keepBasePictureText });
     if (!(session.meta.layers || []).includes("captions")) {
       const noLayer = 'reel.html does not declare "captions" in __reel.layers — it cannot draw its own caption layer yet (references/pipeline.md "Picture first").';
       return { ok: false, note: spanNote ? `${noLayer} ${spanNote}` : noLayer };
@@ -981,7 +985,7 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
     return { ok: true, plan, note: spanNote };
   } catch (e) {
     const failed = `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.`;
-    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource });
+    const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource, keepBasePictureText });
     return { ok: false, note: spanNote ? `${failed} ${spanNote}` : failed };
   } finally {
     if (session) await session.close();
