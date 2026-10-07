@@ -230,6 +230,28 @@ test("depthLayers: maps each pixel to one band, white near; supports reversed ma
   assert.throws(() => Reel.depthLayers(img("p"), img("map", 3, 3)), /dimensions/);
 });
 
+test("mixKeyPhoto: mixes a prepared masked patch and restores the context", () => {
+  const ctx = recordingCtx();
+  const base = img("base"), patch = img("patch");
+  const at = amount => {
+    const output = recordingCtx();
+    Reel.mixKeyPhoto(output, base, patch, amount, { width: 800, height: 600 });
+    return output.log;
+  };
+  Reel.mixKeyPhoto(ctx, base, patch, 0.5);
+  assert.deepEqual(drawn(ctx), ["base", "patch"]);
+  assert.deepEqual(ctx.log.find(e => e[0] === "set globalAlpha"), ["set globalAlpha", 0.5]);
+  assert.equal(ctx.log[0][0], "save");
+  assert.equal(ctx.log.at(-1)[0], "restore");
+  const halfway = at(0.5);
+  at(1); at(0);
+  assert.deepEqual(at(0.5), halfway);
+  assert.equal(at(0).filter(e => e[0] === "drawImage").length, 1);
+  assert.deepEqual(halfway.find(e => e[0] === "drawImage").slice(2), [0, 0, 800, 600]);
+  for (const amount of [-1, 1.1, NaN, Infinity]) assert.throws(() => Reel.mixKeyPhoto(ctx, base, patch, amount), /amount/);
+  assert.throws(() => Reel.mixKeyPhoto(ctx, base, img("small", 2, 3), 0.5), /dimensions/);
+});
+
 test("holePlate: paints the shifted, blurred image through a grown mask over the original", () => {
   const { make, made } = canvasFactory();
   const out = Reel.holePlate(img("photo"), [{ x: 200, y: 50 }, { x: 260, y: 50 }, { x: 260, y: 200 }], { grow: 10, blur: 12, makeCanvas: make });

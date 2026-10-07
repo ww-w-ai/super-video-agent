@@ -1968,6 +1968,24 @@
     if (actual.w !== size.w || actual.h !== size.h) throw new Error(label + ": dimensions must match the source");
   }
 
+  // mixKeyPhoto draws an aligned base and a prepared alpha-masked key patch.
+  // Precompute the patch with cutLayer; no image decoding or canvas allocation occurs here.
+  function mixKeyPhoto(ctx, base, keyPatch, amount, opts) {
+    if (!Number.isFinite(amount) || amount < 0 || amount > 1) throw new Error("mixKeyPhoto: amount must be 0 to 1");
+    const o = opts || {};
+    const source = parallaxSourceSize(base, {});
+    parallaxAligned(keyPatch, source, "mixKeyPhoto key patch");
+    const size = parallaxSourceSize(base, o);
+    const opacity = ctx.globalAlpha == null ? 1 : ctx.globalAlpha;
+    ctx.save();
+    ctx.drawImage(base, 0, 0, size.w, size.h);
+    if (amount > 0) {
+      ctx.globalAlpha = opacity * amount;
+      ctx.drawImage(keyPatch, 0, 0, size.w, size.h);
+    }
+    ctx.restore();
+  }
+
   // depthLayers partitions a same-size grayscale map once. White is near by default.
   // The caller supplies a repaired far plate; these transparent bands do not fill holes.
   function depthLayers(image, depthMap, opts) {
@@ -2102,6 +2120,7 @@
     parallaxCoverage,
     cutLayer,
     depthLayers,
+    mixKeyPhoto,
     holePlate,
   };
 })();

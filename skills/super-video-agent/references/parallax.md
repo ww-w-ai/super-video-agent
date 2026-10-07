@@ -190,3 +190,43 @@ Depth does not reveal hidden background. Repair the far plate and inspect holes,
 band seams, fine edges and the largest camera offset. A mask or map passing a
 dimension check does not prove a convincing shot. Model quality and full photo
 inference require a separate visual check; local contract tests do not prove them.
+
+## Masked key photos
+
+For a small expression change, edit the same source photo into a few key photos.
+Keep the same identity, lighting, camera, crop, and background. Align the unchanged
+landmarks on one canvas before masking. Matching dimensions alone does not prove
+alignment. Inspect the face at full size and the final framing.
+
+Mask only the changed region. Feather that mask and prepare a transparent patch
+once with `cutLayer`. Mix the patch over the subject inside its parallax layer,
+so both share the same camera transform. Do not fade the entire photo for a small
+expression change: the background and unchanged features would ghost.
+
+```js
+// All images share the source photo dimensions and aligned landmarks.
+// expressionMask is transparent outside the changed facial region.
+const expressionPatch = await createImageBitmap(
+  Reel.cutLayer(expressionPhoto, null, { mask: expressionMask, feather: 3 })
+);
+let shotTime = 0;
+const expressiveSubject = {
+  depth: 1, scale: 1.2, cover: false,
+  draw(layerCtx, w, h) {
+    const amount = Math.min(1, Math.max(0, (shotTime - 2) / 0.4));
+    Reel.mixKeyPhoto(layerCtx, subject, expressionPatch, amount, { width: w, height: h });
+  },
+};
+// In seek(t), assign shotTime = t before Reel.parallax(ctx, t, spec).
+// Replace the subject layer in spec.layers with expressiveSubject.
+```
+
+`mixKeyPhoto` accepts a prepared alpha patch and a finite amount from 0 to 1.
+It restores the drawing context and allocates no canvas during the mix. The patch
+and base must have the same dimensions; the helper does not estimate alignment
+or validate identity. Derive the amount only from the current seek time. Keep
+prepared photos and masks unchanged so repeated out-of-order seeks agree.
+Preview the start, middle, and end of each change for doubled features, lighting
+jumps, and visible mask edges. Large arm or pose changes need more intermediate
+photos or a cutout joint technique. A small masked fade cannot invent motion.
+The same preparation can help photo animation and talking photo characters.

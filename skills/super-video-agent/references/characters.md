@@ -143,3 +143,5 @@ Name only what the terms require. Record the line and the terms page in `FILM.md
 
 For detailed photo cutouts or photo animation, see `parallax.md` for optional
 alpha masks. Keep identity, crop, and lighting consistent across source photos.
+For talking photo characters or small expression changes, use its aligned masked
+key-photo mixing guidance and check the change at the final framing.

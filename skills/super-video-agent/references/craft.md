@@ -167,7 +167,10 @@ look in your own words in `FILM.md`.
 | Half-empty frames | small visuals in a large blank frame |
 | "It'll become the new slop animation template" | a look that any subject would get; no look chosen for this film |
 | "SFX is a joke, literal overproduced garbage" | effects stacked everywhere instead of on a few real events |
-# Photo sources
+
+## Photo sources
 
 For any photo scene, check reuse rights and keep the source credit visible while
 the photo is on screen. See `parallax.md` for source choice and preparation.
+For photo animation or composition, see its optional alpha-mask and masked
+key-photo guidance. Use its depth maps when a background photo or depth blur needs them.
