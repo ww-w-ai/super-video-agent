@@ -4,7 +4,7 @@ Contents: What it is · Depth convention · The call · Camera moves · Depth bl
 
 ## What it is
 
-For a parallax shot, review the whole set: source choice, three-layer separation,
+For a parallax shot, automatically load and review the whole set: source choice, three-layer separation,
 optional alpha masks and depth maps, and masked key-photo mixing. Use only the parts
 the shot needs. Polygon cuts remain the default.
 
@@ -108,20 +108,33 @@ cut-outs make more edges to hide.
 
 ## Worked example
 
+Use a licensed real street photo with all three regions. Trace the actual outlines;
+these coordinates assume a 1080 × 1920 source and are not a reusable cut.
+Check both hole repairs at the largest camera offset. Use an edited clean plate
+when a shifted patch repeats visible objects.
+
 ```js
 const photo = await createImageBitmap(await (await fetch("assets/street.jpg")).blob());
+const midPath = [{ x: 90, y: 650 }, { x: 350, y: 650 }, { x: 350, y: 960 }, { x: 90, y: 960 }];
 const subjectPath = [{ x: 410, y: 220 }, { x: 640, y: 210 }, { x: 690, y: 880 }, { x: 380, y: 900 }];
 const subject = await createImageBitmap(Reel.cutLayer(photo, subjectPath, { feather: 5 }));
-const plate = await createImageBitmap(Reel.holePlate(photo, subjectPath, { grow: 12, blur: 14 }));
+const middle = await createImageBitmap(Reel.cutLayer(photo, midPath, { feather: 4 }));
+const withoutSubject = Reel.holePlate(photo, subjectPath, { grow: 12, blur: 14 });
+const plate = await createImageBitmap(Reel.holePlate(withoutSubject, midPath, { grow: 10, blur: 12 }));
 
 const spec = {
   width: 1080, height: 1920,
   camera: { keys: [{ t: 0, x: -30, y: 0, zoom: 1 }, { t: 6, x: 30, y: 0, zoom: 1.12 }] },
   focusDepth: 1, depthBlur: 1,
-  layers: [{ image: plate, depth: 6 }, { image: subject, depth: 1, scale: 1.2 }],
+  layers: [
+    { image: plate, depth: 6, scale: 1.05 },
+    { image: middle, depth: 3, scale: 1.1, cover: false },
+    { image: subject, depth: 1, scale: 1.2, cover: false },
+  ],
 };
 window.__reel.parallaxReport = () => Reel.parallaxCoverage(spec, 1080, 1920);
 // in seek(t): Reel.parallax(ctx, t, spec);
+// Draw a readable source credit above the transformed layers throughout the shot.
 ```
 
 Run `verify.mjs`; if it names a layer, multiply that layer's `scale` by the printed factor and run again.
