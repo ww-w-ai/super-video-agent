@@ -15,7 +15,7 @@ import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
 import { createContrastCollector, measureDrawnFrame, reportRenderContrast } from "./lib/render-contrast.mjs";
 import {
@@ -713,6 +713,7 @@ async function probeMeta(pool) {
       throw new Error(`page errors on load: ${session.errors.join("; ")}`);
     }
     for (const l of driftReportLines(session.meta.drift)) process.stdout.write(`${l}\n`);
+    for (const l of parallaxReportLines(session.meta.parallax)) process.stdout.write(`${l}\n`);
     return session.meta;
   });
 }

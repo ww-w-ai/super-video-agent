@@ -297,6 +297,7 @@ export async function openReel(url, opts = {}) {
       shots: r.shots || [],
       layers: r.layers || [], // e.g. ["captions"] — dub.mjs's own-caption-layer support (references/pipeline.md "Picture first")
       drift: typeof r.driftReport === "function" ? r.driftReport() : null, // reel-drift.js: graded notes for the model to judge
+      parallax: typeof r.parallaxReport === "function" ? r.parallaxReport() : null, // Reel.parallaxCoverage result (references/parallax.md)
     };
   });
   // Headless Chromium's text/font rendering caches are not fully warm the
@@ -578,6 +579,23 @@ export function driftReportLines(report) {
   const notes = report.notes || [];
   const head = `drift guard: ${report.steps ?? "?"} steps checked, ${notes.length ? `${notes.length} graded note(s) for you to judge` : "no drift"}`;
   return [head, ...notes.map((n) => `drift note: ${n}`)];
+}
+
+/**
+ * Report lines for the page's parallax coverage (window.__reel.parallaxReport(), Reel.parallaxCoverage).
+ * Reports only: a layer whose edge is bare is named with its spans and the scale factor that fixes it.
+ * @param {{layers?: {layer: number, depth: number, overscan: number, spans: {from: number, to: number}[]}[]}|null} report
+ * @returns {string[]}
+ */
+export function parallaxReportLines(report) {
+  if (!report) return [];
+  const layers = report.layers || [];
+  if (!layers.length) return ["parallax coverage: every layer covers the frame along the camera path"];
+  const fmt = (s) => `${s.from.toFixed(2)}-${s.to.toFixed(2)} s`;
+  return [
+    `parallax coverage: ${layers.length} layer(s) leave a frame edge bare`,
+    ...layers.map((l) => `parallax layer ${l.layer} (depth ${l.depth}): edge bare at ${l.spans.map(fmt).join(", ")}; multiply its scale by ${l.overscan} or more`),
+  ];
 }
 
 /** Engine facts recorded so far on the live page, as report lines. */

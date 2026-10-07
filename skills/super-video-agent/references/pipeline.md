@@ -52,6 +52,7 @@ is definitely wrong.
 | `langSpans` | `[{start, end, in?: "layer"\|"scene"}]` seconds | `dub.mjs` ("Shared language-neutral spans") |
 | `visibleAt` | `function(t)` returning `[{id, opacity?: 0..1}]` | `state-checks.mjs` flicker |
 | `segments` | `[{from, to, key}]`, one entry per world | `verify.mjs --world <key>` |
+| `parallaxReport` | `function()` returning `Reel.parallaxCoverage(spec, width, height)` | `render.mjs` and `verify.mjs` print each layer with a bare edge; reports only (`references/parallax.md`) |
 
 A line's `notes` in `plan.json` (`[{at: "start" | "word:<text>", text, corner?: "tl"|"tr"|"bl"|"br",
 holdSec?}]`) are corner notes: the caption step draws them (`Reel.cornerNotes`, `Reel.drawCornerNotes`),

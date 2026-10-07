@@ -7,7 +7,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
 import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines, driftReportLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
@@ -193,6 +193,7 @@ async function determinismChecks(target, scope = null) {
     if (reportGl(session, "warm page")) return false;
     for (const l of await readEngineFactLines(session.page)) process.stdout.write(`${l}\n`);
     for (const l of driftReportLines(session.meta.drift)) process.stdout.write(`${l}\n`);
+    for (const l of parallaxReportLines(session.meta.parallax)) process.stdout.write(`${l}\n`);
   } finally {
     await session.close();
   }

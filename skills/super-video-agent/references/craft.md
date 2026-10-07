@@ -133,7 +133,7 @@ one that fits the content, or use or invent another technique that suits this fi
 | Cut-out animation (paper-puppet animation) | a figure cut into parts (head, torso, upper and lower limbs) that rotate at overlapping joints | early *South Park*; many current TV cartoons |
 | Collage animation | scraps of magazines or photos pasted together, the cut-and-paste texture shown on purpose | Terry Gilliam's *Monty Python* animation |
 | Photo animation | a real person's photo cut out; only the head or arms move | documentary, news and explainer videos |
-| 2.5D parallax | a still split into near and far layers; a camera move gives depth | the "living photo" shot in documentaries |
+| 2.5D parallax | a still split into near and far layers; a camera move gives depth | the "living photo" shot in documentaries; the engine helper `Reel.parallax` and its edge check are in `references/parallax.md` |
 
 Studio tools for these are Toon Boom Harmony, Moho and Adobe Character Animator; setting up the
 joints is called cut-out rigging. A cut-out figure moves well when its parts share one fabric and

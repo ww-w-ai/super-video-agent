@@ -1664,6 +1664,328 @@
   }
 
   // ---------------------------------------------------------------------
+  // parallax — 2.5D: flat layers at different depths under one camera path
+  // ---------------------------------------------------------------------
+  // Depth convention: depth >= 1. depth 1 is the nearest layer and follows the camera 1:1; a layer
+  // at depth d moves 1/d as far and zooms (zoom - 1)/d as much, so a larger depth is farther away.
+  // Every output is a pure function of (spec, t): no state between frames, safe to seek.
+
+  const PARALLAX_EASES = {
+    linear: function (u) {
+      return u;
+    },
+    inOut: function (u) {
+      return u * u * (3 - 2 * u);
+    },
+    out: easeOutCubic,
+  };
+
+  function parallaxEase(ease) {
+    if (typeof ease === "function") return ease;
+    return PARALLAX_EASES[ease || "inOut"] || PARALLAX_EASES.inOut;
+  }
+
+  function parallaxKeyPose(k) {
+    return { x: k.x || 0, y: k.y || 0, zoom: k.zoom > 0 ? k.zoom : 1, rot: k.rot || 0 };
+  }
+
+  function parallaxMixPose(a, b, u) {
+    return {
+      x: a.x + (b.x - a.x) * u,
+      y: a.y + (b.y - a.y) * u,
+      zoom: a.zoom * Math.pow(b.zoom / a.zoom, u),
+      rot: a.rot + (b.rot - a.rot) * u,
+    };
+  }
+
+  function parallaxSortedKeys(camera) {
+    const keys = camera && Array.isArray(camera.keys) ? camera.keys.slice() : [];
+    if (!keys.length) keys.push({ t: 0 });
+    return keys.sort(function (a, b) {
+      return a.t - b.t;
+    });
+  }
+
+  // parallaxCamera(camera, t) -> {x, y, zoom, rot}: the camera at time t, held before the first key
+  // and after the last; zoom is mixed by ratio so a push-in has even speed. rot is in degrees.
+  function parallaxCamera(camera, t) {
+    const keys = parallaxSortedKeys(camera);
+    const first = keys[0];
+    const last = keys[keys.length - 1];
+    if (t <= first.t) return parallaxKeyPose(first);
+    if (t >= last.t) return parallaxKeyPose(last);
+    let i = 0;
+    while (keys[i + 1].t <= t) i++;
+    const u = parallaxEase(camera.ease)((t - keys[i].t) / (keys[i + 1].t - keys[i].t));
+    return parallaxMixPose(parallaxKeyPose(keys[i]), parallaxKeyPose(keys[i + 1]), u);
+  }
+
+  // parallaxPose(cam, depth, w, h) -> {tx, ty, zoom, rot}: where the frame centre lands for a layer
+  // at `depth` (tx, ty in px), the layer's zoom about it and its rotation in radians.
+  function parallaxPose(cam, depth, w, h) {
+    const k = 1 / Math.max(depth, 1);
+    return {
+      tx: w / 2 - cam.x * k,
+      ty: h / 2 - cam.y * k,
+      zoom: 1 + (cam.zoom - 1) * k,
+      rot: ((cam.rot * k) * Math.PI) / 180,
+    };
+  }
+
+  function parallaxCheckLayer(layer, i) {
+    const at = "parallax layers[" + i + "]";
+    if (!layer || !(layer.image || typeof layer.draw === "function")) throw new Error(at + ": needs image or draw(ctx, w, h)");
+    if (!(layer.depth >= 1) || !isFinite(layer.depth)) throw new Error(at + ": depth must be a number >= 1 (1 = nearest)");
+  }
+
+  // Layers back to front (deepest first); equal depths keep their array order.
+  function parallaxOrdered(spec) {
+    const layers = (spec && spec.layers) || [];
+    layers.forEach(parallaxCheckLayer);
+    return layers
+      .map(function (layer, index) {
+        return { layer: layer, index: index };
+      })
+      .sort(function (a, b) {
+        return b.layer.depth - a.layer.depth || a.index - b.index;
+      });
+  }
+
+  function parallaxSize(ctx, spec) {
+    const w = spec.width || (ctx.canvas && ctx.canvas.width);
+    const h = spec.height || (ctx.canvas && ctx.canvas.height);
+    if (!(w > 0) || !(h > 0)) throw new Error("parallax: spec.width and spec.height are needed when ctx.canvas has no size");
+    return { w: w, h: h };
+  }
+
+  // The layer's rest rectangle in frame px, before the camera: an image is cover-fitted to the frame
+  // (fit "natural" keeps its own size), a draw layer is w x h (default the frame), then scaled about
+  // the frame centre by layer.scale and spec.overscan and shifted by x, y.
+  function parallaxRect(layer, overscan, w, h) {
+    const src = layer.image;
+    const iw = src ? src.naturalWidth || src.width : layer.w || w;
+    const ih = src ? src.naturalHeight || src.height : layer.h || h;
+    const fit = src && layer.fit !== "natural" ? Math.max(w / iw, h / ih) : 1;
+    const s = fit * (layer.scale > 0 ? layer.scale : 1) * overscan;
+    const rw = iw * s;
+    const rh = ih * s;
+    return { x: w / 2 + (layer.x || 0) - rw / 2, y: h / 2 + (layer.y || 0) - rh / 2, w: rw, h: rh };
+  }
+
+  function parallaxBlurPx(layer, spec) {
+    if (layer.blur != null) return Math.max(0, layer.blur);
+    const focus = spec.focusDepth == null ? 1 : spec.focusDepth;
+    return Math.max(0, (spec.depthBlur || 0) * Math.abs(layer.depth - focus));
+  }
+
+  function drawParallaxLayer(ctx, layer, cam, spec, size) {
+    const pose = parallaxPose(cam, layer.depth, size.w, size.h);
+    const r = parallaxRect(layer, spec.overscan || 1, size.w, size.h);
+    const blur = parallaxBlurPx(layer, spec);
+    ctx.save();
+    ctx.translate(pose.tx, pose.ty);
+    if (pose.rot) ctx.rotate(pose.rot);
+    ctx.scale(pose.zoom, pose.zoom);
+    ctx.translate(-size.w / 2, -size.h / 2);
+    if (layer.opacity != null) ctx.globalAlpha = layer.opacity;
+    if (blur > 0) ctx.filter = "blur(" + blur + "px)";
+    if (layer.image) {
+      ctx.drawImage(layer.image, r.x, r.y, r.w, r.h);
+    } else {
+      ctx.translate(r.x, r.y);
+      layer.draw(ctx, r.w, r.h);
+    }
+    ctx.restore();
+  }
+
+  // parallax(ctx, t, spec) — draws the layers back to front under the camera at time t.
+  //   spec.layers[]  {image | draw(ctx, w, h), depth >= 1, x, y, scale, opacity, blur, fit, cover}
+  //   spec.camera    {keys: [{t, x, y, zoom, rot}], ease: "inOut" | "linear" | "out" | fn}
+  //   spec.focusDepth, spec.depthBlur   blur px per unit of depth from the focus (default focus 1)
+  //   spec.overscan  extra scale on every layer; spec.width / spec.height when ctx.canvas has no size
+  function parallax(ctx, t, spec) {
+    const size = parallaxSize(ctx, spec);
+    const cam = parallaxCamera(spec.camera, t);
+    parallaxOrdered(spec).forEach(function (o) {
+      drawParallaxLayer(ctx, o.layer, cam, spec, size);
+    });
+  }
+
+  function parallaxSampleTimes(keys, step) {
+    const t0 = keys[0].t;
+    const t1 = keys[keys.length - 1].t;
+    const times = [];
+    for (let t = t0; t < t1; t += step) times.push(t);
+    times.push(t1);
+    return times;
+  }
+
+  // The frame's four corners mapped back into the layer's rest space under the layer's pose.
+  function parallaxFrameInLayer(pose, w, h) {
+    const cos = Math.cos(-pose.rot);
+    const sin = Math.sin(-pose.rot);
+    return [
+      [0, 0],
+      [w, 0],
+      [w, h],
+      [0, h],
+    ].map(function (c) {
+      const dx = c[0] - pose.tx;
+      const dy = c[1] - pose.ty;
+      return { x: (dx * cos - dy * sin) / pose.zoom + w / 2, y: (dx * sin + dy * cos) / pose.zoom + h / 2 };
+    });
+  }
+
+  // The factor the layer's rect must grow by (about its centre) to hold the frame at one instant.
+  function parallaxNeedAt(layer, spec, cam, size) {
+    const pose = parallaxPose(cam, layer.depth, size.w, size.h);
+    const r = parallaxRect(layer, spec.overscan || 1, size.w, size.h);
+    const margin = parallaxBlurPx(layer, spec);
+    let need = 0;
+    parallaxFrameInLayer(pose, size.w, size.h).forEach(function (p) {
+      need = Math.max(need, (2 * (Math.abs(p.x - (r.x + r.w / 2)) + margin)) / r.w, (2 * (Math.abs(p.y - (r.y + r.h / 2)) + margin)) / r.h);
+    });
+    return need;
+  }
+
+  function parallaxSpans(times, step) {
+    const spans = [];
+    times.forEach(function (t) {
+      const open = spans[spans.length - 1];
+      if (open && t - open.to <= step * 1.5) open.to = t;
+      else spans.push({ from: t, to: t });
+    });
+    return spans;
+  }
+
+  function parallaxLayerCoverage(o, spec, times, size, step) {
+    const failing = [];
+    let need = 1;
+    times.forEach(function (t) {
+      const n = parallaxNeedAt(o.layer, spec, parallaxCamera(spec.camera, t), size);
+      if (n > 1 + 1e-9) failing.push(t);
+      need = Math.max(need, n);
+    });
+    if (!failing.length) return null;
+    return { layer: o.index, depth: o.layer.depth, overscan: Math.ceil(need * 1000) / 1000, spans: parallaxSpans(failing, step) };
+  }
+
+  // parallaxCoverage(spec, w, h, {step}) -> {ok, width, height, step, layers: [{layer, depth, overscan, spans}]}
+  // Walks the camera path every `step` s (default one 30 fps frame) and lists each layer whose rect
+  // leaves a frame edge bare, the spans in s where it does, and `overscan`: the factor to multiply that
+  // layer's scale by so the edge stays covered. A layer with cover: false is skipped. Blur is counted
+  // as lost margin. Only rect geometry is checked, not whether the pixels in it are opaque.
+  function parallaxCoverage(spec, w, h, opts) {
+    const step = (opts && opts.step) || 1 / 30;
+    const size = { w: w, h: h };
+    const times = parallaxSampleTimes(parallaxSortedKeys(spec.camera), step);
+    const layers = parallaxOrdered(spec)
+      .filter(function (o) {
+        return o.layer.cover !== false;
+      })
+      .map(function (o) {
+        return parallaxLayerCoverage(o, spec, times, size, step);
+      })
+      .filter(Boolean);
+    return { ok: layers.length === 0, width: w, height: h, step: step, layers: layers };
+  }
+
+  // ---- layers from one still ----
+
+  function parallaxCanvas(w, h, make) {
+    if (make) return make(w, h);
+    if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(w, h);
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+
+  function parallaxTrace(ctx, path) {
+    ctx.beginPath();
+    if (typeof path === "function") return path(ctx);
+    path.forEach(function (p, i) {
+      const x = Array.isArray(p) ? p[0] : p.x;
+      const y = Array.isArray(p) ? p[1] : p.y;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+  }
+
+  // A white mask of the path, grown by `grow` px and softened by `feather` px of blur.
+  function parallaxMask(path, w, h, o) {
+    const mask = parallaxCanvas(w, h, o.makeCanvas);
+    const mctx = mask.getContext("2d");
+    if (o.feather > 0) mctx.filter = "blur(" + o.feather + "px)";
+    mctx.fillStyle = "#fff";
+    parallaxTrace(mctx, path);
+    mctx.fill();
+    if (o.grow > 0) {
+      mctx.strokeStyle = "#fff";
+      mctx.lineWidth = o.grow * 2;
+      mctx.lineJoin = "round";
+      mctx.stroke();
+    }
+    return mask;
+  }
+
+  function parallaxSourceSize(image, o) {
+    return { w: o.width || image.naturalWidth || image.width, h: o.height || image.naturalHeight || image.height };
+  }
+
+  // cutLayer(image, path, {feather, width, height, makeCanvas}) -> canvas the size of the image with
+  // only the pixels inside `path` ([{x,y}] or [[x,y]] points, or fn(ctx) that adds a path), the rest
+  // transparent. `feather` px of blur softens the edge, so a moving cut-out does not show a hard
+  // outline. Hold the result as an ImageBitmap before drawing it each frame (createImageBitmap).
+  function cutLayer(image, path, opts) {
+    const o = opts || {};
+    const size = parallaxSourceSize(image, o);
+    const out = parallaxCanvas(size.w, size.h, o.makeCanvas);
+    const octx = out.getContext("2d");
+    octx.drawImage(image, 0, 0, size.w, size.h);
+    octx.globalCompositeOperation = "destination-in";
+    octx.drawImage(parallaxMask(path, size.w, size.h, { feather: o.feather, makeCanvas: o.makeCanvas }), 0, 0);
+    return out;
+  }
+
+  function parallaxPatchShift(path, o) {
+    if (o.dx != null || o.dy != null) return { dx: o.dx || 0, dy: o.dy || 0 };
+    if (typeof path === "function") throw new Error("holePlate: pass opts.dx / opts.dy when path is a function");
+    const xs = path.map(function (p) {
+      return Array.isArray(p) ? p[0] : p.x;
+    });
+    const lo = Math.min.apply(null, xs);
+    const hi = Math.max.apply(null, xs);
+    const gap = hi - lo + 2 * (o.grow || 0);
+    return { dx: lo - gap >= 0 ? gap : -gap, dy: 0 };
+  }
+
+  // holePlate(image, path, {grow, feather, blur, dx, dy, makeCanvas}) -> canvas: the image with the
+  // region inside `path` (grown by `grow` px, default 4) painted over by the image shifted by dx, dy
+  // and blurred by `blur` px. Use it as the far layer behind a cut-out: the subject's old place shows
+  // neighbouring background, not a hole, when the layers separate. dx defaults to one path-width
+  // sideways; give dx / dy (or a clean plate you drew) when that lands on something else.
+  function holePlate(image, path, opts) {
+    const o = opts || {};
+    const size = parallaxSourceSize(image, o);
+    const grow = o.grow == null ? 4 : o.grow;
+    const shift = parallaxPatchShift(path, { dx: o.dx, dy: o.dy, grow: grow });
+    const patch = parallaxCanvas(size.w, size.h, o.makeCanvas);
+    const pctx = patch.getContext("2d");
+    if (o.blur > 0) pctx.filter = "blur(" + o.blur + "px)";
+    pctx.drawImage(image, shift.dx, shift.dy, size.w, size.h);
+    pctx.filter = "none";
+    pctx.globalCompositeOperation = "destination-in";
+    pctx.drawImage(parallaxMask(path, size.w, size.h, { feather: o.feather == null ? 2 : o.feather, grow: grow, makeCanvas: o.makeCanvas }), 0, 0);
+    const out = parallaxCanvas(size.w, size.h, o.makeCanvas);
+    const octx = out.getContext("2d");
+    octx.drawImage(image, 0, 0, size.w, size.h);
+    octx.drawImage(patch, 0, 0);
+    return out;
+  }
+
+  // ---------------------------------------------------------------------
   // export
   // ---------------------------------------------------------------------
 
@@ -1723,5 +2045,11 @@
     cueTime,
     registerClip,
     clipFrame,
+    parallax,
+    parallaxCamera,
+    parallaxPose,
+    parallaxCoverage,
+    cutLayer,
+    holePlate,
   };
 })();
