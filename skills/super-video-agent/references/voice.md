@@ -72,6 +72,10 @@ a dub's placed narration and on a track made by `fit-track.mjs`.
 
 A starting point before a full run: make about four lines once and listen; then make all lines together.
 
+To listen before any picture exists, run `review.mjs <dir> --copy`: it builds `out/review-copy-<code>.mp4`
+from `voice/narration.wav` under a black 640x360 picture as long as the narration, with a subtitle track
+`<line id> <text>`, so the listener can name a line.
+
 **ElevenLabs.** On eleven_v3/v4 the request ends in a `[pause]` tag:
 without it, eleven_v3 stopped a Korean line mid-sound at the end of a request in 9 of 18 takes;
 with it, 0 of 25. A single line is sent as it is, so listen to it and re-make it if its end is
@@ -226,7 +230,7 @@ below) and compares it against the intended line:
 - **SHORT** — the qwen3 provider's own duration gate: shorter than the text could plausibly take.
 - **TAIL** — the qwen3 provider's own tail-RMS gate: still sounding in the final ~30ms, a cut
   syllable. The STT check can clear this: if the transcript's last two characters match the
-  intended line's, the syllable wasn't actually cut — `TAIL` is removed and `stt.tailCleared: true`
+  intended line's (Korean `-예요` and `-에요` count as one spelling), the syllable wasn't actually cut — `TAIL` is removed and `stt.tailCleared: true`
   is recorded instead.
 - **MISHEARD** — the STT check's own gate, for gross errors only. STT has its own error, so it
   flags a take only when most of it is wrong (error rate above 50%) or the transcript is clearly

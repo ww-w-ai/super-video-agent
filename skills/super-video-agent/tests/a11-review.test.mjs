@@ -262,3 +262,21 @@ test("state-checks.mjs --help states which checks can exit 1", () => {
   assert.match(r.stdout, /Exit contract/);
   assert.match(r.stdout, /exit 1 {2}only when langglyphs finds a character/);
 });
+
+test("reviewCopy: with no encode the base layer is narration.wav under a black picture as long as the narration, tail kept", async () => {
+  const dir = tmp();
+  makeReel(dir);
+  await ffmpeg(["-y", "-f", "lavfi", "-i", "sine=f=330:d=5", path.join(dir, "voice", "narration.wav")]);
+  const paths = reelPaths(dir);
+  const [en] = await reviewCopy({ dir, paths, only: "en", outDir: path.join(dir, "out") });
+  assert.ok(en.out && en.voiceOnly);
+  assert.deepEqual(await streams(en.out), ["aac,audio", "h264,video", "mov_text,subtitle"]);
+  const d = await ffprobe(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "csv=p=0", en.out]);
+  const secs = Object.fromEntries(d.stdout.toString().trim().split("\n").map((r) => r.split(",")));
+  assert.ok(Math.abs(Number(secs.video) - 5) < 0.3, `video ${secs.video}`);
+  assert.ok(Math.abs(Number(secs.audio) - 5) < 0.3, `audio ${secs.audio}`);
+  const srt = await ffmpeg(["-v", "error", "-i", en.out, "-map", "0:s:0", "-f", "srt", "-"]);
+  assert.match(srt.stdout.toString(), /l1 Hello there/);
+  const none = await reviewCopy({ dir, paths, only: "ko", outDir: path.join(dir, "out") });
+  assert.match(none[0].skip, /no voice\/narration\.wav/);
+});

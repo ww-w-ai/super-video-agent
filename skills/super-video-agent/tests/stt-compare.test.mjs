@@ -86,3 +86,13 @@ test("isGrossMismatch: a dropped clause, a cut take, babble or nonsense is flagg
     assert.equal(isGrossMismatch(target, heard, compareLine({ text: target, heard }).cer), true, heard);
   }
 });
+
+test("Korean -예요 and -에요 are one spelling: no difference, and the tail check clears", () => {
+  const r = compareLine({ text: "안녕하세요, 더비예요.", heard: "안녕하세요 더비에요", lang: "ko" });
+  assert.equal(r.cer, 0);
+  assert.deepEqual(r.diffs, []);
+  assert.equal(cer("이건 무료예요.", "이건 무료에요", "ko-KR"), 0);
+  assert.equal(tailCleared("저는 더비예요.", "저는 더비에요", "ko"), true);
+  assert.equal(tailCleared("저는 더비예요.", "저는 더비", "ko"), false);
+  assert.ok(cer("이건 무료예요", "이건 무료에요", "en") > 0);
+});

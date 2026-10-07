@@ -639,6 +639,8 @@
   // unit i and unit i+1.
   //   - a number never parts from its unit ("10 kg", "30 %", "3 개")
   //   - an article/preposition never ends a row (per-language short lists)
+  //   - ko: a determiner or numeral ("몇", "한", "그", "열두") never ends a row,
+  //     and a counter after one keeps the noun that follows ("열두 개 언어")
   //   - ko: a dependent noun or particle token stays with the word before it
   //     ("할 수 밖에 없다" is one piece)
   //   - nothing breaks inside a short parenthesis or quote span
@@ -660,6 +662,15 @@
   // Korean tokens that attach to the word before them (dependent nouns,
   // spaced particles, counters).
   const CAPTION_KO_DEPENDENT = wordSet("수 것 줄 뿐 때문 따름 만큼 대로 듯 척 밖에 은 는 을 를 에 의 도 로 와 과 부터 까지 처럼 보다 에서 에게 한테 번 개 명 마리 원 분 시간 달 살 권 장 대");
+  // Per-language words that never end a row or chunk: a determiner or numeral
+  // (CAPTION_LEAD_WORDS), and a counter that follows one of them or a digit
+  // (CAPTION_LEAD_COUNTERS: "열두 개" keeps its noun).
+  const CAPTION_LEAD_WORDS = {
+    ko: wordSet("몇 한 두 세 네 다섯 여섯 일곱 여덟 아홉 열 열한 열두 스무 이 그 저 어떤 어느 모든 각 여러 새 첫"),
+  };
+  const CAPTION_LEAD_COUNTERS = {
+    ko: wordSet("개 명 마리 권 장 번 곳 가지 분 대 채 편"),
+  };
   const CAPTION_UNIT_WORDS = wordSet(
     "% percent kg g mg km m cm mm l ml s sec ms min h hr hrs mb gb tb kb kbps fps px usd eur gbp krw " +
     "second seconds minute minutes hour hours day days week weeks month months year years dollars euros pounds " +
@@ -707,6 +718,8 @@
     const glue = new Array(n).fill(false);
     const lg = captionLang(lang, texts);
     const fw = CAPTION_FUNCTION_WORDS[lg];
+    const lead = CAPTION_LEAD_WORDS[lg];
+    const leadCounters = CAPTION_LEAD_COUNTERS[lg];
     const spanCap = (opts && opts.spanCap) || SPAN_CAP_WORDS;
     for (let i = 0; i + 1 < n; i++) {
       const t = String(texts[i]);
@@ -716,6 +729,9 @@
       else if (pause) continue;
       else if (fw && fw[captionStripEdge(t).toLowerCase()]) glue[i] = true;
       else if (lg === "fr" && /^[A-Za-z]{1,2}['’]$/.test(t)) glue[i] = true;
+      else if (lead && lead[captionStripEdge(t)]) glue[i] = true;
+      else if (leadCounters && leadCounters[captionStripEdge(t)] && i > 0 &&
+        (lead[captionStripEdge(String(texts[i - 1]))] || /\d$/.test(String(texts[i - 1])))) glue[i] = true;
       else if (lg === "ko" && (CAPTION_KO_DEPENDENT[captionStripEdge(nx)] || (captionStripEdge(t) === "밖에" && /^없/.test(nx)))) glue[i] = true;
     }
     let open = -1;
@@ -1222,15 +1238,23 @@
 
     let left = Infinity;
     let right = -Infinity;
-    lines.forEach((line, i) => {
+    const placed = lines.map((line) => {
       let dx = x;
       const lw = ctx.measureText(line).width;
       if (align === "center") dx = x + (w - lw) / 2;
       else if (align === "right") dx = x + (w - lw);
-      ctx.fillText(line, dx, y + i * lineHeight);
       left = Math.min(left, dx);
       right = Math.max(right, dx + lw);
+      return { line, dx };
     });
+    if (lines.length && o.band) {
+      const padX = o.bandPadX == null ? lineHeight * 0.4 : o.bandPadX;
+      const padY = o.bandPadY == null ? lineHeight * 0.15 : o.bandPadY;
+      ctx.fillStyle = o.band;
+      ctx.fillRect(left - padX, y - padY, right - left + padX * 2, totalHeight + padY * 2);
+      ctx.fillStyle = color;
+    }
+    placed.forEach((p, i) => ctx.fillText(p.line, p.dx, y + i * lineHeight));
     if (lines.length && !o.outsideSafeOk) checkSafe(ctx, text, left, y, right, y + totalHeight, o.width, o.height);
     ctx.restore();
     return { lines: lines.length, height: totalHeight, overflow: totalHeight > h };
@@ -1257,7 +1281,9 @@
   // boil), at the bottom of the safe area by default. Font size and box
   // width follow the canvas (captionFontSizePx above, safeArea); a
   // landscape (16:9) canvas also caps the box at ~70% width so two
-  // wrapped lines fit the shorter frame.
+  // wrapped lines fit the shorter frame. With no o.color the text is white on
+  // a dark translucent band (o.band, o.bandPadX, o.bandPadY; o.band = "" or a
+  // transparent colour turns the band off).
   function caption(ctx, line, t, opts) {
     if (!_captionsOn) return;
     const o = opts || {};
@@ -1273,7 +1299,10 @@
     const y = o.y == null ? safe.y + safe.h - boxH - (o.marginBottom == null ? 0 : o.marginBottom) : o.y;
     const family = captionFontFor(o.captionFonts, o.lang || pictureLang()) || "'Pretendard'";
     const font = o.font == null ? "800 " + fontPx + "px " + family : o.font;
-    const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight, lang: pictureLang() || undefined }, o);
+    // Default look reads on any picture: light text on a dark translucent band.
+    // An explicit o.color is the page's own choice and draws no band unless o.band is given.
+    const look = o.color == null ? { color: "#fff", band: "rgba(0,0,0,0.62)" } : {};
+    const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight, lang: pictureLang() || undefined }, look, o);
     return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
   }
 

@@ -83,8 +83,10 @@ line: facts, never a pass or fail).
 --copy  review copy, for showing a film to a reviewer: for each language layer (the base language, and every
         dub/<code>/ that has an out/final-<code>.mp4) the existing encode, which carries picture, voice and
         bed, is stream-copied into <out>/review-copy-<code>.mp4 with one subtitle track whose cues read
-        "<line id> <text>" (line text from that language's plan). Nothing is rendered or re-encoded. A layer
-        with no encode or no timings is skipped with the reason; exit 1 only when no copy could be built.
+        "<line id> <text>" (line text from that language's plan). Nothing is rendered or re-encoded. With no
+        encode yet (voice stage) the base layer is built from voice/narration.wav under a black 640x360
+        picture as long as the narration. A layer with no encode and no narration, or no timings, is skipped
+        with the reason; exit 1 only when no copy could be built.
 --lang  with --copy: only these language codes.
 --json  with --file, print the report as JSON.
 
@@ -315,7 +317,7 @@ export function reviewLayers(dir, paths, only) {
   const baseCode = (basePlan.meta && basePlan.meta.lang) || "base";
   const layers = new Map();
   layers.set(baseCode, { code: baseCode, mp4: first(path.join(paths.outDir, "final.mp4"), path.join(paths.outDir, "preview.mp4")),
-    timings: first(paths.timingsJson), plan: paths.planJson });
+    timings: first(paths.timingsJson), plan: paths.planJson, voiceWav: first(paths.narrationWav) });
   const dubRoot = path.join(dir, "dub");
   for (const code of exists(dubRoot) ? fs.readdirSync(dubRoot).sort() : []) {
     const mp4 = first(path.join(paths.outDir, `final-${code}.mp4`), path.join(paths.outDir, `preview-${code}.mp4`));
@@ -326,7 +328,7 @@ export function reviewLayers(dir, paths, only) {
   return wanted.map((code) => {
     const l = layers.get(code) || (sameLanguageTag(code, baseCode) === true ? layers.get(baseCode) : undefined);
     if (!l) return { code, skip: `no such language layer (have: ${[...layers.keys()].join(", ")})` };
-    if (!l.mp4) return { code, skip: "no existing encode (out/final[-<code>].mp4 or preview): render it first, a review copy never renders" };
+    if (!l.mp4 && !l.voiceWav) return { code, skip: "no existing encode (out/final[-<code>].mp4 or preview) and no voice/narration.wav: render or voice it first, a review copy never renders" };
     if (!l.timings) return { code, skip: "no timings (voice/timings.json or dub/<code>/timings.placed.json)" };
     return l;
   });
@@ -339,8 +341,21 @@ function uniqueTemp(target) {
 }
 
 /**
+ * ffmpeg arguments for the voice-stage review copy: `voice/narration.wav` under a small black picture whose
+ * length is fixed to the narration length (`-shortest` would end at the last cue and drop a silent tail),
+ * plus the "<line id> <text>" subtitle track.
+ */
+export function voiceOnlyCopyArgs({ wav, durationSec, srt, out }) {
+  const d = durationSec.toFixed(3);
+  return ["-y", "-f", "lavfi", "-i", `color=c=black:s=640x360:r=2:d=${d}`, "-i", wav, "-i", srt,
+    "-map", "0:v", "-map", "1:a", "-map", "2:0", "-t", d, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-c:s", "mov_text", "-disposition:s:0", "default", "-movflags", "+faststart", out];
+}
+
+/**
  * --copy: per language layer, the existing encode (picture + voice + bed) stream-copied with a subtitle
  * track whose cues read "<line id> <text>". Nothing is rendered or re-encoded; only the muxer runs.
+ * With no encode, the base layer is built from voice/narration.wav under a black picture (voiceOnlyCopyArgs).
  * @returns {Promise<{code:string, out?:string, cues?:number, skip?:string}[]>}
  */
 export async function reviewCopy({ dir, paths, only, outDir }) {
@@ -357,14 +372,18 @@ export async function reviewCopy({ dir, paths, only, outDir }) {
     const srt = tmp.replace(/\.mp4$/, ".srt");
     try {
       fs.writeFileSync(srt, buildReviewSrt(lines, text), "utf8");
-      await ffmpeg(["-y", "-i", layer.mp4, "-i", srt, "-map", "0:v", "-map", "0:a?", "-map", "1:0", "-c:v", "copy", "-c:a", "copy",
-        "-c:s", "mov_text", "-disposition:s:0", "default", "-movflags", "+faststart", tmp]);
+      if (layer.mp4) {
+        await ffmpeg(["-y", "-i", layer.mp4, "-i", srt, "-map", "0:v", "-map", "0:a?", "-map", "1:0", "-c:v", "copy", "-c:a", "copy",
+          "-c:s", "mov_text", "-disposition:s:0", "default", "-movflags", "+faststart", tmp]);
+      } else {
+        await ffmpeg(voiceOnlyCopyArgs({ wav: layer.voiceWav, durationSec: await probeDuration(layer.voiceWav), srt, out: tmp }));
+      }
       fs.renameSync(tmp, out);
     } finally {
       fs.rmSync(srt, { force: true });
       fs.rmSync(tmp, { force: true });
     }
-    results.push({ code: layer.code, out, cues: lines.length, from: layer.mp4 });
+    results.push({ code: layer.code, out, cues: lines.length, from: layer.mp4 || layer.voiceWav, voiceOnly: !layer.mp4 });
   }
   return results;
 }
@@ -373,7 +392,8 @@ async function runCopy(dir, paths, flags) {
   const outDir = typeof flags.out === "string" ? abs(flags.out) : paths.outDir;
   const results = await reviewCopy({ dir, paths, only: typeof flags.lang === "string" ? flags.lang : undefined, outDir });
   for (const r of results) {
-    process.stdout.write(r.out ? `${r.code}: ${r.out} (${r.cues} cues "<line id> <text>", picture+audio copied from ${path.basename(r.from)})\n` : `${r.code}: skipped — ${r.skip}\n`);
+    const source = r.voiceOnly ? `black picture, voice from ${path.basename(r.from)}` : `picture+audio copied from ${path.basename(r.from)}`;
+    process.stdout.write(r.out ? `${r.code}: ${r.out} (${r.cues} cues "<line id> <text>", ${source})\n` : `${r.code}: skipped — ${r.skip}\n`);
   }
   if (!results.some((r) => r.out)) throw new Error("no review copy was built");
 }

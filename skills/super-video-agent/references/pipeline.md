@@ -532,7 +532,7 @@ stays in. Before the caption overlay, `dub.mjs` re-stamps `picture.mp4` onto the
 
 `dub.mjs` first writes `dub/<code>/timings.placed.json` (the fitted lines above, on the base
 clock, same shape as `voice/timings.json`). It then tries the reel's own caption layer before
-falling back to the engine's default `Reel.caption()` look: it opens `reel.html` with
+falling back to the engine's default `Reel.caption()` look (white text on a dark translucent band, so it reads on any picture; an explicit `color` option draws no band): it opens `reel.html` with
 `?layer=captions&dub=<code>` and checks `__reel.layers` for `"captions"`. A page that declares it
 loads `dub/<code>/timings.placed.json` and `dub/<code>/plan.json` instead of its own, skips the
 picture, clears to transparent, and draws only its own captions (`Reel.layer()`,
@@ -561,6 +561,8 @@ Without a `|` the engine breaks by an automatic fallback (one rule set, `Reel.ca
 the script): a line that fits one row is not cut at a comma; a number stays with its unit (`10 kg`,
 `3 개`, `30分`); a short article or preposition never ends a row (en, fr, es, pt, it, de lists);
 a Korean dependent noun or particle token (`수`, `것`, `밖에`, `은`) stays with the word before it;
+a Korean determiner or numeral (`몇`, `한`, `그`, `열두`) never ends a row, and a counter after one
+(`열두 개`) keeps the noun that follows (the lists are per-language data in `reel-engine.js`);
 nothing breaks inside a short parenthesis or quote span; Japanese and Chinese wrap by character
 but keep a number+unit, a Latin word and closing/opening marks whole. A `|` always wins.
 
@@ -837,6 +839,9 @@ existing encode is stream-copied, with its picture, voice and bed, into
 `out/review-copy-<code>.mp4`, and one subtitle track is muxed whose cues read `<line id> <text>`
 (the text from that language's plan, `|` marks removed). Nothing is rendered or re-encoded. A layer
 with no encode or no timings is skipped with the reason; exit 1 only when no copy could be built.
+In the voice stage, before any picture exists, the base layer is built from `voice/narration.wav` under a
+black 640x360 picture whose length is the narration's length (not cut at the last cue), with the same
+`<line id> <text>` subtitle track, so the owner can listen and name a line.
 
 ### Subtitles: `srt.mjs`
 
@@ -956,6 +961,9 @@ them, marked `(k/n words)`.
 - The scaffold's `drawLibCues` cover-fits a clip to the whole frame. A landscape clip on a 9:16
   frame then keeps only its middle third. For faces, draw the clip yourself into a box inside the
   safe area.
+- Draw clip frames and still images into the 2D canvas from an `ImageBitmap` (`createImageBitmap`), not
+  an `<img>` element. A small draw of an `<img>` can differ by a few levels depending on which seeks
+  drew before it (the browser re-decodes at a smaller scale); an `ImageBitmap` does not.
 - `render.mjs` places cue sounds on their cue time itself. Do not add library cues to `marks`: a
   cue on a spoken word measures the narration's onset, not the effect's.
 - A sound-only file's head silence (up to 0.3 s) is skipped, so the effect is heard on the cue.

@@ -51,7 +51,9 @@ writes one `review-copy-<code>.mp4` per language layer that has an `out/final-<c
 existing encode (picture, voice and bed) is stream-copied, nothing is rendered, and a subtitle
 track carries one cue per line as `<line id> <text>`, so a reviewer can name the line they mean.
 A layer with no encode or no timings is skipped with the reason; the run exits 1 only when no
-copy could be built. Show the reviewer a copy with its voice and line ids, never a silent picture.
+copy could be built. Before any encode exists (voice stage), the same command builds the base layer from
+`voice/narration.wav` under a black 640x360 picture as long as the narration, with the same subtitle track.
+Show the reviewer a copy with its voice and line ids, never a silent picture.
 
 ## Reading the contact sheet
 

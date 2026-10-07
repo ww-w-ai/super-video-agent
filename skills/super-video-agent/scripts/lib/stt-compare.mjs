@@ -49,7 +49,7 @@ function foldNames(s, names) {
  * The text as it is compared, before lowercasing and stripping: width forms
  * unified (NFKC), spoken respellings folded to written names, Traditional
  * Chinese folded to Simplified, numbers written as digits, Japanese kana
- * folded. Both sides of a comparison go through the same steps.
+ * folded, Korean -예요/-에요 written one way. Both sides of a comparison go through the same steps.
  * @param {string} s
  * @param {string|null} [lang]
  * @param {[string,string][]|null} [names] pronounceFolds()
@@ -59,7 +59,8 @@ export function fold(s, lang = null, names = null) {
   let t = foldNames(String(s ?? "").normalize("NFKC"), names);
   t = foldScript(t, primary === "zh" ? "zh" : null);
   t = normalizeNumbers(t, lang);
-  return foldScript(t, primary === "ja" ? "ja" : null);
+  t = foldScript(t, primary === "ja" ? "ja" : null);
+  return foldScript(t, primary === "ko" ? "ko" : null);
 }
 
 /**

@@ -61,14 +61,26 @@ export function foldJapanese(s) {
   return kataToHira(t);
 }
 
+/** Korean endings that speech-to-text and writers spell either way (both read the same). */
+const KO_SAME_SOUND = [["예요", "에요"]];
+
+/** Korean endings with one sound written one way (-예요 and -에요). */
+export function foldKorean(s) {
+  let t = String(s ?? "");
+  for (const [from, to] of KO_SAME_SOUND) t = t.split(from).join(to);
+  return t;
+}
+
 /**
  * Folds `s` the way `lang` needs: zh -> Simplified, ja -> hiragana and
- * single-reading kanji words. Other languages are returned unchanged.
+ * single-reading kanji words, ko -> same-sound endings. Other languages are
+ * returned unchanged.
  * @param {string} s
- * @param {string|null|undefined} primary primary language subtag ("zh", "ja", ...)
+ * @param {string|null|undefined} primary primary language subtag ("zh", "ja", "ko", ...)
  */
 export function foldScript(s, primary) {
   if (primary === "zh") return hantToHans(s);
   if (primary === "ja") return foldJapanese(s);
+  if (primary === "ko") return foldKorean(s);
   return String(s ?? "");
 }

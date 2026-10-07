@@ -85,10 +85,13 @@ test("wobblePath: densifies and displaces, same t -> same points", () => {
 // node:test has no DOM. measureText approximates width as 10px/char so
 // overflow is easy to force deterministically.
 function fakeCtx() {
-  const calls = { fillText: [] };
+  const calls = { fillText: [], fillRect: [], fillStyles: [] };
   let fontSeen = null;
   return {
     calls,
+    fillRect(x, y, w, h) {
+      calls.fillRect.push({ x, y, w, h });
+    },
     get fontSeen() {
       return fontSeen;
     },
@@ -103,10 +106,24 @@ function fakeCtx() {
     set font(v) {
       fontSeen = v;
     },
-    set fillStyle(v) {},
+    set fillStyle(v) {
+      calls.fillStyles.push(v);
+    },
     set textBaseline(v) {},
   };
 }
+
+test("caption(): the default look is white text on a dark band; an explicit color draws no band", () => {
+  const ctx = fakeCtx();
+  Reel.caption(ctx, { text: "hello there" }, 0.1, { width: 1080, height: 1920 });
+  assert.equal(ctx.calls.fillRect.length, 1);
+  assert.equal(ctx.calls.fillStyles.includes("#fff"), true);
+  assert.match(ctx.calls.fillStyles[ctx.calls.fillStyles.length - 2], /^rgba\(0,0,0/);
+  const own = fakeCtx();
+  Reel.caption(own, { text: "hello there" }, 0.1, { width: 1080, height: 1920, color: "#e33" });
+  assert.equal(own.calls.fillRect.length, 0);
+  assert.equal(own.calls.fillStyles.includes("#e33"), true);
+});
 
 test("textBlock: records an overflow issue when wrapped lines exceed the box height", () => {
   Reel.clearIssues();

@@ -166,3 +166,32 @@ test("clocks: the scaffold loads the base clock in a dub's caption layer", () =>
     assert.match(html, /voice\/timings\.json/, f);
   }
 });
+
+// ---- FIX11: Korean determiner/numeral never ends a chunk -------------------------
+
+const KO_BREAK_CASES = [
+  ["그 다음 목소리가 실제로 몇 초에 어떤 단어를 말하는지 재서, 그 시각에 맞춰 장면을 짓습니다.", 20],
+  ["체스 다큐에서 한국어 대사 한 줄을 다시 녹음했을 때, 바뀐 건 오직 그 줄의 소리 8초뿐이었어요.", 20],
+  ["그래서 영상 하나로 열두 개 언어 버전을 만들어 봤어요.", 20],
+  ["명령에 이 단어를 넣으면 그 도구와 요령이 바로 따라옵니다.", 20],
+  ["카메라가 컷 없이 한 번에 날아가게 하고 싶으면", 20],
+];
+
+test("fallback ko: a determiner, numeral or counter never ends a chunk before its noun", () => {
+  const LEAD = new Set(["몇", "한", "두", "세", "네", "그", "이", "저", "열두"]);
+  for (const [text, max] of KO_BREAK_CASES) {
+    const chunks = chunkTexts(text, max, { lang: "ko" });
+    chunks.slice(0, -1).forEach((c) => {
+      const last = c[c.length - 1];
+      assert.ok(!LEAD.has(last) && last !== "개", `${JSON.stringify(chunks)}`);
+    });
+  }
+});
+
+test("fallback ko: captionGlue glues 몇/한/그 and a counter after a numeral to what follows", () => {
+  const g = Reel.captionGlue(["열두", "개", "언어", "버전"], "ko-KR");
+  assert.deepEqual(g.slice(0, 3), [true, true, false]);
+  assert.equal(Reel.captionGlue(["몇", "초에"], "ko")[0], true);
+  assert.equal(Reel.captionGlue(["바로", "그,", "초에"], "ko")[1], false);
+  assert.equal(Reel.captionGlue(["the", "one", "two"], "en")[1], false);
+});
