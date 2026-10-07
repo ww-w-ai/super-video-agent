@@ -40,6 +40,9 @@ import {
   pictureSlotSecs,
   retimeRatioMessage,
   fitColumn,
+  borrowedPauseRecord,
+  carriedBorrowedGap,
+  splitPlanByAudio,
   SAME_LENGTH_SEC,
 } from "./voice/line-edit.mjs";
 import { alignCaptionWords } from "./voice/word-align.mjs";
@@ -203,7 +206,9 @@ STT engine (env): SVA_STT_PYTHON  python with mlx-whisper installed.
                      writes the picked mark to plan.json so that speaker's
                      remaining lines are made in it: meta.voice.delivery for
                      the film-wide voice, else the voice.delivery of each of
-                     that speaker's lines.
+                     that speaker's lines. A plan line with no audio yet is
+                     left out of that rebuild (one note names it); make it
+                     next with --lines <ids> or a full pass.
 --use id=<wav>,id=<wav>
                      install finished line audio from anywhere (another
                      reel's voice/line-<id>.wav, a comparison folder, a
@@ -715,9 +720,13 @@ export async function synthesizeAll({
       if (gapSec > plannedGapSec) warnings.push(`line "${line.id}": pause after it ${plannedGapSec.toFixed(2)}s raised to the ${MIN_BREATH_SEC}s minimum breath`);
       // The last lead line hands over to the story at HEAD + lead (the lead span, not a pause).
       if (hasLeadLines && line.lead && !lines[i + 1].lead) gapSec = Math.max(gapSec, HEAD_SILENCE_SEC + lead - end);
-      // A re-made take that borrowed breath from the pause after it: the next line keeps its start.
-      const slot = slots.get(line.id);
-      if (slot && durationSec > slot.oldClipSec + SAME_LENGTH_SEC) gapSec = Math.max(0, slot.slotSec - durationSec);
+      // A take that borrowed breath from the pause after it (this run, or an earlier one this line is
+      // reused from): the next line keeps its start, and timings.json records the pause for later rebuilds.
+      const borrowedSec = borrowedGapSec({ slot: slots.get(line.id), durationSec, reused, prevLine, plannedGapSec });
+      if (borrowedSec != null) {
+        gapSec = borrowedSec;
+        lineOut.borrowedPause = borrowedPauseRecord(plannedGapSec, borrowedSec);
+      }
       const gapPath = path.join(paths.voiceDir, `_silence-gap-${i}.wav`);
       await makeSilence(gapPath, gapSec);
       segmentFiles.push({ kind: "silence", path: gapPath, durationSec: gapSec });
@@ -825,6 +834,17 @@ export async function synthesizeAll({
 
   process.stdout.write(speakerSummary(lineResults) + "\n");
   return { timings, moved, silence, refused };
+}
+
+/**
+ * The pause to lay after a line whose clip runs into the breath after it, or null when the plan's pause
+ * applies. A re-made take longer than its old clip takes the rest of its slot; a reused line keeps the
+ * pause its earlier run borrowed, while the plan's pause is still the one it was borrowed from.
+ */
+function borrowedGapSec({ slot, durationSec, reused, prevLine, plannedGapSec }) {
+  if (reused) return carriedBorrowedGap(prevLine, plannedGapSec);
+  if (slot && durationSec > slot.oldClipSec + SAME_LENGTH_SEC) return Math.max(0, slot.slotSec - durationSec);
+  return null;
 }
 
 /**
@@ -2169,10 +2189,12 @@ async function installPicks({ dir, paths, plan, flags, picks, providerMod, provi
 
   const takeWavs = new Map(picks.map((p) => [p.id, path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)]));
   keepInstalledClips(paths, picks.map((p) => p.id));
+  const { lines, waiting } = splitPlanByAudio(plan.lines, picks.map((p) => p.id), (id) => fs.existsSync(installedClipPath(paths, id)));
+  if (waiting.length) process.stdout.write(`no audio yet for ${waiting.join(", ")} — left out of this rebuild; make ${waiting.length === 1 ? "it" : "them"} next with --lines ${waiting.join(",")} (or a full pass)\n`);
   const result = await synthesizeAll({
     dir,
     paths,
-    lines: plan.lines,
+    lines,
     provider: providerMod,
     providerName,
     voiceCfg,

@@ -9,7 +9,7 @@
 | Dead air | `review.mjs` | seek(t) every 0.1 s through the timeline, hash the native-resolution canvas; no run of identical hashes ≥ 0.8 s before the last line ends. The end hold after it (`meta.tailSec`) is reported as `endHoldSec`, not flagged |
 | Boil call sites | `verify.mjs` | not a gate — counts `boil(` call sites in the scene code and how many pass a `moving` option, printed as one info line |
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
-| Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area |
+| Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area, no chip outside its box, no highlight missing or under its target (`references/pipeline.md` "Children, highlights and corners") |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
 | Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its frame |
 | Silence | `review.mjs` | every silence over 1 s inside the narration (first sound to last line end) is listed with the line ids around it; FAIL unless the plan asks for it (`pauseAfterMs`, or a long `meta.gapMs`) — a planned pause is listed, not failed. Same measurement as the voice stage's silence gate (`voice.mjs`, `dub.mjs`, `fit-track.mjs`), which runs before the voice is locked |
@@ -127,8 +127,10 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   optional page hook `window.__reel.visibleAt(t)` → `[{id, opacity?}]`, visible for one sampled
   frame with neither neighbour showing it. *covers*: a label or always-on overlay that covers key
   content; it checks only the regions the page declares, `window.__reel.regions = [{id, kind:
-  "key"|"label"|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]` (canvas px; no `from`/`to`
-  = the whole film), reports the shared px² and times, and is a judgement for the reviewer.
+  "key"|"label"|"overlay"|"reserve", box: [x0,y0,x1,y1], outline?, from?, to?}]` (canvas px; no
+  `from`/`to` = the whole film), reports the shared px² and times, and is a judgement for the
+  reviewer. *reserve*: picture text drawn inside a `reserve` region (a corner kept clear for a
+  persistent label or logo, `references/pipeline.md` "Corner reserve"), with the times.
   *langglyphs*: every character of every language's captions (`plan.json` and each
   `dub/<code>/plan.json`) against the font that language uses (`window.__reel.captionFonts =
   {"<lang>": "<font-family list>", "*": "…"}`, else the plan's `style.fonts`). `--outline-em <n>`

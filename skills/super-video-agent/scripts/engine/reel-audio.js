@@ -80,6 +80,25 @@
     return Math.pow(2, semitones / 12);
   }
 
+  // Per-seed character for pop and ding: an explicit `seed` varies pitch (+-3 semitones), decay and
+  // brightness (+-25%) from the seed alone, so two seeds sound like two different hits and one seed
+  // always sounds the same. An explicit `freq` keeps its pitch exact; the seed then varies the timbre.
+  function seedCharacter(seed) {
+    var rng = rngFor("seed-char:" + seed);
+    return {
+      pitchSemi: (rng() * 2 - 1) * 3,
+      decayMul: 1 + (rng() * 2 - 1) * 0.25,
+      brightMul: 1 + (rng() * 2 - 1) * 0.25,
+    };
+  }
+
+  // The character a pitched effect (pop, ding) plays with: its seed's, else the film's for the kind
+  // (identity when the caller gave an explicit freq).
+  function pitchedCharacter(kind, o) {
+    if (o.seed != null) return seedCharacter(kind + ":" + o.seed);
+    return o.freq != null ? IDENTITY_CHARACTER : filmCharacter(kind);
+  }
+
   // ---------------------------------------------------------------------
   // buffer utilities
   // ---------------------------------------------------------------------
@@ -255,11 +274,11 @@
 
   function sfxPop(sampleRate, opts) {
     const o = opts || {};
-    const explicitFreq = o.freq != null;
-    const character = explicitFreq ? IDENTITY_CHARACTER : filmCharacter("pop");
-    const freq = (o.freq || 700) * semitoneRatio(character.pitchSemi);
+    const character = pitchedCharacter("pop", o);
+    const pitchSemi = o.freq != null ? 0 : character.pitchSemi;
+    const freq = (o.freq || 700) * semitoneRatio(pitchSemi);
     return pluckBuf(freq, o.vel == null ? 0.5 : o.vel, sampleRate, {
-      pingGain: 0.05,
+      pingGain: 0.05 * (o.seed != null ? character.brightMul : 1),
       decayMul: character.decayMul,
     });
   }
@@ -292,11 +311,12 @@
 
   function sfxDing(sampleRate, opts) {
     const o = opts || {};
-    const explicitFreq = o.freq != null;
-    const character = explicitFreq ? IDENTITY_CHARACTER : filmCharacter("ding");
-    const freq = (o.freq || 523.2511) * semitoneRatio(character.pitchSemi); // C5
+    const character = pitchedCharacter("ding", o);
+    const pitchSemi = o.freq != null ? 0 : character.pitchSemi;
+    const freq = (o.freq || 523.2511) * semitoneRatio(pitchSemi); // C5
     const tau = 1.2 * character.decayMul;
-    const buf = partialTone(freq, [1, 2, 3, 4.2], [1.0, 0.4, 0.2, 0.1], tau, sampleRate, tau * 5);
+    const bright = o.seed != null ? character.brightMul : 1; // a seed also tilts the upper partials
+    const buf = partialTone(freq, [1, 2, 3, 4.2], [1.0, 0.4 * bright, 0.2 * bright, 0.1 * bright], tau, sampleRate, tau * 5);
     return finishSfx(buf, sampleRate, 0.85, 2);
   }
 
@@ -439,29 +459,22 @@
   // master + duck
   // ---------------------------------------------------------------------
 
-  // master(mixObj, {peakDb=-3}) — tanh soft-clip, then one static gain so
-  // the post-clip peak lands at `peakDb`. Mutates and returns mixObj.L/R.
+  // master(mixObj, {peakDb=-3, refPeak=0.35}) — tanh soft-clip with a FIXED drive of 1 / refPeak, then
+  // one fixed gain: a sample whose pre-master level is `refPeak` comes out at `peakDb`, a louder one is
+  // soft-clipped (at most 2.4 dB above `peakDb`), a quieter one stays proportionally lower. The drive does
+  // not depend on the mix, so adding or removing a hit never changes the level of any other hit. 0.35 is a music-box bed's own peak. Set `refPeak` to the pre-master peak of the
+  // mix you want mastered to `peakDb` (measure it once), and keep it when the cue list changes.
+  // Mutates and returns mixObj.L/R.
+  const DEFAULT_MASTER_REF_PEAK = 0.35;
   function master(mixObj, opts) {
     const o = opts || {};
     const peakDb = o.peakDb == null ? -3 : o.peakDb;
-    const targetPeak = Math.pow(10, peakDb / 20);
-    const chans = [mixObj.L, mixObj.R];
-    let peak = 0;
-    for (const c of chans) {
-      for (let i = 0; i < c.length; i++) {
-        const a = Math.abs(c[i]);
-        if (a > peak) peak = a;
-      }
-    }
-    if (peak < 1e-9) return mixObj; // silence: nothing to normalize
-    const drive = 1 / peak;
-    for (const c of chans) {
-      for (let i = 0; i < c.length; i++) c[i] = Math.tanh(c[i] * drive);
-    }
-    const postClipPeak = Math.tanh(1); // tanh(drive*peak) = tanh(1)
-    const finalGain = targetPeak / postClipPeak;
-    for (const c of chans) {
-      for (let i = 0; i < c.length; i++) c[i] *= finalGain;
+    const refPeak = o.refPeak == null ? DEFAULT_MASTER_REF_PEAK : o.refPeak;
+    if (!(refPeak > 0)) throw new Error("ReelAudio.master: refPeak must be a number > 0");
+    const drive = 1 / refPeak;
+    const finalGain = Math.pow(10, peakDb / 20) / Math.tanh(1);
+    for (const c of [mixObj.L, mixObj.R]) {
+      for (let i = 0; i < c.length; i++) c[i] = Math.tanh(c[i] * drive) * finalGain;
     }
     return mixObj;
   }
@@ -506,8 +519,124 @@
   }
 
   // ---------------------------------------------------------------------
+  // sfxPool — several sounds per effect kind, so a kind that returns many times does not repeat
+  // ---------------------------------------------------------------------
+
+  function peakOf(buf) {
+    let p = 0;
+    for (let i = 0; i < buf.length; i++) p = Math.max(p, Math.abs(buf[i]));
+    return p;
+  }
+
+  // `src` played at `rate` (above 1 = higher and shorter), linear interpolation.
+  function resample(src, rate) {
+    if (rate === 1) return src;
+    const n = Math.max(1, Math.floor(src.length / rate));
+    const out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = i * rate;
+      const j = Math.floor(x);
+      const f = x - j;
+      out[i] = (src[j] || 0) * (1 - f) + (src[j + 1] || 0) * f;
+    }
+    return out;
+  }
+
+  const variantId = (kind, i, v) => (v.file ? v.file : kind + "-" + i);
+
+  // sfxPool(pools, {seed}) -> {assign(cues), buffer(cue, sampleRate, files)}
+  // `pools` maps an effect kind to its variants: {gen, seed?, rate?} (the kit synth `gen`, run with `seed`,
+  // default the variant's id such as "pop-2", and played at pitch `rate`, 1 = as made) or {file, like} (a library file, levelled to the peak of the
+  // kit's own `like` effect so it sits with the rest of the kind). Both kinds mix in one pool.
+  //   assign(cues)  cues = [{kind, at, ...}] in any order. In time order each cue of a pooled kind gets
+  //                 `variant` (the pool index) and `sound` (an id): the least-used variant of its kind that
+  //                 is not the one just before it of that kind, and, among equals, not the one before that;
+  //                 ties go round-robin from a start index derived from `seed` and the kind (same seed,
+  //                 same assignment). A kind without a pool is left alone.
+  //   buffer(cue, sampleRate, files)  the cue's samples (cached per sound and rate); `files` maps a
+  //                 variant's file name to {rate, data: Float32Array} the page loaded. null when the cue has
+  //                 no assigned variant (the caller falls back to ReelAudio.sfx[kind]).
+  function sfxPool(pools, opts) {
+    const poolSeed = opts && opts.seed != null ? String(opts.seed) : "";
+    const cache = {};
+
+    function assign(cues) {
+      const used = {};
+      const last = {};
+      cues
+        .map((c, i) => ({ c, i }))
+        .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
+        .forEach(({ c }) => {
+          const pool = pools[c.kind];
+          if (!pool || !pool.length) return;
+          const prev = last[c.kind] || [null, null];
+          const best = pickVariant(c.kind, pool, used, prev);
+          c.variant = best;
+          c.sound = variantId(c.kind, best, pool[best]);
+          used[c.sound] = (used[c.sound] || 0) + 1;
+          last[c.kind] = [c.sound, prev[0]];
+        });
+      return cues;
+    }
+
+    function pickVariant(kind, pool, used, prev) {
+      const n = pool.length;
+      const start = hashStr(poolSeed + ":" + kind) % n;
+      let best = -1;
+      let bestScore = Infinity;
+      pool.forEach((v, i) => {
+        const id = variantId(kind, i, v);
+        if (id === prev[0] && n > 1) return;
+        const score = (used[id] || 0) * 10 + (id === prev[1] ? 5 : 0) + ((i - start + n) % n) * 0.01;
+        if (score < bestScore) {
+          bestScore = score;
+          best = i;
+        }
+      });
+      return best;
+    }
+
+    function buffer(cue, sampleRate, files) {
+      const pool = pools[cue.kind];
+      const v = pool && cue.variant >= 0 ? pool[cue.variant] : null;
+      if (!v) return null;
+      const key = cue.sound + "@" + sampleRate;
+      if (!cache[key]) cache[key] = v.file ? fileBuffer(v, sampleRate, files) : synthBuffer(v, sampleRate, cue.sound);
+      return cache[key];
+    }
+
+    // A synth variant without its own seed takes its id ("pop-2"), so variants of one kind differ.
+    function synthBuffer(v, sampleRate, id) {
+      const made = Float32Array.from(sfxKinds[v.gen](sampleRate, { seed: v.seed || id }));
+      return resample(made, v.rate || 1);
+    }
+
+    function fileBuffer(v, sampleRate, files) {
+      const f = files && files[v.file];
+      if (!f) throw new Error("ReelAudio.sfxPool: no loaded file \"" + v.file + "\"");
+      const raw = resample(f.data, f.rate / sampleRate);
+      const ref = peakOf(sfxKinds[v.like](sampleRate, { seed: v.like + ":ref" }));
+      return scaleBuf(raw, ref / (peakOf(raw) || 1));
+    }
+
+    return { assign, buffer };
+  }
+
+  // ---------------------------------------------------------------------
   // export
   // ---------------------------------------------------------------------
+
+  const sfxKinds = {
+    click: sfxClick,
+    type: sfxType,
+    thud: sfxThud,
+    stamp: sfxThud,
+    whoosh: sfxWhoosh,
+    pop: sfxPop,
+    tick: sfxTick,
+    ding: sfxDing,
+    pluck: sfxPluck,
+  };
 
   globalThis.ReelAudio = {
     mix,
@@ -517,16 +646,7 @@
     applyAttackRamp,
     normalizePeak,
     setFilmKey,
-    sfx: {
-      click: sfxClick,
-      type: sfxType,
-      thud: sfxThud,
-      stamp: sfxThud,
-      whoosh: sfxWhoosh,
-      pop: sfxPop,
-      tick: sfxTick,
-      ding: sfxDing,
-      pluck: sfxPluck,
-    },
+    sfxPool,
+    sfx: sfxKinds,
   };
 })();

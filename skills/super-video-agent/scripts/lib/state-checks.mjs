@@ -151,7 +151,7 @@ export function glyphFallbacks(frames, covered, { fps }) {
 }
 
 /** Printable report of the three checks; each section says what it covered. */
-export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, coverScope, langGlyphs }) {
+export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, coverScope, langGlyphs, reserve = null, reserveCorners = 0 }) {
   let s = `sampled ${sampledFrames} frames\n`;
   const skip = new Set((nothing || []).map((n) => n.check));
   if (overlaps) {
@@ -185,8 +185,18 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
   else if (covers && coverScope && !coverNothingReason(coverScope)) {
     s += `label or overlay over key content: checked ${coverScope.keys} key region${coverScope.keys === 1 ? "" : "s"} against ${coverScope.covering} label/overlay region${coverScope.covering === 1 ? "" : "s"}, 0 covered\n`;
   }
+  s += formatReserve(reserve, reserveCorners);
   if (langGlyphs) s += formatLangGlyphs(langGlyphs);
   return s;
+}
+
+function formatReserve(reserve, corners) {
+  if (!reserve) return "";
+  if (reserve.length) {
+    return `picture text inside a reserved corner: ${reserve.length}\n` +
+      reserve.map((r) => `  "${r.text}" in ${r.reserve}: ${r.from.toFixed(3)}–${r.to.toFixed(3)} s (${r.frames} frame${r.frames === 1 ? "" : "s"}, up to ${r.sharePx} px²)\n`).join("");
+  }
+  return corners ? `picture text inside a reserved corner: checked ${corners} reserved corner${corners === 1 ? "" : "s"}, 0 intruders\n` : "";
 }
 
 /**
@@ -220,7 +230,52 @@ const validRegions = (regions) => (regions || []).filter((r) => r && Array.isArr
 /** How many key regions and how many label/overlay regions the page declared (the two sides of the covers check). */
 export function regionScope(regions) {
   const list = validRegions(regions);
-  return { keys: list.filter((r) => r.kind === "key").length, covering: list.filter((r) => r.kind === "label" || r.kind === "overlay").length };
+  return { keys: list.filter((r) => r.kind === "key").length, covering: list.filter(isCovering).length };
+}
+
+/** A region that can cover key content: a label, an overlay, or a corner a persistent label reserves. */
+const isCovering = (r) => r.kind === "label" || r.kind === "overlay" || r.kind === "reserve";
+
+/** How many reserve regions (corner boxes kept clear) the page declared. */
+export function reserveScope(regions) {
+  return validRegions(regions).filter((r) => r.kind === "reserve").length;
+}
+
+/**
+ * Picture text drawn inside a reserve region while that region is active: the text's box shares area with
+ * the reserve box (at least OVERLAP_MIN_AREA_PX px² and OVERLAP_MIN_SHARE of the text box). The reserve's
+ * own `text` (the label it holds) is not an intruder. Report only.
+ * @param {{frame:number, texts:{text:string, box:number[], alpha:number}[]}[]} frames
+ * @param {{id:string, kind:string, box:number[], text?:string, from?:number, to?:number}[]} regions
+ * @param {{fps:number, duration:number}} args
+ * @returns {{reserve:string, text:string, from:number, to:number, frames:number, sharePx:number}[]}
+ */
+export function reserveIntrusions(frames, regions, { fps, duration }) {
+  const reserves = validRegions(regions).filter((r) => r.kind === "reserve");
+  const found = new Map();
+  for (const f of frames) {
+    const t = f.frame / fps;
+    for (const r of reserves) {
+      if (t < (Number.isFinite(r.from) ? r.from : 0) || t >= (Number.isFinite(r.to) ? r.to : duration)) continue;
+      for (const txt of f.texts) noteIntrusion(found, r, txt, f.frame);
+    }
+  }
+  const sec = (x) => Math.round((x / fps) * 1000) / 1000;
+  return [...found.values()].map((e) => ({ reserve: e.reserve, text: e.text, from: sec(e.first), to: sec(e.last + 1), frames: e.frames, sharePx: e.sharePx }));
+}
+
+function noteIntrusion(found, reserve, txt, frame) {
+  if (txt.alpha < VISIBLE_ALPHA || !txt.text.trim() || txt.text === reserve.text || area(txt.box) <= 0) return;
+  const w = Math.min(txt.box[2], reserve.box[2]) - Math.max(txt.box[0], reserve.box[0]);
+  const h = Math.min(txt.box[3], reserve.box[3]) - Math.max(txt.box[1], reserve.box[1]);
+  const shared = w > 0 && h > 0 ? w * h : 0;
+  if (shared < OVERLAP_MIN_AREA_PX || shared < OVERLAP_MIN_SHARE * area(txt.box)) return;
+  const key = `${reserve.id}\u0000${txt.text}`;
+  const e = found.get(key) || { reserve: reserve.id, text: clip(txt.text), first: frame, last: frame, frames: 0, sharePx: 0 };
+  e.last = frame;
+  e.frames++;
+  e.sharePx = Math.max(e.sharePx, Math.round(shared));
+  found.set(key, e);
 }
 
 /** Why the covers check looked at nothing, or null when both sides were declared. */
@@ -243,7 +298,7 @@ export function regionCovers(regions, { duration }) {
   const list = validRegions(regions).map(norm);
   const keys = list.filter((r) => r.kind === "key");
   const out = [];
-  for (const cover of list.filter((r) => r.kind === "label" || r.kind === "overlay")) {
+  for (const cover of list.filter(isCovering)) {
     const cb = box(cover);
     for (const key of keys) {
       const from = Math.max(cover.from, key.from);

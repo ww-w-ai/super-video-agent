@@ -1595,13 +1595,14 @@
 
   // ---------------------------------------------------------------------
   // page declarations — optional window.__reel fields a tool reads:
-  //   regions: [{id, kind: "key"|"label"|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]
+  //   regions: [{id, kind: "key"|"label"|"overlay"|"reserve", box: [x0,y0,x1,y1], outline?, from?, to?}]
   //   holds: [{from, to, id?, reason?}]
   //   langSpans: [{start, end, in?: "layer"|"scene"}]
   //   captionFonts: {"<lang>": "<css font-family list>", "*": "<fallback>"}
   // A malformed entry is definitely wrong: the check throws and names it.
   // ---------------------------------------------------------------------
-  const REGION_KINDS = { key: 1, label: 1, overlay: 1 };
+  const REGION_KINDS = { key: 1, label: 1, overlay: 1, reserve: 1 };
+  const CORNER_NAMES = ["tl", "tr", "bl", "br"];
   const SPAN_PLACES = { layer: 1, scene: 1 };
 
   function declared(name, list) {
@@ -1617,7 +1618,7 @@
     list.forEach(function (r, i) {
       const at = "window.__reel.regions[" + i + "]";
       if (!r || typeof r.id !== "string" || !r.id) throw new Error(at + ": id must be a non-empty string");
-      if (!REGION_KINDS[r.kind]) throw new Error(at + " (" + r.id + '): kind must be "key", "label" or "overlay"');
+      if (!REGION_KINDS[r.kind]) throw new Error(at + " (" + r.id + '): kind must be "key", "label", "overlay" or "reserve"');
       const b = r.box;
       if (!Array.isArray(b) || b.length !== 4 || !b.every(finite) || !(b[2] > b[0]) || !(b[3] > b[1])) {
         throw new Error(at + " (" + r.id + "): box must be [x0, y0, x1, y1] in canvas px with x1 > x0 and y1 > y0");
@@ -1626,6 +1627,17 @@
       checkWindow(at + " (" + r.id + ")", r.from, r.to, "from", "to");
     });
     return list;
+  }
+  // cornerRegions(corners) -> regions: plan.json meta.corners ({tl|tr|bl|br: {box: [x0,y0,x1,y1], label?}})
+  // as page regions of kind "reserve" (id "corner-<name>"), for `window.__reel.regions`. `label` is the
+  // text the corner's own label draws; state-checks.mjs does not report that text as an intruder.
+  function cornerRegions(corners) {
+    if (!corners) return [];
+    return CORNER_NAMES.filter(function (c) { return corners[c]; }).map(function (c) {
+      const r = { id: "corner-" + c, kind: "reserve", box: corners[c].box };
+      if (corners[c].label != null) r.text = String(corners[c].label);
+      return r;
+    });
   }
   function checkWindow(at, from, to, fromName, toName) {
     if (from != null && !finite(from)) throw new Error(at + ": " + fromName + " must be seconds");
@@ -2020,6 +2032,7 @@
     cornerNotes,
     drawCornerNotes,
     checkRegions,
+    cornerRegions,
     checkHolds,
     checkLangSpans,
     captionFontFor,

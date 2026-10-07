@@ -89,16 +89,16 @@ test("no NaN: every sfx kind, pluck, musicBed, master, duck stay finite", () => 
   assertNoNaN(bed.R, "duck.R");
 });
 
-test("master: peak lands at or under the requested peakDb (default -3 dBFS)", () => {
+test("master: a hot input is soft-clipped to at most 2.4 dB over the requested peakDb (default -3 dBFS)", () => {
   const m = ReelAudio.mix(1, SR);
   m.add(ReelAudio.sfx.thud(SR), 0.1, 5, 0); // deliberately hot input
   m.add(ReelAudio.sfx.click(SR), 0.3, 5, -1);
   ReelAudio.master(m, { peakDb: -3 });
-  const targetLin = Math.pow(10, -3 / 20);
+  const ceiling = Math.pow(10, -3 / 20) / Math.tanh(1);
   let peak = 0;
   for (let i = 0; i < m.L.length; i++) peak = Math.max(peak, Math.abs(m.L[i]), Math.abs(m.R[i]));
-  assert.ok(peak <= targetLin + 1e-6, `peak ${peak} exceeds target ${targetLin}`);
-  assert.ok(peak > targetLin - 0.05); // not silently under-driven either
+  assert.ok(peak <= ceiling + 1e-6, `peak ${peak} exceeds the ceiling ${ceiling}`);
+  assert.ok(peak > ceiling - 0.05); // not silently under-driven either
 });
 
 test("musicBed: no sustained tones — RMS after each bar's onset decays well below its peak before the bar ends", () => {

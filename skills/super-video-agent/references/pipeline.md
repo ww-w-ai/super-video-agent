@@ -46,7 +46,7 @@ is definitely wrong.
 | Field | Shape | Read by |
 |---|---|---|
 | `preload` | a Promise, or a function returning one (decoded bitmaps, textures built lazily) | every script that opens the page awaits it after `ready`, before the first seek, the cold page in `verify.mjs` included; a rejection or timeout fails the open and names the step |
-| `regions` | `[{id, kind: "key"\|"label"\|"overlay", box: [x0,y0,x1,y1], outline?, from?, to?}]` in canvas px, or a function returning it; no `from`/`to` = the whole film | `state-checks.mjs --only covers` |
+| `regions` | `[{id, kind: "key"\|"label"\|"overlay"\|"reserve", box: [x0,y0,x1,y1], outline?, text?, from?, to?}]` in canvas px, or a function returning it; no `from`/`to` = the whole film; `reserve` = a corner box kept clear for a label or logo, `text` = that label's own text (below, "Corner reserve") | `state-checks.mjs --only covers,reserve` |
 | `holds` | `[{from, to, id?, reason?}]` seconds where the film holds or moves slowly on purpose | `review.mjs`: a freeze inside a hold is listed as intended, not flagged |
 | `captionFonts` | `{"<lang>": "<css font-family list>", "*": "<fallback list>"}` | the caption layer; `state-checks.mjs --only langglyphs`. Without it, `plan.json` `style.fonts` (`<lang>`, `caption`, `body` or `default`) |
 | `langSpans` | `[{start, end, in?: "layer"\|"scene"}]` seconds | `dub.mjs` ("Shared language-neutral spans") |
@@ -113,6 +113,7 @@ rules come first.
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads" \| "none" \| {top, bottom, left, right})` | the box text must stay inside; `"none"` = the whole frame, an object = the film's own margins in canvas px |
 | `centeredSafeArea(w, h)` | the part of that box centred on the frame — for centred titles and captions |
 | `checkSafe(ctx, label, left, top, right, bottom, w?, h?, {outline}?)` | for anything you draw by hand (a sticker, a card, a badge): the box, in the current transform's space, is mapped to canvas space and recorded to `issues()` if it leaves the safe area; `outline` (px) adds a stroke's half-width on each side |
+| `cornerRegions(plan.meta.corners)` | the corners a film reserves for persistent labels, as `regions` of kind `reserve` ("Corner reserve") |
 | `easeOutCubic` `easeOutBack` `settle` | arrival curves |
 
 ### Safe area
@@ -155,13 +156,53 @@ leave the box for a few frames while it moves. Let a pop stop at full size when 
 spans the safe width, and scan every frame rather than one per shot
 (`review.mjs --scan`, and `--layer captions` on a slow 3D picture — "Picture first" below).
 
+### Children, highlights and corners
+
+`textBlock` and `checkSafe` compare text with the safe area and with other text; they do not know
+which box a chip or a tag belongs to. The optional helper `scripts/engine/reel-layout.js` (copy it
+into the reel's `src/`, load it with `<script src="src/reel-layout.js">`; it adds
+`globalThis.ReelLayout`, no dependencies) records what crosses its container, and `review.mjs`
+counts those issues in the layout gate like any other `issues()` entry.
+
+- **A child inside its container.** `ReelLayout.layoutChips(measure, labels, box, opts)` packs chips
+  into rows by measured width (`measure = (s) => ctx.measureText(s).width`, with `ctx.font` set),
+  centres each row and the block in `box` (`opts.align: "left"` for left-aligned rows; `padX`, `height`,
+  `gapX`, `gapY`, `margin`), and returns `{chips: [{text, x, y, w, h, row}], rows, fits, overflow}`; draw
+  each chip at its `x, y, w, h`. A chip that cannot fit records `child-outside-box` with its text.
+  `ReelLayout.checkInside(id, child, box)` does the same for any box you place by hand (`{x, y, w, h}`,
+  `{left, top, right, bottom}` or `[x0, y0, x1, y1]`, canvas px).
+- **A highlight on its target.** A frame, bracket or arrow marks a target rect; the label next to it
+  can drift away from it with nothing to say so. Make a log per seek, `const log = ReelLayout.drawLog()`;
+  call `log.target(id, rect)` right after drawing the target and `log.highlight(id, targetId, rect,
+  {kind: "frame" | "bracket" | "arrow", mode?, reach?})` right after drawing the highlight; call
+  `log.check()` at the end of the seek. It records `highlight-misses-target` when the highlight's rect
+  does not do what `mode` declares (`enclose`, the default for a frame: the rect contains the target;
+  `overlap`: they share area; `near`, the default for a bracket or arrow: within `reach` px, default
+  24), `highlight-under-target` when the target was drawn after the highlight (it covers it), and
+  `highlight-target-missing` when no such target was drawn. `ReelLayout.checkHighlight({id, kind,
+  rect, target, mode})` is the geometry check alone.
+
+### Corner reserve
+
+Only when the film carries persistent labels or logos in one or more of the four corners (top-left
+`tl`, top-right `tr`, bottom-left `bl`, bottom-right `br`; a film uses N of them). Text and objects
+put in after the labels move or are redrawn when a label lands on them, so decide the corners in
+the script stage: write each corner used and its box (canvas px) in `FILM.md`, and in `plan.json`
+`meta.corners` (`{"tl": {"box": [x0, y0, x1, y1], "label": "<its text>"}}`, `label` omitted for a
+logo). The film stage keeps those boxes clear from the first build. The page declares them as
+`window.__reel.regions = [...Reel.cornerRegions(plan.meta.corners), ...]` (kind `reserve`), and
+`state-checks.mjs --only reserve` lists picture text drawn inside a reserved box (the label's own
+text excepted, with the times) and, through `covers`, any declared key region that overlaps one.
+A film with no corner labels declares none, and the check stays silent.
+
 ## Sound (`scripts/engine/reel-audio.js` → `globalThis.ReelAudio`)
 
 Seeded synthesized effects (`click type thud whoosh pop tick alert ding pluck`), an optional
 music bed, `duck`, and `master`. The scaffold wires `SFX_CUES` into `renderSfx`, `sfxStems` and
 `marks`, and calls `ReelAudio.setFilmKey(plan.meta.filmKey || plan.meta.title || plan.meta.id)`
-once at load, so this film's kit sfx carry a character of their own (`sound.md` "Kit"). See
-`sound.md`.
+once at load, so this film's kit sfx carry a character of their own (`sound.md` "Kit").
+`ReelAudio.sfxPool` gives a kind that returns many times several sounds, and `master` has a fixed
+drive. See `sound.md`.
 
 ## Re-rendering part of a film
 
@@ -780,6 +821,9 @@ one (for example "checked nothing" under `setSafeArea("none")`) and the engine's
   progress goes to stderr about every 10 s.
 - `covers` checks only the regions the page declares (`regions` above); a label or overlay over key
   content is a judgement for the reviewer.
+- `reserve` lists picture text drawn inside a `reserve` region while it is active, with the times
+  (the region's own `text` excepted); it says nothing when the page declares no reserve, unless
+  `--only` names it (`Corner reserve`).
 - `langglyphs` checks every character of every language's captions (`plan.json` and each
   `dub/<code>/plan.json`) against the font that language uses (`captionFonts`, else
   `style.fonts`), in the page. A missing glyph is definitely wrong for that language: it is listed with

@@ -32,6 +32,45 @@ export function previousSlots(prevLines, planLines, gapMs) {
 }
 
 /**
+ * The pause a take that borrowed breath leaves in `timings.json` (`borrowedPause`), so a later rebuild
+ * that reuses the clip lays the same pause and the next line keeps its start.
+ * @param {number} plannedSec the pause the plan asked for after the line
+ * @param {number} laidSec the shorter pause laid after the longer clip
+ * @returns {{plannedSec:number, laidSec:number}}
+ */
+export function borrowedPauseRecord(plannedSec, laidSec) {
+  return { plannedSec, laidSec };
+}
+
+/**
+ * The pause to lay after a reused line: the borrowed one from the earlier run while the plan's pause is
+ * still the one it was borrowed from, else null (the plan's own pause applies).
+ * @param {{borrowedPause?:{plannedSec:number, laidSec:number}}|undefined} prevLine the line in the earlier timings.json
+ * @param {number} plannedSec the pause the plan asks for now
+ * @returns {number|null}
+ */
+export function carriedBorrowedGap(prevLine, plannedSec) {
+  const b = prevLine && prevLine.borrowedPause;
+  if (!b || !Number.isFinite(b.plannedSec) || !Number.isFinite(b.laidSec)) return null;
+  return Math.abs(b.plannedSec - plannedSec) < 1e-3 ? b.laidSec : null;
+}
+
+/**
+ * Plan lines to rebuild around a set of picks: every line that has audio or is picked. A line with no
+ * clip yet (new text) cannot be reused, so it waits for `--lines <ids>` or a full pass.
+ * @param {{id:string}[]} planLines
+ * @param {string[]} pickedIds
+ * @param {(id:string)=>boolean} hasClip
+ * @returns {{lines:{id:string}[], waiting:string[]}}
+ */
+export function splitPlanByAudio(planLines, pickedIds, hasClip) {
+  const picked = new Set(pickedIds);
+  const waiting = planLines.filter((l) => !picked.has(l.id) && !hasClip(l.id)).map((l) => l.id);
+  const left = new Set(waiting);
+  return { lines: planLines.filter((l) => !left.has(l.id)), waiting };
+}
+
+/**
  * Whether a re-made base-language take fits the slot of the take it replaces, in the order dub.mjs
  * fits a language: speed up by at most 10% when too long, keep at least 0.5 s of breath after it,
  * slow down (not below 0.95x) to close a voice-free gap over 1.0 s. A gap the film already had

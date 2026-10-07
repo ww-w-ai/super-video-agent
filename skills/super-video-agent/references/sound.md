@@ -47,6 +47,25 @@ and no reverb tails. Same seed → same samples, so re-renders match.
 | `ding` | done, success, the resolved state |
 | `pluck` | a light accent in the music-box colour |
 
+**A kind that returns many times.** One kind at one setting repeats the same sound at every cue.
+Every kind takes an explicit `seed`; for `pop` and `ding` the seed also moves the pitch (within
+±3 semitones), the decay and the upper partials (±25%), and an explicit `freq` keeps its pitch while
+the seed varies the timbre. For a whole kind, `ReelAudio.sfxPool(pools, {seed})` gives each cue a
+variant: `pools` maps a kind to a list of `{gen, seed?, rate?}` (a synth variant at a set pitch
+`rate`) and `{file, like}` (a library file, levelled to the peak of the kit's own `like` effect), in
+one list. `pool.assign(cues)` walks the cues in time order and gives each the least-used variant of its
+kind that is not the one before it (same seed, same result) and sets `cue.variant` and `cue.sound`;
+`pool.buffer(cue, sampleRate, files)` returns the samples (`files`: `{<file name>: {rate, data}}`
+the page loaded). A kind without a pool keeps `ReelAudio.sfx[kind]`. Library chimes and dings come
+from `assets.mjs search ding` or `search chime` (and `pop`, `whoosh`, `tick` the same way); copy the
+chosen files into the reel with a `cues` entry or `assets.mjs fetch`, then list them in the pool.
+
+`ReelAudio.master(mix, {peakDb, refPeak})` soft-clips with a fixed drive of `1 / refPeak` (default
+0.35, a music-box bed's own peak): a hit's level after mastering depends on that hit only, so adding
+or removing other cues leaves it alone. A sample at `refPeak` comes out at `peakDb`; louder ones are
+soft-clipped up to 2.4 dB over it. For a mix with a different loudness, measure its pre-master peak
+once, pass it as `refPeak`, and keep it as the cue list changes.
+
 No sharp beeps: the synthesized kit has no siren/alarm tone; a piercing beep grates on viewers. A hit
 that needs an alarm-like sound should come from the asset library instead (below).
 
@@ -133,8 +152,8 @@ sfx cue times are measured from the film's t = 0, lead included.
   plan. The quiet after the last sound (an end hold) is not a gap: when the longest silence is over
   the gate and the film still passes, `review.mjs` prints a `note:` that says why (the tail after the
   last sound, or a planned pause).
-- `master` soft-clips with tanh; if the review shows true peak over the limit, lower the effect
-  gain, not the voice.
+- `master` soft-clips with tanh at a fixed drive (section 2, `refPeak`); if the review shows true peak
+  over the limit, lower the effect gain, not the voice.
 
 ## 5. What to report
 

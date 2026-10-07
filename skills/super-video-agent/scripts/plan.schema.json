@@ -6,6 +6,15 @@
   "required": ["meta", "lines"],
   "additionalProperties": false,
   "definitions": {
+    "corner": {
+      "type": "object",
+      "required": ["box"],
+      "additionalProperties": false,
+      "properties": {
+        "box": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number" }, "description": "[x0, y0, x1, y1] in canvas px: the corner box the label or logo occupies." },
+        "label": { "type": "string", "description": "The text the corner's own label draws (omit for a logo); it is not reported as an intruder." }
+      }
+    },
     "pageContract": {
       "type": "object",
       "description": "Optional window.__reel declarations a page makes for the tools (not part of plan.json; validate a page dump against #/definitions/pageContract). The engine checks the same shapes and throws on a malformed entry.",
@@ -13,14 +22,15 @@
       "properties": {
         "regions": {
           "type": "array",
-          "description": "Boxes in canvas px that state-checks.mjs --only covers compares. No from/to = the whole film; kind \"overlay\" = an always-on mark (logo, watermark).",
+          "description": "Boxes in canvas px that state-checks.mjs --only covers (and reserve) compares. No from/to = the whole film; kind \"overlay\" = an always-on mark (logo, watermark); kind \"reserve\" = a corner box kept clear for a persistent label or logo (Reel.cornerRegions(meta.corners)).",
           "items": {
             "type": "object",
             "required": ["id", "kind", "box"],
             "additionalProperties": false,
             "properties": {
               "id": { "type": "string", "minLength": 1 },
-              "kind": { "type": "string", "enum": ["key", "label", "overlay"] },
+              "kind": { "type": "string", "enum": ["key", "label", "overlay", "reserve"] },
+              "text": { "type": "string", "description": "A reserve region's own label text; state-checks.mjs --only reserve does not report it as an intruder." },
               "box": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "type": "number" }, "description": "[x0, y0, x1, y1] with x1 > x0 and y1 > y0." },
               "outline": { "type": "number", "minimum": 0, "description": "Outline width in px, added around the box when it is compared." },
               "from": { "type": "number" },
@@ -155,6 +165,17 @@
         "lead": {
           "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "boolean", "enum": [true] }],
           "description": "Opening before the first story line, in seconds; true = 3 s; absent = no lead. Every story line starts that much later and timings.json records `lead`. The lead must carry sound: a music bed from t=0 (meta.sound.bed), a sound cue inside it, an opening line marked `lead: true`, or sound the page makes itself (meta.sound.page) (validate-plan.mjs fails a lead with none)."
+        },
+        "corners": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Only for a film with a persistent label or logo in one or more of the four corners: each corner it uses (tl, tr, bl, br) and the box it occupies in canvas px. The page keeps these boxes clear from the first build (Reel.cornerRegions(meta.corners) gives the page's regions of kind \"reserve\"); state-checks.mjs --only reserve reports picture text inside one. See references/pipeline.md \"Corner reserve\".",
+          "properties": {
+            "tl": { "$ref": "#/definitions/corner" },
+            "tr": { "$ref": "#/definitions/corner" },
+            "bl": { "$ref": "#/definitions/corner" },
+            "br": { "$ref": "#/definitions/corner" }
+          }
         },
         "overlay": {
           "type": "object",

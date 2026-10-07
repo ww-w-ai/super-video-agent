@@ -479,6 +479,15 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   replaces, plus its STT error rate against the old one, so a padded take is not mistaken for the
   wrong one: `<id>: take 2.97s fitted to its slot 4.56s (+1.59s silence)` or `(sped up 1.04x)`.
   The same fit applies to a take installed with `--pick` or `--use`.
+- A take that needs some of the breath after it keeps the next line's start; the shorter pause it
+  left is recorded on its `timings.json` line (`borrowedPause: {plannedSec, laidSec}`). Every later
+  rebuild that reuses the clip (`--lines`, `--lines ""`, `--retime`, a `--pick` of other lines) lays
+  the same pause again, so the lines after it do not move. It holds while the plan's pause after that
+  line is the one it was borrowed from: change `pauseAfterMs`, or re-make the line, and the plan's
+  pause applies (a full pass lays everything out again).
+- `--pick` and `--pick-by` work while the plan has new lines with no audio yet: the picked lines are
+  installed, the new ones are left out of that rebuild, and one note names them. Make them next with
+  `--lines <ids>` or a full pass.
 - `--retime` is the opt-in to let a re-made line keep its own length: later lines move and their
   shots re-render. Use it for a wording change, not a pronunciation fix. `voice.mjs` lists the
   moved lines ("lines with shifted start").
