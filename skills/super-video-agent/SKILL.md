@@ -31,7 +31,11 @@ use, adapt or ignore; none of it is a template.
    through a whole paragraph.
 2. **Voice first; the voice sets the clock.** Generate the narration before building any scene.
    Its measured line and word times (`voice/timings.json`) are the film's timeline; build every
-   scene to fit them. Never time scenes by estimate and fit the voice afterwards — synthetic
+   scene to fit them. Align a scene change with the first spoken word of its sentence
+   or clause. For a list or contrast, let each clause introduce its own picture.
+   Mark the moment a key word is heard with a visual or sound effect, using the existing
+   `word:` cues. Keep these anchors when revising. Avoid splitting every phrase when
+   it would make the scene restless. Never time scenes by estimate and fit the voice afterwards — synthetic
    voices land seconds away from any estimate. Review the script in passes before any synthesis
    (`references/script-review.md`: facts, story, spoken wording, listener, read-out, final read) so the
    voice is made once.
