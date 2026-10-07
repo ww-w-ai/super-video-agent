@@ -129,6 +129,11 @@ use, adapt or ignore; none of it is a template.
    slot and cutting it to fit is the same practice as generated video clips, which are made long
    and trimmed in the edit. The handle costs the extra frames (+25% for a 4 s shot at 0.5 s), and
    a film with slow 3D pictures may choose smaller handles
+   For a demonstration clip, show the actual recorded result at the matching spoken
+   moment. Modest playback-speed changes can help; judge whether motion still looks
+   natural instead of forcing the clip to fill a slot. A final hold can be as short
+   as a spoken breath, about 0.5 seconds. Keep the clip's effects below the narration.
+   Prefer the existing clip insertion path; no separate demonstration tool is needed.
    For familiar reactions or gestures, try a stronger expression specific to this
    moment first. If it does not communicate better, use a familiar example: a brief
    celebration for a payoff, or a directional gesture toward comments or a description.
