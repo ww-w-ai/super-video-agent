@@ -160,6 +160,13 @@ request). Before a round starts, read the whole list and plan the round against 
 not undo an earlier one. After the round, check the result against the same list and mark each item;
 report any earlier request that no longer holds.
 
+For a changed line, preview from the preceding line's end to the following line's
+start. At the film edges, use the film boundary. Prefer the current mixed encode so
+picture, narration and bed are heard together. `scripts/preview-changes.mjs <reel-dir>
+--lines <ids> --media <mixed.mp4>` overwrites its clips in `out/preview/`. For a dub,
+pass its `--timings <timings.placed.json>`. Refresh the affected encode first; an old
+encode cannot demonstrate a new edit. Silent drafts are not a mixed preview.
+
 **Skill defects.** Do not edit the skill's own files; work around a defect inside the reel. List
 each one in the final report under "Skill defects" (what broke, how you worked around it). Then
 ask the user whether to report them to the makers. Only on a yes: open a prefilled issue at
