@@ -21,9 +21,12 @@ A frame that changes with the seek history usually carries state from an earlier
 texture built lazily on the first seek, or a blur or glow drawn with soft transparent edges over
 whatever the canvas held before. Draw blur and glow over an opaque copy of the frame first.
 
-A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...]`
+A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...] [--tail <sec>]`
 reviews it directly: audio and video stream lengths, integrated loudness of the whole file and of
-each part, dead air and black frames (`references/bookends.md`).
+each part, dead air and black frames (`references/bookends.md`). The film's still end card
+(`meta.tailSec`) is reported as `end hold`, not dead air, when the file sits in its reel's `out/`
+or `--tail <sec>` is given; otherwise a still run that reaches the end is labelled as a possible
+end hold.
 
 ## Reading the contact sheet
 

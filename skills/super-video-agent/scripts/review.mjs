@@ -35,7 +35,7 @@ import { gapsFromPcm } from "./lib/silence-gate.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
-       review.mjs --file <video.mp4> [--parts t1,t2,...] [--json] [--out <report.json>]
+       review.mjs --file <video.mp4> [--parts t1,t2,...] [--tail <sec>] [--json] [--out <report.json>]
 
 Reviews a rendered reel: builds a contact sheet (one frame per shot's
 readAt, with timestamps), scans for dead air, compares audio/video
@@ -68,6 +68,13 @@ duration, and collects layout issues(). Writes
 --parts part boundaries in seconds inside --file (e.g. the join times
         join.mjs printed); loudness is reported per part and the spread
         across parts.
+--tail  with --file, the last <sec> seconds are the film's intended end
+        hold (plan.json meta.tailSec, an end card): a still picture there
+        is reported as the end hold, not as dead air. Without --tail, a
+        file inside a reel's out/ folder takes the hold from that reel
+        (the last line's end in voice/timings.json when the file is that
+        length, else meta.tailSec); otherwise a still run that reaches the
+        end of the file is labelled as a possible end hold.
 --json  with --file, print the report as JSON.
 --out   with --file, also write the JSON report to this path.
 `;
@@ -225,7 +232,12 @@ async function runFileReview(flags) {
   }
   try {
     const cuts = typeof flags.parts === "string" ? parseParts(flags.parts) : [];
-    const report = await reviewFile({ file, cuts });
+    let tailSec;
+    if (flags.tail !== undefined) {
+      tailSec = parseFloat(flags.tail);
+      if (!Number.isFinite(tailSec) || tailSec < 0) throw new Error(`--tail expects seconds >= 0, got "${flags.tail}"`);
+    }
+    const report = await reviewFile({ file, cuts, tailSec });
     if (typeof flags.out === "string") writeJson(abs(flags.out), report);
     process.stdout.write((flags.json ? JSON.stringify(report, null, 2) : formatFileReport(report)) + "\n");
   } catch (e) {
@@ -246,9 +258,9 @@ export function parseParts(text) {
 /**
  * --file: facts about one finished video, no page. Every number is
  * reported; nothing here decides whether the video is good.
- * @param {{file:string, cuts:number[]}} args
+ * @param {{file:string, cuts:number[], tailSec?:number}} args tailSec: the intended end hold (--tail)
  */
-export async function reviewFile({ file, cuts }) {
+export async function reviewFile({ file, cuts, tailSec }) {
   const streams = await probeStreamDurations(file);
   const totalSec = streams.videoSec != null ? streams.videoSec : await probeDuration(file);
   const avDeltaMs =
@@ -262,6 +274,8 @@ export async function reviewFile({ file, cuts }) {
   const { fps } = await probeVideoInfo(file);
   const { frames } = await extractGrayFrames(file, fps, { width: 64 });
   const { deadAirRuns } = analyzeMotion(frames, fps);
+  const hold = fileEndHold({ file, totalSec, tailSec });
+  const deadAir = splitEndHold(deadAirRuns, hold, totalSec, fps);
 
   const pcm = streams.audioSec != null ? await decodeMonoPcm(file, AUDIO_SAMPLE_RATE) : new Float32Array(0);
   const silence = longestSilenceAfterFirstSound(pcm, AUDIO_SAMPLE_RATE, { thresholdDb: -50 });
@@ -277,11 +291,66 @@ export async function reviewFile({ file, cuts }) {
       spread: parts.length ? loudnessSpread(parts.map((p) => p.integratedLufs)) : null,
     },
     deadAir: {
-      runs: deadAirRuns,
-      note: "runs of >=0.8 s where under 0.2 % of 64-px greyscale pixels change between frames; an intended hold (end card) is reported too",
+      ...deadAir,
+      note:
+        "runs of >=0.8 s where under 0.2 % of 64-px greyscale pixels change between frames. endHold is the film's intended still end (--tail, or the reel this file sits in) and is not counted in runs; with no hold known, a run that reaches the end of the file carries possibleEndHold: true",
     },
     silence: { ...silence, thresholdDb: -50 },
     black: { runs: blackRuns },
+  };
+}
+
+/**
+ * Where the film's intended end hold starts, for --file: --tail when given;
+ * else, when the file sits in <reel>/out/, the reel's last line end
+ * (voice/timings.json, if the file is that film's length — as the page
+ * review uses) or its plan.json meta.tailSec; else null.
+ * @returns {{startSec:number, source:string}|null}
+ */
+export function fileEndHold({ file, totalSec, tailSec }) {
+  if (tailSec != null) return { startSec: Math.max(0, totalSec - tailSec), source: `--tail ${tailSec}` };
+  const outDir = path.dirname(file);
+  if (path.basename(outDir) !== "out") return null;
+  const reel = path.dirname(outDir);
+  const paths = reelPaths(reel);
+  if (!fs.existsSync(paths.planJson) && !fs.existsSync(paths.timingsJson)) return null;
+  try {
+    const t = fs.existsSync(paths.timingsJson) ? readJson(paths.timingsJson) : null;
+    const last = t && t.lines && t.lines.length ? t.lines[t.lines.length - 1].end : null;
+    if (last != null && t.duration != null && Math.abs(t.duration - totalSec) <= 0.1) {
+      return { startSec: last, source: "voice/timings.json (last line end)" };
+    }
+  } catch {
+    // unreadable timings: try the plan
+  }
+  try {
+    const plan = fs.existsSync(paths.planJson) ? readJson(paths.planJson) : null;
+    const tail = plan && plan.meta && plan.meta.tailSec;
+    if (typeof tail === "number" && tail > 0) return { startSec: Math.max(0, totalSec - tail), source: `plan.json meta.tailSec ${tail}` };
+  } catch {
+    // no usable plan
+  }
+  return null;
+}
+
+/**
+ * Split --file dead-air runs around the end hold: with a known hold, only
+ * the part of a run before it counts (same rule as the page review's
+ * excludeEndHold); with none, a run reaching the last frame is kept but
+ * marked possibleEndHold.
+ * @returns {{runs: object[], endHold: {startSec:number, durationSec:number, source:string}|null}}
+ */
+export function splitEndHold(runs, hold, totalSec, fps) {
+  if (hold) {
+    return {
+      runs: excludeEndHold(runs, hold.startSec, DEAD_AIR_RUN_SEC_MIN),
+      endHold: { startSec: hold.startSec, durationSec: Math.max(0, totalSec - hold.startSec), source: hold.source },
+    };
+  }
+  const endTol = 2 / fps;
+  return {
+    runs: runs.map((r) => (r.startSec + r.durationSec >= totalSec - endTol ? { ...r, possibleEndHold: true } : r)),
+    endHold: null,
   };
 }
 
@@ -298,7 +367,15 @@ function formatFileReport(r) {
   if (r.loudness.spread && r.loudness.spread.spreadLu != null) {
     lines.push(`  spread across parts: ${f(r.loudness.spread.spreadLu, 2)} LU${r.loudness.spread.warn ? " (over 1 LU)" : ""}`);
   }
-  lines.push(`picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs.map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s`).join(",")}`);
+  lines.push(
+    `picture dead air: ${r.deadAir.runs.length} run(s)${r.deadAir.runs
+      .map((x) => ` ${f(x.startSec, 2)}s+${f(x.durationSec, 2)}s${x.possibleEndHold ? " (reaches the end: an end hold if the film has meta.tailSec; pass --tail <sec>)" : ""}`)
+      .join(",")}`
+  );
+  if (r.deadAir.endHold) {
+    const h = r.deadAir.endHold;
+    lines.push(`end hold: ${f(h.startSec, 2)}s to the end (${f(h.durationSec, 2)}s, from ${h.source}) — intended, not counted as dead air`);
+  }
   lines.push(`audio: longest silence after first sound ${f(r.silence.longestSilenceSec)}s (first sound at ${f(r.silence.firstSoundSec)}s)`);
   lines.push(`black picture: ${r.black.runs.length} run(s)${r.black.runs.map((x) => ` ${f(x.startSec, 2)}-${f(x.endSec, 2)}s`).join(",")}`);
   return lines.join("\n");

@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ffmpeg } from "../scripts/lib/ffmpeg.mjs";
-import { main, reviewFile, parseParts } from "../scripts/review.mjs";
+import { main, reviewFile, parseParts, splitEndHold } from "../scripts/review.mjs";
 
 async function makeFixture(outPath) {
   await ffmpeg([
@@ -61,6 +61,8 @@ test("reviewFile: stream delta, per-part loudness, dead air and black runs of a 
 
   assert.ok(r.deadAir.runs.length >= 1, "the still red picture is reported as dead air");
   assert.ok(r.deadAir.runs.some((x) => x.durationSec >= 2), JSON.stringify(r.deadAir.runs));
+  assert.equal(r.deadAir.endHold, null, "no hold is known for a file outside a reel");
+  assert.ok(r.deadAir.runs.some((x) => x.possibleEndHold), "a still run reaching the end is labelled as a possible end hold");
 
   assert.ok(r.silence.firstSoundSec != null && r.silence.firstSoundSec < 0.05);
 
@@ -88,5 +90,68 @@ test("review.mjs main() --file --json --out: needs no reel directory and writes 
   assert.equal(printed.loudness.parts.length, 2);
   assert.deepEqual(JSON.parse(fs.readFileSync(out, "utf8")).streams, printed.streams);
 
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// The intended end hold (plan.json meta.tailSec) used to print as "picture
+// dead air" in --file while the page review left it out.
+
+test("splitEndHold: a known hold trims runs like the page review; without one a run at the end is labelled", () => {
+  const runs = [{ startSec: 1, durationSec: 1 }, { startSec: 4, durationSec: 2 }];
+  const known = splitEndHold(runs, { startSec: 4.8, source: "x" }, 6, 30);
+  assert.deepEqual(known.runs, [{ startSec: 1, durationSec: 1 }], "the 4.0-4.8 s part is under 0.8 s once the hold is removed");
+  assert.ok(Math.abs(known.endHold.durationSec - 1.2) < 1e-9);
+  const unknown = splitEndHold(runs, null, 6, 30);
+  assert.equal(unknown.runs.length, 2);
+  assert.equal(unknown.runs[0].possibleEndHold, undefined);
+  assert.equal(unknown.runs[1].possibleEndHold, true);
+});
+
+test("reviewFile: --tail removes the end hold from dead air and reports it as the end hold", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sva-review-tail-"));
+  const clip = path.join(tmp, "upload.mp4");
+  await makeFixture(clip);
+  const r = await reviewFile({ file: clip, cuts: [], tailSec: 1.0 });
+  assert.ok(Math.abs(r.deadAir.endHold.startSec - 2.0) < 0.05, JSON.stringify(r.deadAir.endHold));
+  assert.ok(r.deadAir.runs.every((x) => x.startSec + x.durationSec <= 2.0 + 1e-6), `only the still before the hold counts: ${JSON.stringify(r.deadAir.runs)}`);
+  assert.ok(r.deadAir.runs.length === 1 && r.deadAir.runs[0].durationSec >= 1.2, "the still before the hold is still flagged");
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("reviewFile: a file in <reel>/out/ takes the hold from the reel (timings when the length matches, else meta.tailSec)", async () => {
+  const reel = fs.mkdtempSync(path.join(os.tmpdir(), "sva-review-reelout-"));
+  fs.mkdirSync(path.join(reel, "out"));
+  fs.mkdirSync(path.join(reel, "voice"));
+  const clip = path.join(reel, "out", "final.mp4");
+  await makeFixture(clip);
+  fs.writeFileSync(path.join(reel, "plan.json"), JSON.stringify({ meta: { tailSec: 1.0 }, lines: [] }));
+
+  const byPlan = await reviewFile({ file: clip, cuts: [] });
+  assert.match(byPlan.deadAir.endHold.source, /meta\.tailSec/);
+  assert.ok(Math.abs(byPlan.deadAir.endHold.startSec - 2.0) < 0.05);
+
+  fs.writeFileSync(path.join(reel, "voice", "timings.json"), JSON.stringify({ duration: 3, lines: [{ id: "l1", start: 0.2, end: 1.0 }] }));
+  const byTimings = await reviewFile({ file: clip, cuts: [] });
+  assert.match(byTimings.deadAir.endHold.source, /timings/);
+  assert.equal(byTimings.deadAir.runs.length, 0, "everything still after the last line is the end hold");
+  fs.rmSync(reel, { recursive: true, force: true });
+});
+
+test("review.mjs main() --file --tail: prints the end hold line instead of counting it as dead air", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "sva-review-tail-cli-"));
+  const clip = path.join(tmp, "upload.mp4");
+  await makeFixture(clip);
+  let captured = "";
+  const origWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk) => {
+    captured += chunk;
+    return true;
+  };
+  try {
+    await main(["--file", clip, "--tail", "1.0"]);
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  assert.match(captured, /end hold: 2\.\d\ds to the end .*--tail 1.*not counted as dead air/);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
