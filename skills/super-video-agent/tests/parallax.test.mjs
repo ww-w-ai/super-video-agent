@@ -199,6 +199,37 @@ test("cutLayer: no feather sets no blur; a function path is traced by the caller
   assert.deepEqual(made[1].ctx.log.find((e) => e[0] === "moveTo"), ["moveTo", 1, 2]);
 });
 
+test("cutLayer: accepts aligned alpha masks and rejects mismatched dimensions", () => {
+  const { make, made } = canvasFactory();
+  Reel.cutLayer(img("p"), null, { mask: img("alpha"), feather: 2, makeCanvas: make });
+  assert.equal(made.length, 1);
+  assert.deepEqual(drawn(made[0].ctx), ["p", "alpha"]);
+  assert.ok(made[0].ctx.log.some(e => e[0] === "set filter" && e[1] === "blur(2px)"));
+  assert.throws(() => Reel.cutLayer(img("p"), null, { mask: img("small", 2, 2), makeCanvas: make }), /dimensions/);
+});
+
+test("depthLayers: maps each pixel to one band, white near; supports reversed maps", () => {
+  const values = [255, 204, 153, 102, 51, 0];
+  const pixels = new Uint8ClampedArray(values.flatMap(v => [v, v, v, 255]));
+  function prepare(nearWhite) {
+    const writes = [];
+    const make = (w, h) => ({ width: w, height: h, getContext: () => ({
+      ...recordingCtx(), getImageData: () => ({ data: pixels }),
+      createImageData: () => ({ data: new Uint8ClampedArray(pixels.length) }),
+      putImageData: data => writes.push(data.data),
+    }) });
+    const layers = Reel.depthLayers(img("p", 6, 1), img("map", 6, 1), { count: 6, nearWhite, makeCanvas: make });
+    return { layers, writes };
+  }
+  const normal = prepare(true);
+  assert.deepEqual(normal.layers.map(l => [l.depth, l.cover]), [[1,false],[2,false],[3,false],[4,false],[5,false],[6,false]]);
+  normal.writes.forEach((data, i) => assert.equal(data[i * 4 + 3], 255));
+  for (let i = 0; i < 6; i++) assert.equal(normal.writes.reduce((n, data) => n + data[i * 4 + 3], 0), 255);
+  prepare(false).writes.forEach((data, i) => assert.equal(data[(5 - i) * 4 + 3], 255));
+  assert.throws(() => Reel.depthLayers(img("p"), img("map"), { count: 4 }), /5 to 8/);
+  assert.throws(() => Reel.depthLayers(img("p"), img("map", 3, 3)), /dimensions/);
+});
+
 test("holePlate: paints the shifted, blurred image through a grown mask over the original", () => {
   const { make, made } = canvasFactory();
   const out = Reel.holePlate(img("photo"), [{ x: 200, y: 50 }, { x: 260, y: 50 }, { x: 260, y: 200 }], { grow: 10, blur: 12, makeCanvas: make });

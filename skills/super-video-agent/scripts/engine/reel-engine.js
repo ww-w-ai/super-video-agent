@@ -1953,12 +1953,50 @@
   function cutLayer(image, path, opts) {
     const o = opts || {};
     const size = parallaxSourceSize(image, o);
+    if (o.mask) parallaxAligned(o.mask, size, "cutLayer mask");
     const out = parallaxCanvas(size.w, size.h, o.makeCanvas);
     const octx = out.getContext("2d");
     octx.drawImage(image, 0, 0, size.w, size.h);
     octx.globalCompositeOperation = "destination-in";
-    octx.drawImage(parallaxMask(path, size.w, size.h, { feather: o.feather, makeCanvas: o.makeCanvas }), 0, 0);
+    if (o.mask && o.feather > 0) octx.filter = "blur(" + o.feather + "px)";
+    octx.drawImage(o.mask || parallaxMask(path, size.w, size.h, { feather: o.feather, makeCanvas: o.makeCanvas }), 0, 0);
     return out;
+  }
+
+  function parallaxAligned(image, size, label) {
+    const actual = parallaxSourceSize(image, {});
+    if (actual.w !== size.w || actual.h !== size.h) throw new Error(label + ": dimensions must match the source");
+  }
+
+  // depthLayers partitions a same-size grayscale map once. White is near by default.
+  // The caller supplies a repaired far plate; these transparent bands do not fill holes.
+  function depthLayers(image, depthMap, opts) {
+    const o = opts || {};
+    const count = o.count == null ? 6 : o.count;
+    if (!Number.isInteger(count) || count < 5 || count > 8) throw new Error("depthLayers: count must be 5 to 8");
+    const size = parallaxSourceSize(image, {});
+    parallaxAligned(depthMap, size, "depthLayers map");
+    const reader = parallaxCanvas(size.w, size.h, o.makeCanvas).getContext("2d");
+    reader.drawImage(depthMap, 0, 0);
+    const pixels = reader.getImageData(0, 0, size.w, size.h).data;
+    const masks = Array.from({ length: count }, function () { return reader.createImageData(size.w, size.h); });
+    depthBandPixels(pixels, masks, o.nearWhite !== false);
+    return masks.map(function (data, index) {
+      const mask = parallaxCanvas(size.w, size.h, o.makeCanvas);
+      mask.getContext("2d").putImageData(data, 0, 0);
+      return { image: cutLayer(image, null, { mask: mask, makeCanvas: o.makeCanvas }), depth: index + 1, cover: false };
+    });
+  }
+
+  function depthBandPixels(pixels, masks, nearWhite) {
+    for (let i = 0; i < pixels.length; i += 4) {
+      const value = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / (3 * 255);
+      const far = nearWhite ? 1 - value : value;
+      const band = Math.min(masks.length - 1, Math.floor(far * masks.length));
+      const target = masks[band].data;
+      target[i] = target[i + 1] = target[i + 2] = 255;
+      target[i + 3] = pixels[i + 3];
+    }
   }
 
   function parallaxPatchShift(path, o) {
@@ -2063,6 +2101,7 @@
     parallaxPose,
     parallaxCoverage,
     cutLayer,
+    depthLayers,
     holePlate,
   };
 })();

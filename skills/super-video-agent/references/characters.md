@@ -138,3 +138,8 @@ line to the film's credits and to the description of each language version:
 `3D character model: <service name>, <licence or plan used>, <date generated>`
 
 Name only what the terms require. Record the line and the terms page in `FILM.md` with the asset.
+
+## Photo cutouts
+
+For detailed photo cutouts or photo animation, see `parallax.md` for optional
+alpha masks. Keep identity, crop, and lighting consistent across source photos.

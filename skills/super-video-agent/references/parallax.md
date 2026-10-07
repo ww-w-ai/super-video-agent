@@ -109,12 +109,13 @@ cut-outs make more edges to hide.
 ## Worked example
 
 Use a licensed real street photo with all three regions. Trace the actual outlines;
-these coordinates assume a 1080 × 1920 source and are not a reusable cut.
-Check both hole repairs at the largest camera offset. Use an edited clean plate
-when a shifted patch repeats visible objects.
+these example coordinates assume a 1080 × 1920 source and are not a reusable cut.
+Check each hole repair at the largest camera offset. A shifted patch may repeat
+objects; use an edited clean plate when it does.
 
 ```js
 const photo = await createImageBitmap(await (await fetch("assets/street.jpg")).blob());
+// The real photo has a near subject, a middle planter, and a far street.
 const midPath = [{ x: 90, y: 650 }, { x: 350, y: 650 }, { x: 350, y: 960 }, { x: 90, y: 960 }];
 const subjectPath = [{ x: 410, y: 220 }, { x: 640, y: 210 }, { x: 690, y: 880 }, { x: 380, y: 900 }];
 const subject = await createImageBitmap(Reel.cutLayer(photo, subjectPath, { feather: 5 }));
@@ -133,8 +134,59 @@ const spec = {
   ],
 };
 window.__reel.parallaxReport = () => Reel.parallaxCoverage(spec, 1080, 1920);
-// in seek(t): Reel.parallax(ctx, t, spec);
+// in seek(t):
+// Reel.parallax(ctx, t, spec);
 // Draw a readable source credit above the transformed layers throughout the shot.
 ```
 
 Run `verify.mjs`; if it names a layer, multiply that layer's `scale` by the printed factor and run again.
+
+## Optional alpha masks and depth maps
+
+Use an alpha mask for hair, fur, or a detailed cutout. Use a depth map when five to
+eight photo bands help a larger camera move. Keep polygon cuts for simple outlines.
+These inputs also help cutout animation, photo composition, background photos in
+3D scenes, and depth blur.
+
+The optional local helper writes a same-size PNG and a provenance JSON file.
+Install its dependencies in a separate environment: `rembg`, `onnxruntime` and
+`Pillow` for masks; `transformers`, `torch`, `safetensors` and `Pillow` for depth.
+Supply a trusted existing foreground-segmentation `.onnx` file for mask mode.
+Supply a trusted local small inverse-depth model directory with safe-tensor weights
+and processor files for depth mode. The helper downloads nothing, uses CPU mask
+inference, rejects remote model names, and disables remote model code and pickle
+weights. The supported implementation identifiers and official license sources
+are recorded in the helper, separate from creative guidance.
+
+```sh
+/path/to/python /path/to/skill/scripts/photo-layers.py mask /path/to/assets/photo.jpg /path/to/assets/subject.png \
+  --model /path/to/local/foreground.onnx --model-source '<official source URL>' --model-license '<verified license>'
+/path/to/python /path/to/skill/scripts/photo-layers.py depth /path/to/assets/photo.jpg /path/to/assets/depth.png \
+  --model /path/to/local/depth-model --model-source '<official source URL>' --model-license '<verified license>'
+```
+
+Verify the chosen weights' license separately from the runtime license and record
+both with the model hash in the project record.
+
+```js
+const mask = await createImageBitmap(await (await fetch("assets/subject.png")).blob());
+const cut = Reel.cutLayer(photo, null, { mask, feather: 2 });
+const map = await createImageBitmap(await (await fetch("assets/depth.png")).blob());
+const bands = Reel.depthLayers(photo, map, { count: 6, nearWhite: true });
+// Prepare cleanPlate by repairing exposed regions before the first seek.
+const layers = [{ image: cleanPlate, depth: 12 }, ...bands];
+```
+
+`mask` reads alpha, not grayscale brightness: white background pixels must be
+transparent. Both mask and map must match the photo dimensions and crop exactly.
+`depthLayers` reads grayscale brightness, assigns white to depth 1 and black to
+the farthest band, and returns transparent image layers with `cover: false`.
+Use `nearWhite: false` only for a map with the opposite convention. Bands are
+relative depth, not physical distances. Cache their image bitmaps before seeking.
+The helper's supported depth model produces inverse depth; other model types
+may require a different normalization and are outside this adapter.
+
+Depth does not reveal hidden background. Repair the far plate and inspect holes,
+band seams, fine edges and the largest camera offset. A mask or map passing a
+dimension check does not prove a convincing shot. Model quality and full photo
+inference require a separate visual check; local contract tests do not prove them.
