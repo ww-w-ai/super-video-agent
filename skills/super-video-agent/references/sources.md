@@ -70,6 +70,15 @@ in a browser) and chapter titles into `source/`.
 
 Nothing to extract; the look is yours to choose.
 
+**A data film** (the topic is a trend or a comparison in numbers): search the web for the figures
+before scripting, using official or press sources. List every figure in `FILM.md` as a table: value,
+unit, date, measurement basis, source URL. Never mix measurement bases (a yearly total with a
+monthly one, a forecast with a count) in one series; if sources differ, pick one and say why
+(see "Direction and facts"). Script only from that table. Draw the chart in code from the same
+table, with a point only where the table has one: no invented points between dates, and a gap is
+drawn as a gap or a straight segment labelled as such. Put "as of <date>" next to a figure that
+changes.
+
 ## Direction and facts
 
 - The user's direction overrides defaults but not facts. Record it in `FILM.md` in their words.

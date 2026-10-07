@@ -140,8 +140,19 @@ joints is called cut-out rigging. A cut-out figure moves well when its parts sha
 shade at every overlap, and when motion is eased with follow-through (a forearm trailing its
 shoulder) rather than switched pose to pose. A drawn figure that looks crude next to the rest of
 the frame can often be replaced by generated images cut into such parts. Name the technique for
-each scene in `FILM.md`; the rigs and the 3D route for characters are in
+each scene in `FILM.md` and why it fits that scene, in films without characters too (a chart, a
+page, a camera interior); the rigs and the 3D route for characters are in
 `references/characters.md`.
+
+## Broadcast and news-desk screens
+
+When the user asks for a news desk, a broadcast graphic or a live-score look, draw that screen
+language in code; no footage or logo is needed. Parts that read as broadcast: an anchor desk shot
+that cuts to a field-report picture and back, a lower third (name and role) that slides in on the
+speaker's first word, a ticker, a score or progress bar that updates with the facts, a corner bug.
+A bar that shows a standing or a balance (which side leads) is a number drawn from the source, with
+no point the source does not give. Do not copy a real channel's name, logo or palette; describe the
+look in your own words in `FILM.md`.
 
 ## Failures real viewers called out on Opus-made films
 

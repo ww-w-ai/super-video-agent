@@ -62,6 +62,12 @@ use, adapt or ignore; none of it is a template.
 ## Flow
 
 ```
+0. Brief: rewrite the user's request into seven slots (viewer and action, technique, flow, camera
+   and transitions, facts and sources, voice and tone, size/length/language) and mark each slot
+   "from the user" or "filled by the skill"; fill a gap from the source and the request, or ask
+   it in step 1's one question round (no second round); unattended: fill it and note that. Write
+   the result to `FILM.md` "Brief" before planning; every later stage reads it
+   (`references/brief.md`). The user need not fill all seven
 1. Read the source and the user's direction; ask style (Shorts formula or free), frame size,
    length (a target, not a limit: the film may run over when the story needs it), the opening: pick the three types in
    `references/openings.md` that fit this film best, recommend them with one line each on why,
@@ -75,12 +81,13 @@ use, adapt or ignore; none of it is a template.
    film the voice speed (1.0–1.2×, default 1.1), and whether to compare a few tones on the
    opening line first (default when nobody can answer: no), if not given; start
    FILM.md with one line naming the skill version (`version` in the skill's `package.json`,
-   e.g. `super-video-agent <version>`, the version the skill reports), then (the listener: who watches and what they should think or do, and who speaks if a
+   e.g. `super-video-agent <version>`, the version the skill reports), then (the listener, from the Brief: who watches (one audience, or two when the film serves two, each with its own takeaway) and what they should think or do, and who speaks if a
    character does — the voice, how the character refers to themselves and how they look on
    screen agree, and the delivery fits that speaker; with several speakers, a line takes its own
    `voice` over `meta.voice` (`references/voice.md`); facts with where
    they came from, cautions, scope, the style choice, the tone choice, decisions, what the owner
-   must supply)
+   must supply; for every scene, the technique and why it fits, also in films without
+   characters (`references/craft.md` "Named 2D techniques"))
 2. Write the lines → plan.json, and while writing, decide what each visible event sounds like in
    this film. Look in the asset library first (`assets.mjs search`) and use a sound as a line
    `cue` only if it fits the event and the film's world (fit 8 or more, `references/sound.md`
@@ -167,8 +174,8 @@ own characters adds a cast stage between voice and film.
 
 | Stage | Flow steps | Reads | Leaves | Effort |
 |---|---|---|---|---|
-| Script | 1, 2 up to the first draft | the source, the user's direction | `plan.json` (draft), `script-v0.md` (the same draft, never edited again), `FILM.md` | xhigh |
-| Review | 2: the review passes | `plan.json`, `FILM.md`, the source | the locked `plan.json`; the review record in `FILM.md` | low |
+| Script | 0, 1, 2 up to the first draft | the source, the user's direction | `FILM.md` with the Brief, `plan.json` (draft), `script-v0.md` (the same draft, never edited again) | xhigh |
+| Review | 2: the review passes | `plan.json`, `FILM.md` (Brief included), the source | the locked `plan.json`; the review record in `FILM.md` | low |
 | Voice | 2 from "make the voice" | `plan.json` | `voice/` with `timings.json` in the base language, in either order; STT flags handled | low |
 | Cast (3D films with their own characters) | between 2 and 3 | `plan.json`, `FILM.md` (who appears, in which lines, doing what) | the character and prop GLBs, a lineup still the owner approved, the contract table in `FILM.md` (`references/3d.md`) | xhigh |
 | Film | 3–5 | `plan.json`, `voice/`, `FILM.md`, the source (and the cast files) | `reel.html`, `out/final.mp4`, the report | xhigh |
@@ -283,13 +290,19 @@ end card, a title card, a series episode), read `references/bookends.md`; otherw
 
 When the user asks for 3D in any words ("3D", "like a video game", "WebGL", "Three.js"), make a
 3D film: scaffold with `new-reel.mjs --3d`, render picture first, and follow `references/3d.md`.
-A short request is enough; fill in the camera move, the places and the look yourself.
+A short request is enough; fill in the camera move, the places and the look yourself. A "one take",
+"no cuts" or "camera that never cuts" request is a continuous camera path (`references/3d.md` "Craft
+that worked"). A photo or screenshot can go on a surface in the scene as a texture, an object
+"at its official size" is modelled to published dimensions recorded with their date in `FILM.md`,
+and "take it apart in layers" is an exploded view, one layer per spoken beat (all in `references/3d.md`).
+Characters and sets built for an earlier film are reused, not rebuilt (`references/3d.md` "The cast stage").
 
 When the user names an existing game, film, show or brand as the look ("like <title>"), take the
 style from it — shapes, proportions, palette, mood, how things move — and describe it in your own
 words in `FILM.md` (e.g. "round, big-headed characters, soft pastels, a cozy life-sim game
 feel"). Never copy its characters, names, logos or signature designs, and never name it in the
-film.
+film. A news desk, broadcast graphic or live-score look is drawn the same way, in code
+(`references/craft.md` "Broadcast and news-desk screens").
 
 In either style, pictures fill the whole frame. Where the film is shown decides how much of it
 text may use: on a platform that draws buttons over the video (Shorts, TikTok, Reels), text and
@@ -372,14 +385,15 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/shorts-formula.md` | The Shorts formula: structure, pacing, banded layout, captions — only when the user chose it |
 | `references/openings.md` | Opening types (result first, question, number card, title sting, mid-scene, preview, cover then motion, ...): what each looks like, when it fits, how to build it — read at the start to recommend three |
 | `references/assembly.md` | A film that shows something built in many ordered steps, driven by data (reading a model file, insertion direction, surface check, timeline JSON, drift guard, the clock of a film with no narration, short scenes) — read only for that film type |
-| `references/characters.md` | A film with characters (a presenter, a host, a cast that moves or talks): rigs, mouth shapes, a person from a photo — read only when characters appear |
+| `references/brief.md` | The seven-slot Brief of Flow step 0: the slots, how they are marked and filled, a worked example |
+| `references/characters.md` | A film with characters (a presenter, a host, a cast that moves or talks): rigs, mouth shapes, a person from a photo, photo animation, collage — read only when characters appear |
 | `references/parallax.md` | A still turned into depth layers under a camera move (2.5D, parallax, living photo): depth convention, camera moves, edge coverage, cutting layers from one photo |
-| `references/sources.md` | Getting material out of each source type |
+| `references/sources.md` | Getting material out of each source type; a data film: search for figures with date and URL, chart drawn from that table |
 | `references/craft.md` | Observations from earlier films and the failures viewers called out |
 | `references/sound.md` | Effects on visible events, music bed, mix |
 | `references/script-review.md` | The review passes a script goes through before the voice is made |
 | `references/voice.md` | Voice providers, cloning, pronunciation |
 | [Audio editing guide](guides/audio-editing.md) | Local pause and tempo edits, timing updates, and replacing narration in a finished video |
 | `references/unattended.md` | Running the stages with nobody watching: the bundled runner, one short session per job, long jobs owned by the runner, done-files, resuming, safety rules |
-| `references/pipeline.md` | The page contract, render reuse (`--span`, `--assemble`), picture first and dubs, and the checks and reports (`still`, `verify`, `state-checks`, `review`, `srt`, `setup`) — read when you build on the bundled scripts |
+| `references/pipeline.md` | The page contract, per-language cover stills, render reuse (`--span`, `--assemble`), picture first and dubs, and the checks and reports (`still`, `verify`, `state-checks`, `review`, `srt`, `setup`) — read when you build on the bundled scripts |
 | `references/qa.md` | What the review numbers mean and what they cannot see |

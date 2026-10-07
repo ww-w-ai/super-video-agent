@@ -874,6 +874,15 @@ srt.mjs compare <a.srt> <b.srt> [...] [--tolerance <ms>]
 - `compare` reports cue count and time equality across SRT files; the first file is the reference.
 - Exit is non-zero only when an input cannot be read or the speech-to-text step cannot run.
 
+### A cover or thumbnail per language
+
+When the user asks for a cover or thumbnail per language, make one still per language from the
+film's own frames: `still.mjs <dir> --at <t|shotId> --dub <code> --out-dir <dir>` draws that
+language's title, labels and corner notes over the picture. Choose one frame that reads at thumbnail
+size and use it for every language, so the set matches; give each language its own title text and
+check that its script fits the frame (`state-checks.mjs --only langglyphs`). Record the frame and
+each title in `FILM.md`.
+
 ### Setup: `setup.mjs`
 
 `setup.mjs [--check] [--dir <reel>] [--stt-models]`. Both modes report the Playwright browser cache
