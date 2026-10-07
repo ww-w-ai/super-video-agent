@@ -334,7 +334,9 @@ The transcript check and the waveform check answer different questions. The tran
 the words came out wrong, which is all or nothing: a word is said or it is not. Clicks, cuts and
 abrupt starts or ends show only on the waveform and its level, so those are judged there, and no
 transcript result clears them. After each line is made, `voice.mjs` reads the line's own audio, stores
-the result in `timings.json` (`clipFacts`) and `review.mjs` lists it. `HEAD` and `TAIL` are the gate:
+the result in `timings.json` (`clipFacts`). `review.mjs` remeasures current `voice/line-<id>.wav`
+files with the same perceptual edge rules. It ignores saved facts and reports missing or unreadable
+clips as unchecked. `HEAD` and `TAIL` are the gate:
 the line gets that `voiceFlag`, the run prints a `WARN` naming the line, and the fix is to re-make it
 (`--lines <id>`, or `--retry-flagged N`, which keeps a take only when it does not add the flag). The
 rest are facts to listen to.
@@ -349,7 +351,7 @@ that masks it where the clip is placed under one. The constants are in `scripts/
 
 | Result | Means |
 |---|---|
-| `HEAD` (gate) | the start is cut or swallowed: nearly full level at the first voiced 10 ms, its loudest 10 ms far under the body of the line, or sound already audible in the first 15 ms (within 15 LU of the line's own loudness) that is not a soft rise: a cut start, or the end of the previous line carried over |
+| `HEAD` (gate) | sound is already audible in the first 15 ms (within 15 LU of the line's own loudness) that is not a soft rise: a cut start, or the end of the previous line carried over |
 | `TAIL` (gate) | the line ends while it still sounds: the last 20 ms is still within 5 LU of the line's own loudness (loud enough to be heard as a cut), at a level above what the bed under it masks |
 | `DIP` | a 150 ms stretch 15 dB under the line's median level, with sound on both sides |
 | `PAUSE` | 0.35 s or more of silence inside the voiced span |

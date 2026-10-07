@@ -34,7 +34,7 @@ import {
 } from "./lib/audio-analysis.mjs";
 import { gapsFromPcm, silenceNote } from "./lib/silence-gate.mjs";
 import { loudnessUnderTarget } from "./lib/audio-mix.mjs";
-import { describeDefects, waveformFlag } from "./voice/take-check.mjs";
+import { findClipDefects, describeDefects, waveformFlag } from "./voice/take-check.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
@@ -46,8 +46,8 @@ Reviews a rendered reel: builds a contact sheet (one frame per shot's
 readAt, with timestamps), scans for dead air, compares audio/video
 duration, and collects layout issues(). Writes
 <reel-dir>/out/review.json and prints a human summary. The summary also lists
-the voice clip facts voice.mjs stored in timings.json (HEAD, DIP, PAUSE per
-line: facts, never a pass or fail).
+fresh voice clip facts measured from current line audio (HEAD, TAIL, DIP, PAUSE
+per line). Stored clipFacts are ignored; unavailable clips are reported unchecked.
 
 --mp4   path to an already-rendered video (default: out/final.mp4, or
         out/preview.mp4, or render a preview now if neither exists).
@@ -654,7 +654,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           silenceNote: nothingOf("silence") ? null : silenceNote(silence, silenceGaps, SILENCE_GATE_SEC),
           underTarget: loudnessUnderTarget(loudness.integratedLufs),
           marks: markResults,
-          voiceClipFacts: voiceClipFacts(timings),
+          voiceClipFacts: await voiceClipFacts(timings, paths.voiceDir),
           onsetSourceNote:
             "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
           duckingNote:
@@ -672,25 +672,42 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
   }
 }
 
-/**
- * HEAD / TAIL / EDGE / DIP / PAUSE facts voice.mjs stored per line (`clipFacts` in timings.json) as report
- * lines; a line with a HEAD or TAIL result (waveformFlag) is reported as a WARN. The report never stops
- * a run. Lines made before the facts were stored have none, and are counted.
- * @returns {{lines:{id:string, facts:string[], flag:"HEAD"|"TAIL"|null}[], measured:number, unmeasured:number}}
- */
-export function voiceClipFacts(timings) {
-  const all = (timings && timings.lines) || [];
-  const measured = all.filter((l) => l.clipFacts);
-  const lines = measured.map((l) => ({ id: l.id, facts: describeDefects(l.clipFacts), flag: waveformFlag(l.clipFacts) })).filter((l) => l.facts.length);
-  return { lines, measured: measured.length, unmeasured: all.length - measured.length };
+/** Current clip measurements only. Stored synthesis-time facts may describe a replaced take. */
+export async function voiceClipFacts(timings, voiceDir, { decode = decodeMonoPcm } = {}) {
+  const lines = [];
+  const unavailable = [];
+  const all = timings?.lines || [];
+  for (const line of all) {
+    const result = await measureVoiceClip(line, voiceDir, decode);
+    if (result.reason) unavailable.push({ id: line.id, reason: result.reason });
+    else if (result.facts.length) lines.push(result);
+  }
+  return { lines, measured: all.length - unavailable.length, unmeasured: unavailable.length,
+    unavailable, source: "current-clips", sampleRate: AUDIO_SAMPLE_RATE };
 }
 
-function voiceClipFactLines({ lines, measured, unmeasured }) {
+async function measureVoiceClip(line, voiceDir, decode) {
+  try {
+    const name = `line-${line.id}.wav`;
+    if (!voiceDir || path.basename(name) !== name) throw new Error("no valid current clip path");
+    const file = path.join(voiceDir, name);
+    const pcm = await decode(file, AUDIO_SAMPLE_RATE);
+    if (!pcm.length) throw new Error("current clip has no samples");
+    const defects = findClipDefects(pcm, AUDIO_SAMPLE_RATE);
+    return { id: line.id, file, facts: describeDefects(defects), flag: waveformFlag(defects) };
+  } catch (error) {
+    return { id: line.id, reason: error.message };
+  }
+}
+
+/** Missing measurements remain explicit and never fall back to saved clipFacts. */
+export function voiceClipFactLines({ lines, measured, unmeasured, unavailable = [] }) {
   const out = lines.map((l) => (l.flag
-    ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (waveform evidence, no transcript clears it; re-make the line: voice.mjs <reel> --lines ${l.id})`
-    : `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (the STT check cannot hear these; listen before keeping)`));
-  if (measured === 0) return ["voice clip facts: none stored in timings.json (voice.mjs stores HEAD, TAIL, EDGE, DIP and PAUSE when it makes a line); not checked here."];
-  if (unmeasured) out.push(`voice clip facts: ${unmeasured} line(s) have none stored (made before voice.mjs stored them, or silent).`);
+    ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (current clip, perceived-level evidence; re-make the line: voice.mjs <reel> --lines ${l.id})`
+    : `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (current clip measurement)`));
+  if (measured === 0) out.push("voice clip facts: CHECKED NOTHING; no current clips measured.");
+  for (const clip of unavailable) out.push(`voice clip facts: CHECKED NOTHING, line "${clip.id}": ${clip.reason}`);
+  if (unmeasured && !unavailable.length) out.push(`voice clip facts: CHECKED NOTHING; ${unmeasured} current clip(s) unavailable.`);
   return out;
 }
 

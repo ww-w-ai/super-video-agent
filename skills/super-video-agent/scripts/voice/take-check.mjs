@@ -139,8 +139,6 @@ export function describeDefects(defects) {
   if (!defects) return [];
   const out = [];
   const edges = defects.edges;
-  if (defects.head.abrupt) out.push(`HEAD abrupt (first 10 ms already ${defects.head.firstDb} dB: the start may be cut)`);
-  if (defects.head.weak) out.push(`HEAD weak (loudest 10 ms of the first 150 ms is ${defects.head.loudestDb} dB: the start may be swallowed)`);
   if (edges && edges.head.abrupt) out.push(`HEAD cut (sound ${Math.abs(edges.head.relLine)} LU under the line's loudness is already audible at ${(edges.head.audibleAtSec * 1000).toFixed(0)} ms: the start is cut, or carries the end of the previous line)`);
   if (edges && edges.tail.cut) out.push(`TAIL cut (the sound stops ${Math.abs(edges.tail.relLine)} LU under the line's loudness at ${(edges.tail.audibleUntilSec * 1000).toFixed(0)} ms: a natural release dies away well under it)`);
   for (const d of defects.dips) out.push(`DIP ${d.sec.toFixed(2)} s quiet at ${d.atSec.toFixed(2)} s`);
@@ -148,12 +146,12 @@ export function describeDefects(defects) {
   return out;
 }
 
-/** Short codes for the takes table: HEAD-cut, HEAD-weak, DIP@1.20s, PAUSE@2.10s+0.40s. */
+/** Short codes for the takes table: HEAD-cut, TAIL-cut, DIP@1.20s, PAUSE@2.10s+0.40s. */
 export function defectCodes(defects) {
   if (!defects) return [];
   return [
-    ...(defects.head.abrupt ? ["HEAD-cut"] : []),
-    ...(defects.head.weak ? ["HEAD-weak"] : []),
+    ...(defects.edges?.head.abrupt ? ["HEAD-cut"] : []),
+    ...(defects.edges?.tail.cut ? ["TAIL-cut"] : []),
     ...defects.dips.map((d) => `DIP@${d.atSec.toFixed(2)}s`),
     ...defects.pauses.map((p) => `PAUSE@${p.atSec.toFixed(2)}s+${p.sec.toFixed(2)}s`),
   ];

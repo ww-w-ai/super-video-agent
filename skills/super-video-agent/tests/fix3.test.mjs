@@ -80,21 +80,14 @@ test("L4: the 3D template filters the same way", () => {
   assert.match(html, /\(flagged\.length \? flagged : SFX_CUES\)\.map/);
 });
 
-test("voice clip facts: stored HEAD/DIP/PAUSE become fact lines; clean and unmeasured lines are counted, never failed", () => {
-  const timings = {
-    lines: [
-      { id: "a", clipFacts: { head: { firstDb: -20, loudestDb: -18, abrupt: true, weak: false }, dips: [{ atSec: 1.2, sec: 0.2 }], pauses: [{ atSec: 2.1, sec: 0.4 }] } },
-      { id: "b", clipFacts: { head: { firstDb: -60, loudestDb: -20, abrupt: false, weak: false }, dips: [], pauses: [] } },
-      { id: "c" },
-    ],
-  };
-  const r = voiceClipFacts(timings);
-  assert.equal(r.measured, 2);
-  assert.equal(r.unmeasured, 1);
-  assert.deepEqual(r.lines.map((l) => l.id), ["a"]);
-  assert.equal(r.lines[0].facts.length, 3);
-  assert.match(r.lines[0].facts.join(" "), /HEAD abrupt.*DIP 0\.20 s quiet at 1\.20 s.*PAUSE 0\.40 s of silence at 2\.10 s/);
-  assert.deepEqual(voiceClipFacts({ lines: [{ id: "x" }] }), { lines: [], measured: 0, unmeasured: 1 });
+test("voice clip facts: stored HEAD/DIP/PAUSE are ignored when current clips are unavailable", async () => {
+  const result = await voiceClipFacts({lines:[{id:"a",clipFacts:{head:{abrupt:true},dips:[{atSec:1,sec:0.2}],pauses:[]}}]}, "/unused", {
+    decode: async () => { throw new Error("missing current clip"); }
+  });
+  assert.equal(result.measured, 0);
+  assert.equal(result.unmeasured, 1);
+  assert.deepEqual(result.lines, []);
+  assert.deepEqual(result.unavailable, [{id:"a",reason:"missing current clip"}]);
 });
 
 test("refuseOversize: one shared refusal names the provider, the line and the limit; at the limit passes", () => {

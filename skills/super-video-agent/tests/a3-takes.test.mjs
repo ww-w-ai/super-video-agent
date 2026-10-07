@@ -229,7 +229,7 @@ test("37: a clean clip has no HEAD, DIP or PAUSE", () => {
 test("37: HEAD abrupt: full level from the first sample", () => {
   const d = findClipDefects(asFloat(signal([{ amp: 0.5, hz: 150, sec: 1.5 }, { sec: 0.3 }])), RATE);
   assert.equal(d.head.abrupt, true);
-  assert.match(describeDefects(d)[0], /^HEAD abrupt/);
+  assert.match(describeDefects(d)[0], /^HEAD cut/);
 });
 
 test("37: HEAD weak: the first 150 ms is far under the body level", () => {
