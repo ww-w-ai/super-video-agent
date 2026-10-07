@@ -170,8 +170,11 @@ points at the line that causes it, the state scan confirms it in the rendered ti
 - **Waveform cut check** — `dub.mjs` lists each placed line whose start or end is still loud in
   the final narration, an abrupt cut the silence gate cannot see. A report, not a stop. After
   the cut is found, re-make the line or give it room (`references/voice.md` "Fixing one line").
-- **Voice clip facts** — `review.mjs` prints the `HEAD`, `DIP` and `PAUSE` facts `voice.mjs`
-  stored per line (`references/voice.md`), as facts, never a pass or fail.
+- **Voice clip facts** — `review.mjs` prints the `HEAD`, `TAIL`, `DIP` and `PAUSE` results `voice.mjs`
+  stored per line (`references/voice.md`). `HEAD` and `TAIL` come from the waveform and level (a
+  click, a cut line, the previous line's leftover) and print as a `WARN` that names the line to
+  re-make; the transcript check judges only whether the words came out wrong and never clears them.
+  `DIP` and `PAUSE` are facts.
 - **Engine notes and facts** — `review.mjs` and `verify.mjs` print `note: …` when the page's
   safe area is `none` (no text can fall outside it, so a clean layout report proves nothing), and
   `fact: …` lines for what the engine knows but cannot judge: a label with no string in the

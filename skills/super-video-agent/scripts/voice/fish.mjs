@@ -106,8 +106,8 @@ async function speakAndCut(items, voiceCfg) {
     } finally {
       fs.rmSync(scratch, { force: true });
     }
-    const plan = planCuts({ samples, sr: SAMPLE_RATE, texts: sent });
-    if (plan) return cutClips(items, samples, SAMPLE_RATE, plan, null, writeWavPCM16);
+    const plan = planCuts({ samples, sr: SAMPLE_RATE, texts: sent, cutOptions: voiceCfg && voiceCfg.cut });
+    if (plan) return cutClips(items, samples, SAMPLE_RATE, plan, null, writeWavPCM16, voiceCfg && voiceCfg.cut);
     process.stderr.write("note: fish silences do not split into the lines; sending one request per line\n");
   }
   const out = [];

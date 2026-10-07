@@ -217,9 +217,11 @@ test("25: a re-take prints its STT error rate against the existing take", async 
 // --- 37: defects the STT check cannot hear ---------------------------------------------------
 
 const body = { amp: 0.5, hz: 150, fadeSec: 0.04 };
+// A line that dies away: the last frame over -50 dBFS sits well under -35 dBFS.
+const DECAY = [{ amp: 0.15, sec: 0.03 }, { amp: 0.04, sec: 0.03 }, { amp: 0.01, sec: 0.03 }, { amp: 0.002, sec: 0.03 }];
 
 test("37: a clean clip has no HEAD, DIP or PAUSE", () => {
-  const clip = signal([{ sec: 0.05 }, { ...body, sec: 1.5 }, { sec: 0.3 }]);
+  const clip = signal([{ sec: 0.05 }, { ...body, sec: 1.5 }, ...DECAY, { sec: 0.3 }]);
   const d = findClipDefects(asFloat(clip), RATE);
   assert.deepEqual(describeDefects(d), []);
 });
@@ -250,7 +252,7 @@ test("37: a freshly made line prints its defects and never stops the run", async
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const provider = {
     async synth({ outPath }) {
-      writeWavMono16(outPath, signal([{ ...body, sec: 0.5 }, { sec: 0.6 }, { amp: 0.5, hz: 150, sec: 0.5 }]), RATE);
+      writeWavMono16(outPath, signal([{ sec: 0.05 }, { ...body, sec: 0.5 }, { sec: 0.6 }, { amp: 0.5, hz: 150, sec: 0.5 }, ...DECAY]), RATE);
       return { wavPath: outPath };
     },
   };

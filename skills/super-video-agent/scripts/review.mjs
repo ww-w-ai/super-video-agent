@@ -34,7 +34,7 @@ import {
 } from "./lib/audio-analysis.mjs";
 import { gapsFromPcm, silenceNote } from "./lib/silence-gate.mjs";
 import { loudnessUnderTarget } from "./lib/audio-mix.mjs";
-import { describeDefects } from "./voice/take-check.mjs";
+import { describeDefects, waveformFlag } from "./voice/take-check.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
@@ -673,20 +673,23 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
 }
 
 /**
- * HEAD / DIP / PAUSE facts voice.mjs stored per line (`clipFacts` in timings.json) as report lines.
- * Facts only: never a pass or a fail. Lines made before the facts were stored have none, and are counted.
- * @returns {{lines:{id:string, facts:string[]}[], measured:number, unmeasured:number}}
+ * HEAD / TAIL / EDGE / DIP / PAUSE facts voice.mjs stored per line (`clipFacts` in timings.json) as report
+ * lines; a line with a HEAD or TAIL result (waveformFlag) is reported as a WARN. The report never stops
+ * a run. Lines made before the facts were stored have none, and are counted.
+ * @returns {{lines:{id:string, facts:string[], flag:"HEAD"|"TAIL"|null}[], measured:number, unmeasured:number}}
  */
 export function voiceClipFacts(timings) {
   const all = (timings && timings.lines) || [];
   const measured = all.filter((l) => l.clipFacts);
-  const lines = measured.map((l) => ({ id: l.id, facts: describeDefects(l.clipFacts) })).filter((l) => l.facts.length);
+  const lines = measured.map((l) => ({ id: l.id, facts: describeDefects(l.clipFacts), flag: waveformFlag(l.clipFacts) })).filter((l) => l.facts.length);
   return { lines, measured: measured.length, unmeasured: all.length - measured.length };
 }
 
 function voiceClipFactLines({ lines, measured, unmeasured }) {
-  const out = lines.map((l) => `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (the STT check cannot hear these; listen before keeping)`);
-  if (measured === 0) return ["voice clip facts: none stored in timings.json (voice.mjs stores HEAD, DIP and PAUSE when it makes a line); not checked here."];
+  const out = lines.map((l) => (l.flag
+    ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (waveform evidence, no transcript clears it; re-make the line: voice.mjs <reel> --lines ${l.id})`
+    : `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (the STT check cannot hear these; listen before keeping)`));
+  if (measured === 0) return ["voice clip facts: none stored in timings.json (voice.mjs stores HEAD, TAIL, EDGE, DIP and PAUSE when it makes a line); not checked here."];
   if (unmeasured) out.push(`voice clip facts: ${unmeasured} line(s) have none stored (made before voice.mjs stored them, or silent).`);
   return out;
 }

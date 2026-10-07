@@ -166,14 +166,14 @@ async function speakAndCut(items, { apiKey, voiceId, lang, voiceCfg }) {
   } finally {
     fs.rmSync(scratch, { force: true });
   }
-  const plan = planCuts({ samples, sr: SAMPLE_RATE, texts: sent, words: json.words });
+  const plan = planCuts({ samples, sr: SAMPLE_RATE, texts: sent, words: json.words, cutOptions: voiceCfg && voiceCfg.cut });
   if (!plan) {
     process.stderr.write("note: typecast words and silences do not split into the lines; sending one request per line\n");
     const out = [];
     for (const it of items) out.push({ id: it.id, ...(await synth({ text: it.text, voice: voiceId, lang, voiceCfg, outPath: it.outPath })) });
     return out;
   }
-  return cutClips(items, samples, SAMPLE_RATE, plan, (k, from) => plan.lineWords && wordsFromTypecast(plan.lineWords[k], -from), writeWavPCM16);
+  return cutClips(items, samples, SAMPLE_RATE, plan, (k, from) => plan.lineWords && wordsFromTypecast(plan.lineWords[k], -from), writeWavPCM16, voiceCfg && voiceCfg.cut);
 }
 
 /**

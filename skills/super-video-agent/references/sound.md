@@ -54,7 +54,9 @@ the seed varies the timbre. For a whole kind, `ReelAudio.sfxPool(pools, {seed})`
 variant: `pools` maps a kind to a list of `{gen, seed?, rate?}` (a synth variant at a set pitch
 `rate`) and `{file, like}` (a library file, levelled to the peak of the kit's own `like` effect), in
 one list. `pool.assign(cues)` walks the cues in time order and gives each the least-used variant of its
-kind that is not the one before it (same seed, same result) and sets `cue.variant` and `cue.sound`;
+kind that is not the one before it (same seed, same result) and sets `cue.variant` and `cue.sound`
+(a cue changed after the film was heard takes `pin: {variant, holds, holdsKind?}`: it plays pool
+variant `variant` and takes the place of variant `holds` in the rotation, so no other cue changes sound);
 `pool.buffer(cue, sampleRate, files)` returns the samples (`files`: `{<file name>: {rate, data}}`
 the page loaded). A kind without a pool keeps `ReelAudio.sfx[kind]`. Library chimes and dings come
 from `assets.mjs search ding` or `search chime` (and `pop`, `whoosh`, `tick` the same way); copy the
@@ -120,6 +122,15 @@ sfx cue times are measured from the film's t = 0, lead included.
   breath between two lines (a bed that rises and drops again there is heard as pumping). The
   music bed keeps its own, deeper **-10 dB** duck inside the page (`reel-audio.js` `duck()`, 120 ms
   ramps): words stay clear, effects stay audible, the bed all but disappears under speech.
+- **Fades.** A file cue (a library file or a clip's sound) takes optional fade fields, in `plan.json`
+  `cues` and in the entries `__reel.soundCues()` returns: `fadeInSec`, `fadeOutSec`, `endsAtCut`
+  (the sound ends where the picture cuts) and, for cues on one `track`, `crossfadeSec`. The default
+  fade-out is 30 ms; with `endsAtCut` it is 0.6 s (at most half the cue), so music or a clip's
+  sound does not stop dead at a cut. A cue with `crossfadeSec` runs that long past the start of the
+  next cue on its `track` and fades out over it while that cue fades in over the same span. Each
+  cue is peak-normalised first and faded after, so a fade is never undone by the level; give the
+  mix the unfaded source and the fade fields, not a file faded in advance. `scripts/lib/audio-mix.mjs`
+  `resolveCueFades` is the rule; the filter graph shows it as `afade` after `volume`.
 - **Two ducks stack on a dubbed bed.** The page's duck follows the base language's lines. `dub.mjs`
   then ducks the whole bed again against the dubbed language's own lines, so where the two
   narrations differ the bed drops by both. `dub.mjs` prints one `bed duck:` line: the dub's dB, the

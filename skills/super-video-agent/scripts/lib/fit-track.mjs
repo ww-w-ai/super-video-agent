@@ -37,11 +37,15 @@ export async function trimVoiceClips({ voiceTimings, voiceDir, workDir }) {
   return trims;
 }
 
-/** The voice lines with `start` moved forward by the removed lead, so word times land on the trimmed clip's own timeline. */
+/**
+ * The voice lines with `start` moved forward by the removed lead, so word times land on the trimmed
+ * clip's own timeline, and `leadTrimSec` set so fitAllLines starts the trimmed clip that long after
+ * its slot start (the sound stays where the voice's own timings put it).
+ */
 export function shiftForTrim(voiceLines, trims) {
   return (voiceLines || []).map((l) => {
     const t = trims.get(l.id);
-    return t && t.leadTrimSec > 0 ? { ...l, start: l.start + t.leadTrimSec } : l;
+    return t && t.leadTrimSec > 0 ? { ...l, start: l.start + t.leadTrimSec, leadTrimSec: t.leadTrimSec } : l;
   });
 }
 

@@ -7,7 +7,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { openLibrary, locateLibraryDir, assetFilePath, assertInsideLibrary, getById, searchAssetsRanked, isModelAsset } from "./lib/library.mjs";
-import { collectPlanCues, defaultPlay } from "./lib/cues.mjs";
+import { collectPlanCues, defaultPlay, cueFadeFields } from "./lib/cues.mjs";
 import { ffmpeg, ffprobe } from "./lib/ffmpeg.mjs";
 
 const HELP = `usage: assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]
@@ -319,6 +319,7 @@ export async function fetchAssets({ dir, allowPersonalScope = false, log = () =>
     gainDb: cue.gainDb == null ? 0 : cue.gainDb,
     maxSec: cue.maxSec,
     play: cue.play || defaultPlay(byId.get(cue.asset).role),
+    ...cueFadeFields(cue),
   }));
   const cuesPath = path.join(libDir, "cues.json");
   writeJson(cuesPath, { version: 1, cues: normalizedCues });

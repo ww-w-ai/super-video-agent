@@ -277,7 +277,11 @@
     return null;
   }
 
-  // soundCues() -> [{file, at, gainDb, maxSec, soundOnly}] for every library
+  // Optional per-cue fade fields render.mjs passes on to the mix (references/sound.md "Fades");
+  // the same list as CUE_FADE_KEYS in scripts/lib/cues.mjs.
+  var SOUND_FADE_FIELDS = ["fadeInSec", "fadeOutSec", "crossfadeSec", "endsAtCut", "track"];
+
+  // soundCues() -> [{file, at, gainDb, maxSec, soundOnly, ...fade fields}] for every library
   // cue whose `play` is "sound" or "both". render.mjs reads this through the
   // page and mixes each `file` at its cue time itself — this page never
   // plays audio.
@@ -291,7 +295,7 @@
       if (!line || !meta) return;
       var file = meta.kind === "audio" ? meta.file : meta.audio;
       if (!file) return; // e.g. a silent video clip cued for sound
-      out.push({
+      var item = {
         file: file,
         at: Reel.cueTime(cue, line, timings),
         gainDb: cue.gainDb == null ? 0 : cue.gainDb,
@@ -299,7 +303,9 @@
         // Sound-only files may start with silence; render.mjs skips it so the
         // sound lands on the cue. A clip's sound keeps its lead to stay on its picture.
         soundOnly: meta.kind === "audio",
-      });
+      };
+      SOUND_FADE_FIELDS.forEach(function (k) { if (cue[k] != null) item[k] = cue[k]; });
+      out.push(item);
     });
     return out;
   }

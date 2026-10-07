@@ -52,7 +52,15 @@ from the environment and never printed. The command lists facts; choosing a voic
 (several when the text passes the provider's limit: 2,500 characters for ElevenLabs and Fish,
 2,000 for Typecast) and `voice.mjs` cuts it into one clip per line, so the voice keeps one read
 across the film. Cut by the timestamps the service returns (ElevenLabs characters, Typecast
-words) midway through the silence between one line's last spoken word and the next line's first;
+words): a line runs from 0.1 s before its first spoken word (never into the previous line's cut) to
+the later of two points: where the line's own decay has fallen under what a listener can hear, and
+0.2 s after its last spoken word. The cut is never later than 0.6 s past the last word or 20 ms before
+the next line's first word, whichever comes first. It ends in a 30 ms fade-out and the next clip starts with a 20 ms
+fade-in, so a line keeps its full decay and room tone and never starts with the end of the one before.
+Lines are cut late on purpose: about 0.5 s of space is left after each line in the picture anyway, so
+a cut close to the last word saves nothing and is what a listener hears as a clipped ending.
+`meta.voice.cut` sets the margins in seconds (`headKeepSec` 0.1, `minTailSec` 0.2, `maxTailSec` 0.6,
+`guardSec` 0.02, `fadeInSec` 0.02, `fadeOutSec` 0.03);
 a service that returns none (Fish), or whose words do not map onto the lines, is cut at the
 silences: the longest quiet stretches inside the speech are the breaks between lines. If the
 audio holds fewer breaks than lines, or a cut would split a line unevenly, the lines are sent one
@@ -63,7 +71,11 @@ retry) is sent alone.
 head and tail; summed over a film it becomes a voice gap of a second or more. Every synthesized
 line is therefore cut to its voiced span plus 0.05 s at the head and 0.3 s at the tail (voiced =
 above −50 dBFS in 10 ms windows, the level `review.mjs` uses; a pause inside the line is never
-touched). The untrimmed clip is kept once at `voice/raw/<id>.wav`. When the narration is placed,
+touched), with a 20 ms fade-in and a 30 ms fade-out at the cuts. The untrimmed take is kept at
+`voice/raw/<id>.wav` and replaced only when a new take is installed; `timings.json` records its
+hash per line as `rawTake`, and `voice.mjs <reel> --raw-status` reports whether each raw file is
+still the take its clip was made from (stale or missing: do not rebuild that line from raw).
+When the narration is placed,
 `voice.mjs` measures it and lists every silence over 1 s between voiced audio with the line ids
 around it. A pause the plan asks for (`pauseAfterMs` on a line, or a long `meta.gapMs`) is listed
 as a planned pause, not a problem; a gap over what the plan asked for is a `WARN`. Re-make the
@@ -228,10 +240,10 @@ synthesis, `voice.mjs` transcribes every synthesized line back to text (speech-t
 below) and compares it against the intended line:
 
 - **SHORT** — the qwen3 provider's own duration gate: shorter than the text could plausibly take.
-- **TAIL** — the qwen3 provider's own tail-RMS gate: still sounding in the final ~30ms, a cut
-  syllable. The STT check can clear this: if the transcript's last two characters match the
-  intended line's (Korean `-예요` and `-에요` count as one spelling), the syllable wasn't actually cut — `TAIL` is removed and `stt.tailCleared: true`
-  is recorded instead.
+- **TAIL** — a provider's own gate (still sounding in the final ~30 ms: a cut syllable) and the
+  waveform check's `TAIL` (below, "What the transcript cannot hear"). A transcript with the whole
+  last word does not clear it: the words can be complete and the end still cut or clicking.
+  `stt.tailMatched` records whether the last characters matched, as information.
 - **MISHEARD** — the STT check's own gate, for gross errors only. STT has its own error, so it
   flags a take only when most of it is wrong (error rate above 50%) or the transcript is clearly
   shorter or longer than the line (under 70% or over 140% of its length: dropped words, a cut
@@ -271,8 +283,9 @@ owner to listen to, with its timestamp. The reverse holds too: STT cannot separa
 so a clean check does not prove a name or a homophone was read the intended way
 (`references/readout-en.md`).
 
-- `--retry-flagged N` (default 0) — explicitly opts into re-synthesizing lines flagged `MISHEARD`/`SHORT`/`TAIL`
-  after the check up to `N` more times, keeping whichever take has the lower error rate. Skipped
+- `--retry-flagged N` (default 0) — explicitly opts into re-synthesizing lines flagged `MISHEARD`/`SHORT`/`TAIL`/`HEAD`
+  after the check up to `N` more times, keeping whichever take has the lower error rate, or the one that clears a
+  `HEAD`/`TAIL` flag at no worse an error rate; a take that adds such a flag is never kept. Skipped
   for deterministic providers (`say`, `file`, `none`) — regenerating gives the same result.
   Prefer selecting confirmed problem lines with `--lines` after inspecting the evidence.
 - `--no-stt` — skips the check entirely (drafts, or when no engine is set up).
@@ -317,13 +330,27 @@ leveling.
 
 ## What the transcript cannot hear
 
-A line can pass the transcript check and still sound wrong. After each line is made, `voice.mjs`
-reads the line's own audio and prints facts, stores them in `timings.json` (`clipFacts`), and
-`review.mjs` lists them. They are facts, never a pass or fail; listen before keeping the line.
+The transcript check and the waveform check answer different questions. The transcript says whether
+the words came out wrong, which is all or nothing: a word is said or it is not. Clicks, cuts and
+abrupt starts or ends show only on the waveform and its level, so those are judged there, and no
+transcript result clears them. After each line is made, `voice.mjs` reads the line's own audio, stores
+the result in `timings.json` (`clipFacts`) and `review.mjs` lists it. `HEAD` and `TAIL` are the gate:
+the line gets that `voiceFlag`, the run prints a `WARN` naming the line, and the fix is to re-make it
+(`--lines <id>`, or `--retry-flagged N`, which keeps a take only when it does not add the flag). The
+rest are facts to listen to.
 
-| Fact | Means |
+The edge rule follows how loud the sound is to a listener, not its sample values: a last sample that
+is not zero, or a hiss tens of decibels under the voice, is not a defect. Levels are K-weighted
+loudness (ITU-R BS.1770-4, the weighting behind EBU R128) in 5 ms windows, relative to the line's own
+loudness. A sound counts as audible when it is above a floor of 35 LU under the line (speech at about
+65–70 dB SPL against a quiet room's 30–35 dBA; the equal-loudness contours of ISO 226 put the hearing
+threshold for speech frequencies in that range) and above −65 LUFS, raised to the level of the bed
+that masks it where the clip is placed under one. The constants are in `scripts/lib/perceived-level.mjs`.
+
+| Result | Means |
 |---|---|
-| `HEAD` | the first 150 ms of the voiced span is cut or swallowed: it starts at nearly full level, or its loudest 10 ms sits far under the body of the line |
+| `HEAD` (gate) | the start is cut or swallowed: nearly full level at the first voiced 10 ms, its loudest 10 ms far under the body of the line, or sound already audible in the first 15 ms (within 15 LU of the line's own loudness) that is not a soft rise: a cut start, or the end of the previous line carried over |
+| `TAIL` (gate) | the line ends while it still sounds: the last 20 ms is still within 5 LU of the line's own loudness (loud enough to be heard as a cut), at a level above what the bed under it masks |
 | `DIP` | a 150 ms stretch 15 dB under the line's median level, with sound on both sides |
 | `PAUSE` | 0.35 s or more of silence inside the voiced span |
 

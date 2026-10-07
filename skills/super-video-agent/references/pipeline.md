@@ -532,7 +532,9 @@ The picture's time is the reference. `dub.mjs` fits each line in four steps, in 
 
 1. **Trim.** Each take is cut to its voiced span plus 0.05 s head and 0.3 s tail (an RMS scan at
    −50 dBFS; an internal pause is never touched) — a take's edge silence, not its speech, should
-   never be what decides whether it fits its slot.
+   never be what decides whether it fits its slot. The trimmed lead is not lost: the clip is
+   placed that long (after the speed change) after the slot start, so the first sound lands where
+   the voice's own `timings.json` puts it (at most the room the slot has left).
 2. **Speed.** The trimmed audio is placed at its base line's slot (that base line's start to the
    next base line's start; the last line's slot runs to the film's end). A line longer than its
    slot is sped up (atempo, pitch kept) by at most 10% (`--max-speed`, default 1.1). Widening the
@@ -963,7 +965,8 @@ A library is a folder with `catalog.json` and the files it describes:
 ] }
 ```
 
-A line picks clips in `plan.json` via `cues`: `[{asset, at, offsetMs?, gainDb?, maxSec?, play?}]`.
+A line picks clips in `plan.json` via `cues`: `[{asset, at, offsetMs?, gainDb?, maxSec?, play?, fadeInSec?, fadeOutSec?, endsAtCut?, track?, crossfadeSec?}]`
+(the fade fields: `references/sound.md` "Fades").
 `at` is `"start"`, `"end"`, or `"word:<text>"` (the first word of the line's caption containing
 `<text>`). `play` is `"sound"`, `"picture"`, or `"both"` — default `"sound"` for role `sfx`,
 `"both"` for role `reaction`.

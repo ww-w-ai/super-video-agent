@@ -173,15 +173,29 @@ export function fitAllLines(baseLines, dubLines, clipDurations, filmDuration, ma
     .filter(({ fit }) => fit.longGap)
     .map(({ slot, fit }) => ({ id: slot.id, gapSec: fit.breathSec, maxBreathSec }));
 
-  const lines = fits.map(({ slot, dubLine, fit }) => ({
-    id: slot.id,
-    text: dubLine.text,
-    start: slot.start,
-    end: slot.start + fit.actualDurationSec,
-    atempoFactor: fit.atempoFactor,
-    words: shiftAndScaleWords(dubLine.words, dubLine.start, fit.atempoFactor, slot.start),
-  }));
+  const lines = fits.map(({ slot, dubLine, fit }) => {
+    const start = slot.start + placedLeadSec(dubLine, fit, slot);
+    return {
+      id: slot.id,
+      text: dubLine.text,
+      start,
+      end: start + fit.actualDurationSec,
+      atempoFactor: fit.atempoFactor,
+      words: shiftAndScaleWords(dubLine.words, dubLine.start, fit.atempoFactor, start),
+    };
+  });
   return { ok: true, lines, breathWarnings, longGaps };
+}
+
+/**
+ * How long after the slot start the trimmed clip starts: the lead trimmed off its head (as heard
+ * after the speed change), so the speech stays where the voice's own timings put it. Never more
+ * than the room left in the slot, so a line does not run into the next one.
+ */
+function placedLeadSec(dubLine, fit, slot) {
+  const lead = (dubLine.leadTrimSec || 0) / fit.atempoFactor;
+  const room = slot.end - slot.start - fit.actualDurationSec;
+  return Math.max(0, Math.min(lead, room));
 }
 
 /**

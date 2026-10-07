@@ -7,6 +7,7 @@
 import { ffmpeg, probeDuration } from "./ffmpeg.mjs";
 import { decodeMonoPcm, rmsWindow, SILENCE_THRESHOLD_DB } from "./audio-analysis.mjs";
 import { trimEdgeSilence } from "./dub-timing.mjs";
+import { FADE_IN_SEC, FADE_OUT_SEC } from "./line-split.mjs";
 
 export const CLIP_HEAD_PAD_SEC = 0.05;
 export const CLIP_TAIL_PAD_SEC = 0.3;
@@ -50,12 +51,20 @@ export function voicedSpanWithPads(windows, clipDurationSec, opts = {}) {
 export async function trimClipToVoice(srcPath, outPath, opts = {}) {
   const sourceDurationSec = await probeDuration(srcPath);
   const range = voicedSpanWithPads(await measureEdgeEnvelope(srcPath), sourceDurationSec, opts);
+  const trimmedDurationSec = range.trimmedEndSec - range.trimmedStartSec;
   // Output-side -ss/-to (after -i): slower than input-side seeking, but sample-accurate.
-  await ffmpeg(["-y", "-i", srcPath, "-ss", String(range.trimmedStartSec), "-to", String(range.trimmedEndSec), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", outPath]);
+  await ffmpeg(["-y", "-i", srcPath, "-ss", String(range.trimmedStartSec), "-to", String(range.trimmedEndSec), ...edgeFadeArgs(trimmedDurationSec), "-ar", "48000", "-ac", "1", "-c:a", "pcm_s16le", outPath]);
   return {
     leadTrimSec: range.leadTrimSec,
     tailTrimSec: range.tailTrimSec,
-    trimmedDurationSec: range.trimmedEndSec - range.trimmedStartSec,
+    trimmedDurationSec,
     sourceDurationSec,
   };
+}
+
+/** ffmpeg args for a short fade-in at the head and fade-out at the end of a trimmed clip, so the cut never clicks. */
+export function edgeFadeArgs(durationSec) {
+  if (!(durationSec > FADE_IN_SEC + FADE_OUT_SEC)) return [];
+  const out = (durationSec - FADE_OUT_SEC).toFixed(6);
+  return ["-af", `afade=t=in:st=0:d=${FADE_IN_SEC},afade=t=out:st=${out}:d=${FADE_OUT_SEC}`];
 }

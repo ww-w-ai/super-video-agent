@@ -552,7 +552,10 @@
   //                 `variant` (the pool index) and `sound` (an id): the least-used variant of its kind that
   //                 is not the one just before it of that kind, and, among equals, not the one before that;
   //                 ties go round-robin from a start index derived from `seed` and the kind (same seed,
-  //                 same assignment). A kind without a pool is left alone.
+  //                 same assignment). A kind without a pool is left alone. A cue with
+  //                 `pin: {variant, holds, holdsKind?}` takes pool variant `variant` of its own kind and
+  //                 takes the place of variant `holds` of `holdsKind` (default its own kind) in the
+  //                 rotation, so every other cue keeps the sound it had before the cue was changed.
   //   buffer(cue, sampleRate, files)  the cue's samples (cached per sound and rate); `files` maps a
   //                 variant's file name to {rate, data: Float32Array} the page loaded. null when the cue has
   //                 no assigned variant (the caller falls back to ReelAudio.sfx[kind]).
@@ -563,10 +566,27 @@
     function assign(cues) {
       const used = {};
       const last = {};
+      // A pinned cue keeps the sound it was given and counts as the held variant in the rotation,
+      // so replacing one hit does not change the sound of the cues after it.
+      function pinCue(c) {
+        const pin = c.pin;
+        const own = pools[c.kind];
+        if (own && own[pin.variant]) {
+          c.variant = pin.variant;
+          c.sound = variantId(c.kind, pin.variant, own[pin.variant]);
+        }
+        const heldKind = pin.holdsKind || c.kind;
+        const held = pools[heldKind];
+        if (!held || !held[pin.holds]) return;
+        const id = variantId(heldKind, pin.holds, held[pin.holds]);
+        used[id] = (used[id] || 0) + 1;
+        last[heldKind] = [id, (last[heldKind] || [null])[0]];
+      }
       cues
         .map((c, i) => ({ c, i }))
         .sort((a, b) => a.c.at - b.c.at || a.i - b.i)
         .forEach(({ c }) => {
+          if (c.pin) return pinCue(c);
           const pool = pools[c.kind];
           if (!pool || !pool.length) return;
           const prev = last[c.kind] || [null, null];

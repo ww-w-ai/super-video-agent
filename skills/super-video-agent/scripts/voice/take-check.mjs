@@ -1,11 +1,13 @@
-// Facts about a take that the STT check cannot hear. Pure: samples in, facts out; nothing here
-// stops a run (references/voice.md). Two checks:
-//  - findClipDefects: a cut or swallowed start (HEAD), a level drop inside the line (DIP), a silence
-//    inside the voiced span (PAUSE).
+// Facts about a take that the STT check cannot hear. Pure: samples in, facts out; the caller
+// reports them and never stops a run (references/voice.md). Two checks:
+//  - findClipDefects: a start that is cut or carries the previous line's end (HEAD) and a line that stops at
+//    its own loudness (TAIL), both judged by perceived level (perceived-level.mjs) and together the gate
+//    (waveformFlag); a level drop inside the line (DIP); a silence inside the voiced span (PAUSE).
 //  - pitchTrack / endContour / wordContours: where the voice's pitch goes at the end of a line and
 //    across each word. A tool can measure the contour; whether it is the right one for the language
 //    (a question's rise, a tone, a Vietnamese tone contour) is the reader's judgement.
 import { SILENCE_THRESHOLD_DB } from "../lib/audio-analysis.mjs";
+import { edgeAudibility } from "../lib/perceived-level.mjs";
 
 const ENV_HOP_SEC = 0.01;
 /** HEAD: the voiced span's first 150 ms. */
@@ -94,12 +96,15 @@ function dipFacts(db, span, medianDb) {
 }
 
 /**
- * HEAD / DIP / PAUSE facts of one clip (mono samples). Null when the clip holds no sound.
+ * HEAD / TAIL / DIP / PAUSE facts of one clip (mono samples). Null when the clip holds no sound.
+ * `edges` is the perceived-level reading of the clip's start and end (perceived-level.mjs
+ * edgeAudibility): HEAD and TAIL are the gate, from it. `mask` raises the floor at an edge to the level
+ * of what plays under the clip (the mix's bed), when the caller has one.
  * @param {Float32Array} samples
  * @param {number} rate
- * @returns {{head:{firstDb:number, loudestDb:number, abrupt:boolean, weak:boolean}, dips:{atSec:number, sec:number}[], pauses:{atSec:number, sec:number}[]}|null}
+ * @param {{headMaskLufs?:number, tailMaskLufs?:number}} [mask]
  */
-export function findClipDefects(samples, rate) {
+export function findClipDefects(samples, rate, mask = {}) {
   const db = envelopeDb(samples, rate);
   if (!db.length) return null;
   const peakDb = percentile(db, 0.95);
@@ -109,17 +114,35 @@ export function findClipDefects(samples, rate) {
   const medianDb = median(voiced);
   return {
     head: headFacts(db, span, peakDb),
+    edges: edgeAudibility(samples, rate, mask),
     dips: dipFacts(db, span, medianDb),
     pauses: runsOf(db, span.first, span.last, (v) => v <= SILENCE_THRESHOLD_DB, INNER_PAUSE_SEC),
   };
+}
+
+/**
+ * The gate result of a clip's facts: "TAIL" when the line's sound stops at about the line's own
+ * loudness (a cut), "HEAD" when audible sound near the line's loudness is already there in the first
+ * 15 ms (a cut start, or the end of the previous line); else null. Perceived-level evidence only: the
+ * speech-to-text check judges whether the words came out wrong and never clears this.
+ * @returns {"TAIL"|"HEAD"|null}
+ */
+export function waveformFlag(defects) {
+  const edges = defects && defects.edges;
+  if (!edges) return null;
+  if (edges.tail.cut) return "TAIL";
+  return edges.head.abrupt ? "HEAD" : null;
 }
 
 /** One short phrase per defect found, empty when the clip is clean. */
 export function describeDefects(defects) {
   if (!defects) return [];
   const out = [];
+  const edges = defects.edges;
   if (defects.head.abrupt) out.push(`HEAD abrupt (first 10 ms already ${defects.head.firstDb} dB: the start may be cut)`);
   if (defects.head.weak) out.push(`HEAD weak (loudest 10 ms of the first 150 ms is ${defects.head.loudestDb} dB: the start may be swallowed)`);
+  if (edges && edges.head.abrupt) out.push(`HEAD cut (sound ${Math.abs(edges.head.relLine)} LU under the line's loudness is already audible at ${(edges.head.audibleAtSec * 1000).toFixed(0)} ms: the start is cut, or carries the end of the previous line)`);
+  if (edges && edges.tail.cut) out.push(`TAIL cut (the sound stops ${Math.abs(edges.tail.relLine)} LU under the line's loudness at ${(edges.tail.audibleUntilSec * 1000).toFixed(0)} ms: a natural release dies away well under it)`);
   for (const d of defects.dips) out.push(`DIP ${d.sec.toFixed(2)} s quiet at ${d.atSec.toFixed(2)} s`);
   for (const p of defects.pauses) out.push(`PAUSE ${p.sec.toFixed(2)} s of silence at ${p.atSec.toFixed(2)} s`);
   return out;

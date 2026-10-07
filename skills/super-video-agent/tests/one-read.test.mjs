@@ -38,24 +38,24 @@ test("wordsToLines: null when the words do not spell the text, miss a boundary, 
   assert.equal(wordsToLines([W(" ", 0, 0.1), W("가.", 0.1, 0.5), W("나.", "x", 1)], ["가.", "나."]), null);
 });
 
-test("planCuts: timestamps cut midway through the gap between lines", () => {
+test("planCuts: timestamps let a clip run to 20 ms before the next line's first word", () => {
   const samples = tones(3.4, [[0.1, 1.2], [1.8, 3.2]]);
   const words = [W("안녕", 0.1, 0.6), W("하세요.", 0.6, 1.2), W("반갑습니다!", 1.8, 3.2)];
   const plan = planCuts({ samples, sr: SR, texts: ["안녕 하세요.", "반갑습니다!"], words });
   assert.equal(plan.by, "timestamps");
-  assert.ok(Math.abs(plan.spans[0].to - 1.5) < 1e-9, `first cut ${plan.spans[0].to}`);
+  assert.ok(Math.abs(plan.spans[0].to - 1.78) < 1e-9, `first cut ${plan.spans[0].to}`);
   assert.ok(Math.abs(plan.spans[1].from - 1.7) < 1e-9, "a clip starts 0.1 s before its first word");
   assert.equal(plan.spans[1].to, 3.4);
   assert.deepEqual(plan.edges, [{ start: 0.1, end: 1.2 }, { start: 1.8, end: 3.2 }]);
 });
 
-test("planCuts: no words falls back to the silence between lines", () => {
+test("planCuts: no words falls back to the silences between lines", () => {
   const samples = tones(3.4, [[0.1, 1.2], [1.8, 3.2]]);
   const plan = planCuts({ samples, sr: SR, texts: ["안녕 하세요.", "반갑습니다!"], words: undefined });
   assert.equal(plan.by, "silence");
   assert.equal(plan.lineWords, null);
   assert.ok(Math.abs(plan.edges[0].end - 1.2) < 0.03 && Math.abs(plan.edges[1].start - 1.8) < 0.03);
-  assert.ok(Math.abs(plan.spans[0].to - 1.5) < 0.03, `cut ${plan.spans[0].to}`);
+  assert.ok(Math.abs(plan.spans[0].to - 1.78) < 0.03, `cut ${plan.spans[0].to}`);
 });
 
 test("planCuts: words that do not map fall back to silence", () => {
@@ -135,7 +135,7 @@ test("typecast synthBatch: one request, voice emotion, clips cut by the returned
   assert.equal(res[1].wordsRelative, true);
   const clip = await decodeMonoPcm(res[1].wavPath, SR);
   const sec = clip.length / SR;
-  assert.ok(Math.abs(sec - (1.5 + 0.3)) < 0.05, `l2 clip is ${sec}s: from 1.7 s to its last word end 3.2 s plus 0.3 s`);
+  assert.ok(Math.abs(sec - (1.5 + 0.2 + 0.3)) < 0.05, `l2 clip is ${sec}s: from 1.7 s to its last word end 3.2 s, 0.2 s of room and the 0.3 s tail`);
 });
 
 test("typecast synthBatch: voiceCfg.emotion applies to the whole request", async (t) => {
@@ -217,7 +217,7 @@ test("fish synthBatch: one request, cut at the silences, no words returned", asy
   assert.equal(res[0].words, undefined);
   const clip = await decodeMonoPcm(res[0].wavPath, SR);
   const sec = clip.length / SR;
-  assert.ok(Math.abs(sec - (1.2 + 0.3)) < 0.06, `l1 clip is ${sec}s: speech to 1.2 s plus 0.3 s`);
+  assert.ok(Math.abs(sec - (1.2 + 0.2 + 0.3)) < 0.06, `l1 clip is ${sec}s: speech to 1.2 s, 0.2 s of room and the 0.3 s tail`);
 });
 
 test("fish synthBatch: audio without a break between lines is re-sent one line per request", async (t) => {

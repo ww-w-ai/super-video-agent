@@ -24,6 +24,7 @@ import {
 } from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
+import { cueFadeFields } from "./lib/cues.mjs";
 import { DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import {
   computeSegments,
@@ -2107,7 +2108,7 @@ async function resolveSoundCues(pool, dir) {
     const playable = Math.max(0.05, clipDur - leadSec);
     const trimSec = cue.maxSec ? Math.min(cue.maxSec, playable) : playable;
     const peakDb = await probePeakDb(absPath, leadSec + trimSec);
-    resolved.push({ absPath, atSec: cue.at, gainDb: cue.gainDb, trimSec, peakDb, leadSec });
+    resolved.push({ absPath, atSec: cue.at, gainDb: cue.gainDb, trimSec, peakDb, leadSec, ...cueFadeFields(cue) });
   }
   return resolved;
 }

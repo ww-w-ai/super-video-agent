@@ -101,6 +101,19 @@
         "emotionIntensity": { "type": "number", "minimum": 0, "maximum": 2, "description": "typecast: emotion_intensity (default 1)." },
         "removeSilenceMs": { "type": "integer", "minimum": 0, "maximum": 1000, "description": "typecast: cap detected silence at this retained duration. Omit to disable. For existing audio, use audio-edit.mjs locally instead of regenerating." },
         "voiceId": { "type": "string" },
+        "cut": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Margins of the per-line cut of a joined request (seconds); defaults in scripts/lib/line-split.mjs DEFAULT_CUT.",
+          "properties": {
+            "headKeepSec": { "type": "number", "minimum": 0, "description": "A clip starts this long before its first word (default 0.1)." },
+            "minTailSec": { "type": "number", "minimum": 0, "description": "A clip ends at least this long after its last word when the gap allows (default 0.2)." },
+            "maxTailSec": { "type": "number", "minimum": 0, "description": "A clip ends at most this long after its last word (default 0.6)." },
+            "guardSec": { "type": "number", "minimum": 0, "description": "A clip stops this long before the next line's first word (default 0.02)." },
+            "fadeInSec": { "type": "number", "minimum": 0, "description": "Fade-in at the head (default 0.02)." },
+            "fadeOutSec": { "type": "number", "minimum": 0, "description": "Fade-out at the cut (default 0.03)." }
+          }
+        },
         "rate": { "type": "number", "exclusiveMinimum": 0, "description": "Speech speed (ffmpeg atempo, 0.8-1.3). Unset on a 9:16 film: 1.1." },
         "model": {
           "type": "string",
@@ -297,7 +310,12 @@
                   "type": "string",
                   "enum": ["sound", "picture", "both"],
                   "description": "Default: \"sound\" for role sfx, \"both\" for role reaction."
-                }
+                },
+                "fadeInSec": { "type": "number", "minimum": 0, "description": "Fade-in length in seconds; default none." },
+                "fadeOutSec": { "type": "number", "minimum": 0, "description": "Fade-out length in seconds; default 0.03, or 0.6 (at most half the cue) with endsAtCut." },
+                "endsAtCut": { "type": "boolean", "description": "The cue's sound ends at a picture cut: its default fade-out is 0.6 s." },
+                "track": { "type": "string", "minLength": 1, "description": "Cues on one track can crossfade (crossfadeSec)." },
+                "crossfadeSec": { "type": "number", "exclusiveMinimum": 0, "description": "With a track: this cue runs this long past the start of the next cue on the track and fades out over it while that cue fades in." }
               }
             }
           }

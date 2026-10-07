@@ -40,12 +40,12 @@ test("withQuietTail: minEnd keeps a short last word after a pause", () => {
   const clip = tones(2.2, [[0.1, 1.0], [1.3, 1.5]]);
   assert.ok(speechEnd(clip, SR) / SR < 1.05, "without minEnd the short word reads as a burst");
   const kept = withQuietTail(clip, SR, TAIL_SEC, 1.5 * SR);
-  assert.ok(Math.abs(kept.samples.length / SR - 1.5 - TAIL_SEC) < 0.001);
+  assert.ok(Math.abs(kept.samples.length / SR - 1.5 - 0.2 - TAIL_SEC) < 0.001, "the last word, 0.2 s of room, then the quiet tail");
 });
 
-test("cutSpans: cut midway through each gap; the last line runs to the end", () => {
+test("cutSpans: a clip runs to 20 ms before the next line's speech; the last line runs to the end", () => {
   const spans = cutSpans([{ start: 0.2, end: 1.0 }, { start: 1.6, end: 2.4 }], 3.0);
-  assert.deepEqual(spans, [{ from: 0.1, to: 1.3 }, { from: 1.5, to: 3.0 }]);
+  assert.deepEqual(spans, [{ from: 0.1, to: 1.58 }, { from: 1.5, to: 3.0 }]);
 });
 
 test("speechEnd: a short burst after a quiet gap is noise, not speech", () => {
@@ -59,11 +59,11 @@ test("speechEnd: a short gap inside speech is not a burst boundary", () => {
   assert.ok(speechEnd(clip, SR) / SR > 1.85);
 });
 
-test("withQuietTail: exactly TAIL_SEC of silence after speech; cut only when sound reaches the end", () => {
+test("withQuietTail: 0.2 s of room and exactly TAIL_SEC of silence after speech; cut only when sound reaches the end", () => {
   const clean = withQuietTail(tones(2.0, [[0.1, 1.2]]), SR);
   assert.equal(clean.cut, false);
   const endSec = speechEnd(clean.samples, SR) / SR;
-  assert.ok(Math.abs(clean.samples.length / SR - endSec - TAIL_SEC) < 0.001);
+  assert.ok(Math.abs(clean.samples.length / SR - endSec - 0.2 - TAIL_SEC) < 0.001);
   assert.equal(withQuietTail(tones(1.0, [[0.1, 1.0]]), SR).cut, true);
 });
 

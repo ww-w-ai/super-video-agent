@@ -331,7 +331,8 @@ export function uniqueTempPath(p) {
  * leaves packets a few ticks off the grid at joins and the last frame held
  * long, and a later filter (dub.mjs's caption overlay) then makes one frame
  * more than the picture has. The parts must share codec, size and encoder
- * headers (sameStream); no frame is decoded. The concat demuxer does not
+ * headers (sameStream); no frame is decoded, and the copied packets stay
+ * byte for byte the parts' own (the demuxer's auto_convert is off). The concat demuxer does not
  * rescale between track time bases, so a part on another time base is first
  * re-labelled (a packet copy) to the first part's.
  */
@@ -342,7 +343,8 @@ export async function concatMp4(segmentPaths, outPath, fps) {
   try {
     const files = await unifyTimescale(segmentPaths, relabelled);
     fs.writeFileSync(listPath, files.map((p) => `file '${p.replace(/'/g, "'\\''")}'`).join("\n") + "\n", "utf8");
-    await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listPath, "-map", "0:v", "-c", "copy", joinedPath]);
+    // auto_convert 0: the demuxer does not rewrite the copied packets (it adds parameter sets to every keyframe otherwise).
+    await ffmpeg(["-y", "-f", "concat", "-safe", "0", "-auto_convert", "0", "-i", listPath, "-map", "0:v", "-c", "copy", joinedPath]);
     await snapToFrameGrid(joinedPath, outPath, fps);
   } finally {
     for (const f of [listPath, joinedPath, ...relabelled]) fs.rmSync(f, { force: true });
