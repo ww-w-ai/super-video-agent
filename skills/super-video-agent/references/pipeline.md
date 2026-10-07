@@ -1067,3 +1067,16 @@ the base picture, bed and timing pair, even when a language picture exists.
 Translated captions still come from the dub. The command reports the retained
 picture text. Without the flag, cross-language `in:"scene"` spans still require a
 language picture. Pair checks remain mandatory.
+
+## Keeping assembled copies for a later span edit
+
+When an assembled clip intentionally differs from the current page, consider
+`render.mjs <reel-dir> --assemble <edl.json> --keep-assembled-copies`.
+It reports the copied probe differences and keeps the frame ranges in the segment
+cache. A later `--span` can draw changed seconds and copy the rest. Without this
+option, a mismatched segment stays outside the cache and needs a render first.
+
+Retained metadata records that the copy differs from the page. It is not proof of
+page equivalence. Normal probed renders redraw it. A partial span keeps this
+provenance while any old frames remain. A whole-segment replacement clears it.
+Keep the same timeline, frame rate, size and render quality for the later span.

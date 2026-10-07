@@ -90,7 +90,7 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               (every file of the reel dir outside out/, the segment cache, the
               options) prints it without opening the page ("page opens: 0").
               --no-plan-cache probes again. Real renders never read the cache.
---assemble <edl.json>
+--assemble <edl.json> [--keep-assembled-copies]
               builds the film from existing runs of frames, no page frame is
               rendered. {"entries": [...]} in film order, each entry
               {"segment": "<id>"} (a cached segment mp4 of this quality) or
@@ -277,10 +277,12 @@ export async function main(argv) {
   let spans = null;
   let assemble = null;
   const bedOnly = !!flags["bed-only"];
+  const keepAssembledCopies = flags["keep-assembled-copies"] === true;
   try {
     if (flags["fix-picture-duration"] !== undefined && (!noCaptions || flags.stub !== undefined)) {
       throw new Error("--fix-picture-duration fixes the length of a picture render's timings; use it with --no-captions and no --stub");
     }
+    if (flags["keep-assembled-copies"] !== undefined && (!keepAssembledCopies || flags.assemble === undefined)) throw new Error("--keep-assembled-copies is a boolean option for --assemble only");
     spans = flags.span !== undefined ? parseSpanFlag(flags.span) : null;
     if (spans) assertWholeFilmFlags("span", flags);
     if (flags.assemble !== undefined) {
@@ -328,7 +330,7 @@ export async function main(argv) {
     const probeAll = !!flags["probe-all"];
     const fixPictureDuration = !!flags["fix-picture-duration"];
     const planCache = flags["no-plan-cache"] === undefined;
-    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, planCache });
+    const result = await render({ dir, paths, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, planCache, keepAssembledCopies });
     const elapsed = (Date.now() - started) / 1000;
     process.stdout.write(summaryLine(result, elapsed));
   } catch (e) {
@@ -445,7 +447,7 @@ function readPicturePayload(dir, lang) {
   return payload;
 }
 
-export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, stubSegments = 1, insert = null, lang = null, handleSec = 0, probeAll = false, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, planCache = true }) {
+export async function render({ dir, paths, preview, workers = 1, only, plan = false, noCaptions = false, stubSec = null, stubSegments = 1, insert = null, lang = null, handleSec = 0, probeAll = false, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, planCache = true, keepAssembledCopies = false }) {
   const picture = readPicturePayload(dir, lang);
   if (!plan) reportStaleTemps(paths.outDir);
   const wholeFilm = !insert && !handleSec && !spans && !assemble && !bedOnly;
@@ -463,7 +465,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
     warm: warmShotsOf,
   });
   try {
-    const result = await renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, cacheKey });
+    const result = await renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans, fixPictureDuration, assemble, bedOnly, cacheKey, keepAssembledCopies });
     return { ...result, pageOpens: pool.opened };
   } finally {
     await pool.closeAll();
@@ -471,7 +473,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
   }
 }
 
-async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, cacheKey = null }) {
+async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, cacheKey = null, keepAssembledCopies = false }) {
   const meta = await probeMeta(pool);
   const fps = meta.fps;
   const duration = meta.duration;
@@ -500,7 +502,7 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
     return await renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, lang, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
   }
   if (assemble) {
-    return await renderAssembled({ dir, paths, pool, segments, segDir, edlPath: assemble, plan, fps, crf, preset: cPreset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
+    return await renderAssembled({ dir, paths, pool, segments, segDir, edlPath: assemble, plan, fps, crf, preset: cPreset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality, keepAssembledCopies });
   }
   const pending = onlyIds ? validateOnlyOrThrow({ segments, onlyIds, segDir }) : [];
 
@@ -1199,7 +1201,7 @@ export function planSpanSplice({ segments, ranges }) {
 }
 
 /** Stops (throws) naming every segment the span render cannot build on: never rendered, or its frame range moved. */
-function assertSpanBase({ segments, touched, segDir, fps, width, height }) {
+export function assertSpanBase({ segments, touched, segDir, fps, width, height }) {
   const wholeNew = new Set(touched.filter((t) => t.pieces.every((p) => p.kind === "new")).map((t) => t.id));
   const bad = [];
   for (const s of segments) {
@@ -1281,7 +1283,8 @@ async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, 
     const probes = [];
     for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
     const picture = spanPictureReads({ stored, sessionReads: await sessionPictureReads(session), pieces: touched.pieces });
-    writeJson(segJsonPath(segDir, id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) });
+    const assembledCopy = stored?.assembledCopy && touched.pieces.some(p => p.kind === "old") ? { assembledCopy: stored.assembledCopy } : {};
+    writeJson(segJsonPath(segDir, id), { ...assembledCopy, frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) });
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
@@ -1610,13 +1613,21 @@ async function gateAssembled({ outPath, checks, expectedFrames, fps }) {
   return hashed;
 }
 
+/** Explicitly retained copies keep provenance without claiming they match the page. */
+export function assembledSegmentMeta({ segment, fps, width, height, items, bad, keepAssembledCopies = false }) {
+  if (bad.length && !keepAssembledCopies) return null;
+  return { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height,
+    probes: items.map(i => sha256Hex(i.image)),
+    ...(bad.length ? { assembledCopy: { pageMismatch: true, probes: bad } } : {}) };
+}
+
 /**
  * After an assembly the film's own segments are cut back out of the track
  * (packet copy where the cut is on a keyframe) and their cache entries
  * rewritten with the page's probe hashes, so a later render, --span or --only
  * finds every segment current at its new place.
  */
-async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf, preset, width, height }) {
+async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf, preset, width, height, keepAssembledCopies = false }) {
   await pool.warmFor(segments.flatMap((s) => s.shotIds));
   await pool.use(async (session) => {
     for (const segment of segments) {
@@ -1631,15 +1642,17 @@ async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf
       const bad = await clipVersusPage({ mp4: mp4Path, items, width, height });
       if (bad.length) {
         // No meta = "never rendered": the next render draws this segment instead of trusting frames that are not the page's.
-        process.stderr.write(`warning: segment ${segment.id}: ${bad.length} of ${items.length} copied probe frames differ from what the page draws now (${bad.map((b) => `clip frame ${b.index}: ${(b.fraction * 100).toFixed(1)}% of pixels`).join("; ")}); not recorded as current, the next render draws it again\n`);
-        continue;
+        process.stderr.write(`warning: segment ${segment.id}: ${bad.length} of ${items.length} copied probe frames differ from what the page draws now (${bad.map((b) => `clip frame ${b.index}: ${(b.fraction * 100).toFixed(1)}% of pixels`).join("; ")}); copied frames are not page-current; without --keep-assembled-copies the next render draws them again\n`);
+        if (!keepAssembledCopies) continue;
+        process.stderr.write(`note: segment ${segment.id}: keeping copied frames for explicit --span edits; a normal probed render will redraw this segment\n`);
       }
-      writeJson(segJsonPath(segDir, segment.id), { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes: items.map((i) => sha256Hex(i.image)) });
+      const meta = assembledSegmentMeta({ segment, fps, width, height, items, bad, keepAssembledCopies });
+      if (meta) writeJson(segJsonPath(segDir, segment.id), meta);
     }
   });
 }
 
-async function renderAssembled({ dir, paths, pool, segments, segDir, edlPath, plan, fps, crf, preset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
+async function renderAssembled({ dir, paths, pool, segments, segDir, edlPath, plan, fps, crf, preset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality, keepAssembledCopies = false }) {
   const resolved = await resolveEdlEntries({ entries: parseEdl(readJson(edlPath)), dir, segDir, fps });
   const expectedFrames = segments[segments.length - 1].frameEnd - segments[0].frameStart;
   const edlFrames = resolved.reduce((n, r) => n + r.frames, 0);
@@ -1673,7 +1686,7 @@ async function renderAssembled({ dir, paths, pool, segments, segDir, edlPath, pl
   }
   try {
     const result = await finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, segments, decisions, fps, noCaptions, stubSec, stubSegments, lang: null, quality, fixPictureDuration });
-    await refreshAfterAssemble({ pool, segments, segDir, videoPath: cacheSourcePath, fps, crf, preset, width: targetWidth, height: targetHeight });
+    await refreshAfterAssemble({ pool, segments, segDir, videoPath: cacheSourcePath, fps, crf, preset, width: targetWidth, height: targetHeight, keepAssembledCopies });
     return result;
   } finally {
     fs.rmSync(cacheSourcePath, { force: true });

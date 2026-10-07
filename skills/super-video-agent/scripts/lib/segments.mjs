@@ -81,6 +81,7 @@ export function probeFrameIndices(frameStart, frameEnd) {
 export function decideSegmentReuse({ stored, current, mp4Exists }) {
   if (!mp4Exists) return { reuse: false, reason: "segment .mp4 missing" };
   if (!stored) return { reuse: false, reason: "no stored segment metadata" };
+  if (stored.assembledCopy?.pageMismatch) return { reuse: false, reason: "assembled copy differs from the page; retained for explicit span edits only" };
   if (stored.frameStart !== current.frameStart || stored.frameEnd !== current.frameEnd) {
     return {
       reuse: false,
@@ -137,7 +138,7 @@ export function decideLangSegment({ storedLang, storedBase, current, langMp4Exis
  * @returns {{action: "REUSE"|"COPY", reason: string}|null}
  */
 export function decideLangUnprobed({ storedBase, storedLang, current, strings, baseMp4Exists, langMp4Exists }) {
-  if (!storedBase || !baseMp4Exists || !sameShape(storedBase, current)) return null;
+  if (!storedBase || storedBase.assembledCopy?.pageMismatch || storedLang?.assembledCopy?.pageMismatch || !baseMp4Exists || !sameShape(storedBase, current)) return null;
   const reads = storedBase.picture;
   if (!reads || !Array.isArray(reads.keys) || reads.lang || reads.all) return null;
   const set = strings && typeof strings === "object" ? strings : {};
