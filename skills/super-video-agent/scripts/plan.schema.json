@@ -154,7 +154,7 @@
         },
         "lead": {
           "oneOf": [{ "type": "number", "exclusiveMinimum": 0 }, { "type": "boolean", "enum": [true] }],
-          "description": "Opening before the first story line, in seconds; true = 3 s; absent = no lead. Every story line starts that much later and timings.json records `lead`. The lead must carry sound: a music bed from t=0 (meta.sound.bed), a sound cue inside it, or an opening line marked `lead: true` (validate-plan.mjs fails a lead with none)."
+          "description": "Opening before the first story line, in seconds; true = 3 s; absent = no lead. Every story line starts that much later and timings.json records `lead`. The lead must carry sound: a music bed from t=0 (meta.sound.bed), a sound cue inside it, an opening line marked `lead: true`, or sound the page makes itself (meta.sound.page) (validate-plan.mjs fails a lead with none)."
         },
         "overlay": {
           "type": "object",
@@ -171,6 +171,7 @@
           "additionalProperties": false,
           "properties": {
             "bed": { "type": "boolean", "description": "true when the page's music bed plays from t=0. It counts as the lead's sound (meta.lead)." },
+            "page": { "type": "boolean", "description": "true when the page itself makes sound inside the lead (its SFX_CUES kit or custom cues, or its own sound path with sync marks). It counts as the lead's sound (meta.lead); cue-check.mjs --page lists the page's marks with their times." },
             "sfxDuckDb": { "type": "number", "default": -2.5, "description": "Gain (dB) applied to library cue sounds while a narration line speaks, 0.8 s ramps, narration gaps under 1.5 s stay ducked (references/sound.md \"Mix\"); 0 turns ducking off. The music bed keeps its own -10dB duck." }
           }
         }

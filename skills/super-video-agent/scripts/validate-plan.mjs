@@ -14,6 +14,7 @@ import { captionBreakReport } from "./lib/caption-breaks.mjs";
 import { leadErrors, leadSec } from "./lib/lead.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { withShortsRate, lineSpeed } from "./voice.mjs";
+import { GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "./lib/dub-fill.mjs";
 
 const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>] [--lead <sec>] [--starts]] [--listener]
 
@@ -61,6 +62,12 @@ doc/schema mismatch: <field>   a field the plan carries that the schema
 overlay keys (dub/<code>)      Reel.pictureText("key") and Reel.overlayText(overlay, "key")
                                keys found in reel.html and src/ that the dub's plan.json
                                meta.overlay (picture strings: meta.overlay.picture) lacks.
+                               Run on a reel folder it lists every dub; run on dub/<code> it
+                               reads the reel's page and lists that dub.
+planned pause over the fit rule   a line whose pauseAfterMs is longer than the dub fit rule allows
+                               as silence (the larger of 1.0 s and a quarter of its slot in
+                               voice/timings.json). Listed once the voice exists. The pause stays
+                               as planned: dub.mjs does not slow a line to shrink it.
 `;
 
 export async function main(argv) {
@@ -100,6 +107,8 @@ export async function main(argv) {
   }
   for (const fact of contractFacts(dir, schema, errors)) process.stdout.write(`${fact}\n`);
   if (!Array.isArray(plan.lines)) return;
+  // The fit rule judges the picture's slots, which are the base voice's timings, not a dub's own.
+  if (path.basename(path.dirname(dir)) !== "dub") for (const fact of plannedPauseFacts(plan, paths.timingsJson)) process.stdout.write(`${fact}\n`);
   const stale = staleSayWarnings(plan);
   if (stale.length) {
     process.stdout.write(`warning: ${stale.length} line(s) whose say differs from text (a say left from an older text?)\n`);
@@ -625,12 +634,54 @@ function readDubPlans(dir) {
   return out;
 }
 
+/**
+ * Planned pauses longer than the dub fit rule allows as silence (the larger of 1.0 s and a
+ * quarter of the line's slot), by line, measured on the slots in voice/timings.json. Facts only:
+ * dub.mjs keeps a planned pause as planned silence and does not slow the line to shrink it.
+ * Nothing is listed until the voice has been made.
+ * @param {{lines:object[]}} plan
+ * @param {string} timingsPath
+ * @returns {string[]}
+ */
+export function plannedPauseFacts(plan, timingsPath) {
+  let timings;
+  try {
+    timings = readJson(timingsPath);
+  } catch {
+    return [];
+  }
+  const lines = timings.lines || [];
+  const pauseById = new Map((plan.lines || []).map((l) => [l.id, l.pauseAfterMs || 0]));
+  const out = [];
+  lines.forEach((l, i) => {
+    const next = lines[i + 1];
+    const pause = (pauseById.get(l.id) || 0) / 1000;
+    if (!next || !pause) return;
+    const allowed = Math.max(GAP_MAX_FLOOR_SEC, GAP_MAX_SHARE * (next.start - l.start));
+    if (pause > allowed + 1e-9) out.push(`planned pause over the fit rule: "${l.id}" pauseAfterMs ${Math.round(pause * 1000)} is ${pause.toFixed(2)} s; the dub fit rule allows ${allowed.toFixed(2)} s of silence in its slot; dub.mjs keeps the pause as planned`);
+  });
+  return out;
+}
+
+/**
+ * The folder whose page is read and the dub plans to check. A dub folder (dub/<code>/ of a reel)
+ * is checked against its reel's page and is the only dub listed; any other folder is its own reel
+ * and every dub under it is listed.
+ */
+function pageAndDubs(dir) {
+  const parent = path.dirname(dir);
+  if (path.basename(parent) !== "dub") return { reelDir: dir, dubs: readDubPlans(dir) };
+  const reelDir = path.dirname(parent);
+  const code = path.basename(dir);
+  return { reelDir, dubs: readDubPlans(reelDir).filter((d) => d.code === code) };
+}
+
 /** Every contract fact for a reel folder: doc/schema mismatches and missing overlay keys. */
 function contractFacts(dir, schema, errors) {
   const skillDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-  const sources = pageSources(dir);
+  const { reelDir, dubs } = pageAndDubs(dir);
+  const sources = pageSources(reelDir);
   const out = docSchemaMismatches({ errors, schema, sources, docs: skillDocs(skillDir) });
-  const dubs = readDubPlans(dir);
   if (dubs.length && sources.length) {
     const keys = scanLabelKeys(sources);
     out.push(...missingOverlayKeys(keys, dubs));

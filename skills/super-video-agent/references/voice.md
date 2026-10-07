@@ -41,6 +41,13 @@ Hosted models (`meta.voice.model`):
 
 No provider documents a per-request minimum.
 
+**Listing voices.** `node scripts/voice.mjs --list-voices [<reel-dir>] [--lang <code>] [--provider
+typecast|elevenlabs]` prints the voices the provider's own list offers: id, name, gender, age, use,
+languages. `--lang` keeps the voices whose list names that language. When the provider's list has no
+language field (Typecast's does not; its model reads the language from the request), every voice is
+shown with a note, and the language comes from the line's language at synthesis. The key is read
+from the environment and never printed. The command lists facts; choosing a voice is the user's call.
+
 **One read per voice, cut per line.** Every provider makes all lines of one voice in one request
 (several when the text passes the provider's limit: 2,500 characters for ElevenLabs and Fish,
 2,000 for Typecast) and `voice.mjs` cuts it into one clip per line, so the voice keeps one read
@@ -289,6 +296,12 @@ so a clean check does not prove a name or a homophone was read the intended way
 | `SVA_STT_GROQ_MODEL` | the hosted model (default `whisper-large-v3-turbo`) |
 | `GROQ_API_KEY` | the key for engine `groq`; read from the environment and never printed; no key = the check is skipped |
 
+The mlx engine needs the `mlx-whisper` package in the Python that `SVA_STT_PYTHON` names
+(Apple silicon macOS). One route: `python3 -m venv <dir>`, then `<dir>/bin/pip install mlx-whisper`,
+then `SVA_STT_PYTHON=<dir>/bin/python`. Python 3.11 is a verified version; any version the mlx
+wheels list for the machine works. `setup.mjs --check` prints this route while the engine is not
+ready, and `--stt-models` only downloads models into an existing Python.
+
 Audio leaves the machine only when `SVA_STT_ENGINE=groq` is set. A line the second model answers
 keeps the transcript with the lower error rate, and the model that gave it is recorded in the
 line's `stt.model`. A model that is not downloaded skips the check with a note;
@@ -486,7 +499,10 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 
 - Every line is leveled to -16 LUFS integrated (true peak <= -1.5 dBTP), a single measured gain
   per line, before `narration.wav`/`timings.json` are built — set `meta.voice.levelLines: false`
-  to turn this off. `dub.mjs` levels each dub line's clip the same way before placing it.
+  to turn this off. `dub.mjs` levels each dub line's clip the same way before placing it. The
+  boost is capped at +12 dB so a very quiet take is not raised into noise; a line that hits the
+  cap stays under -16 LUFS, and `voice.mjs` and `dub.mjs` print `WARN: line "<id>" boost capped`
+  with how far under it stays.
 - Head 0.4 s, gap `meta.gapMs` (default 700 ms) between lines, tail 0.4 s. A line's own
   `pauseAfterMs` replaces the gap after it: short when the next line continues the thought, long
   at a scene change (`references/script-review.md`, "Narration that flows"). Changing pauses
@@ -495,7 +511,7 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   long before the line starts (a first line: after the head). It is recorded as `pauseBeforeSec`
   in `timings.json`, the silence gate lists it as planned, and a re-take is not charged for it.
 - Line start/end are measured from the synthesized audio. Word times are measured too, and always
-  carry the caption's words (`text`, "MCP를"), even where the voice read a respelling ("엠씨피를"):
+  carry the caption's words (key `w`, "MCP를"), even where the voice read a respelling ("엠씨피를"):
   ElevenLabs reports its own; for every other engine the speech-to-text check reports when each
   word was said, trimmed to where its sound starts and stops, so a pause shows as a gap between
   words.

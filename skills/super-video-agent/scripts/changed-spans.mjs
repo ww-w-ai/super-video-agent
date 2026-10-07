@@ -7,7 +7,7 @@ import { writeJson } from "./lib/reeldir.mjs";
 import { diffTimelines, spanFlag, edlFromRuns } from "./lib/timeline-diff.mjs";
 
 const HELP = `usage: changed-spans.mjs <old-timeline.json> <new-timeline.json> [--fps <n>] [--out <report.json>]
-                         [--edl-out <edl.json> --old-film <mp4> --new-film <mp4> [--reel <dir>]]
+                         [--edl-out <edl.json> --old-film <mp4> --new-film <mp4>[,<mp4>...] [--reel <dir>]]
 
 Diffs two timelines and reports which frames of the new film must be drawn and which can be copied from
 the old film. A timeline is voice/timings.json ({duration, fps?, lines:[{id, start, end, text, words?}]}) or a dump
@@ -25,7 +25,10 @@ Exit 0 whatever it finds; the report is facts, the decision to render or copy is
 --fps <n>        frames per second (default: the new timeline's "fps"; stops when neither gives one)
 --out <json>     also write the report (runs, removed, frames, span)
 --edl-out <json> write an --assemble EDL: keep runs from --old-film at their old frames, new runs from
-                 --new-film (an mp4 whose frame n is the new film's frame n, which holds the new frames)
+                 --new-film: an mp4 whose frame n is the new film's frame n, or draft clips under out/drafts/
+                 (render.mjs --only <id> --handle <sec>; several separated by commas). A draft's sidecar
+                 <name>.json says which film frame its first frame is (frameStart), so a new run [a,b) becomes
+                 clip frames [a-frameStart, b-frameStart). A new run that no clip holds stops the step.
 --reel <dir>     make the EDL's src paths relative to the reel dir (as --assemble reads them)
 `;
 
@@ -47,6 +50,22 @@ function relativeTo(reel, file) {
   return reel ? path.relative(abs(reel), abs(file)) : file;
 }
 
+/**
+ * The new film's clips from --new-film (one mp4, or several separated by commas). A draft has a sidecar
+ * <name>.json (render.mjs --only --handle) that says which frame of the new film its first frame is; a clip
+ * with no sidecar is taken as the new film itself (its frame n is the new film's frame n).
+ */
+function newClipsFrom(spec, reel) {
+  return spec.split(",").filter(Boolean).map((file) => {
+    const side = abs(file).replace(/\.mp4$/i, "") + ".json";
+    const src = relativeTo(reel, file);
+    if (!fs.existsSync(side)) return { src, frameStart: 0, frameEnd: Infinity };
+    const j = readTimeline(side);
+    if (!Number.isInteger(j.frameStart) || !Number.isInteger(j.frameEnd)) throw new Error(`${side} has no integer frameStart and frameEnd`);
+    return { src, frameStart: j.frameStart, frameEnd: j.frameEnd };
+  });
+}
+
 export function main(argv) {
   const { positional, flags } = parseArgs(argv);
   if (flags.help || flags.h) return printHelpAndExit(HELP, 0);
@@ -66,7 +85,7 @@ export function main(argv) {
       if (typeof flags["edl-out"] !== "string" || typeof flags["old-film"] !== "string" || typeof flags["new-film"] !== "string") {
         throw new Error("--edl-out <json> needs --old-film <mp4> and --new-film <mp4>");
       }
-      const edl = edlFromRuns(diff.runs, { oldFilm: relativeTo(flags.reel, flags["old-film"]), newFilm: relativeTo(flags.reel, flags["new-film"]) });
+      const edl = edlFromRuns(diff.runs, { oldFilm: relativeTo(flags.reel, flags["old-film"]), newClips: newClipsFrom(flags["new-film"], flags.reel) });
       writeJson(abs(flags["edl-out"]), edl);
       process.stdout.write(`wrote ${abs(flags["edl-out"])} (${edl.entries.length} entries)\n`);
     }

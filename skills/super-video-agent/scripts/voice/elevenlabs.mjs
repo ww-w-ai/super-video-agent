@@ -80,6 +80,20 @@ function settings(voice, voiceCfg) {
   return { apiKey, voiceId, model: (voiceCfg && voiceCfg.model) || DEFAULT_MODEL };
 }
 
+/**
+ * The voices the account can use, as the service lists them (page size 100). The key is sent in
+ * a header and never printed.
+ * @returns {Promise<object[]>}
+ */
+export async function listVoices() {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not set. Export it to list voices.");
+  const res = await fetch("https://api.elevenlabs.io/v2/voices?page_size=100", { headers: { "xi-api-key": apiKey } });
+  if (!res.ok) throw new Error(`ElevenLabs voice list failed: ${res.status} ${res.statusText}`);
+  const json = await res.json();
+  return json.voices || [];
+}
+
 async function requestSpeech({ apiKey, voiceId, model }, text) {
   const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/with-timestamps`, {
     method: "POST",

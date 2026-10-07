@@ -8,7 +8,9 @@
 // picture's pace in that language. Report only: dub.mjs still writes the
 // film either way (references/pipeline.md "Picture first"). The last
 // line's slot runs to the film's end under the end card, so it gets no gap
-// and no gap warning. No I/O.
+// and no gap warning. A pause the plan or the picture declared is planned silence and is not
+// a warning either. No I/O.
+import { allowedGapSec } from "./dub-timing.mjs";
 
 export const FULL_FILL_THRESHOLD = 1.0;
 /** Shortest gap that still leaves a breath (SKILL.md "Picture first": about 0.5 s). */
@@ -23,21 +25,24 @@ export const GAP_MAX_SHARE = 0.25;
 export const GAP_MAX_FLOOR_SEC = 1.0;
 
 /**
- * The allowed silence after a line in a slot of `slotDur` seconds.
+ * The allowed silence after a line in a slot of `slotDur` seconds. A pause the plan or the
+ * picture declared (`plannedGapSec`) is planned silence and widens the range to include it.
  * @param {number} slotDur
+ * @param {number} [plannedGapSec]
  * @returns {{min:number, max:number}}
  */
-export function gapRange(slotDur) {
-  return { min: GAP_MIN_SEC, max: Math.max(GAP_MAX_SHARE * slotDur, GAP_MAX_FLOOR_SEC) };
+export function gapRange(slotDur, plannedGapSec = 0) {
+  return { min: GAP_MIN_SEC, max: Math.max(GAP_MAX_SHARE * slotDur, GAP_MAX_FLOOR_SEC, plannedGapSec) };
 }
 
 /**
  * @param {{id:string, start:number, end:number, atempoFactor?:number}[]} fittedLines fitAllLines' `.lines`
  * @param {{id:string, start:number, end:number}[]} slots computeSlots' output, same ids as fittedLines
  * @param {{id:string, start:number, end:number}[]} [baseLines] picture.timings.json lines — gives each base line's own gap (shown for reference only)
+ * @param {Map<string,number>} [plannedGaps] id -> seconds of silence the plan or picture declared after that line (plannedGapMap)
  * @returns {{id:string, fill:number|null, atempoFactor:number, gapAfter:number|null, gapMin:number|null, gapMax:number|null, gapState:"ok"|"crammed"|"sparse"|null, baseGap:number|null, last:boolean, fillWarn:boolean, gapWarn:boolean, warn:boolean}[]}
  */
-export function reportLineFill(fittedLines, slots, baseLines = []) {
+export function reportLineFill(fittedLines, slots, baseLines = [], plannedGaps = null) {
   const slotList = slots || [];
   const slotById = new Map(slotList.map((s) => [s.id, s]));
   const lastSlotId = slotList.length ? slotList[slotList.length - 1].id : null;
@@ -49,7 +54,7 @@ export function reportLineFill(fittedLines, slots, baseLines = []) {
     const fill = slotDur != null && slotDur > 0 ? (line.end - line.start) / slotDur : null;
     const atempoFactor = line.atempoFactor ?? 1;
     const gapAfter = slot && !last ? slot.end - line.end : null;
-    const range = gapAfter != null ? gapRange(slotDur) : null;
+    const range = gapAfter != null ? gapRange(slotDur, allowedGapSec(plannedGaps, line.id)) : null;
     const gapState = range == null ? null : gapAfter < range.min ? "crammed" : gapAfter > range.max ? "sparse" : "ok";
     const baseGap = baseGapById.get(line.id) ?? null;
     const overFill = fill != null && fill > FULL_FILL_THRESHOLD;

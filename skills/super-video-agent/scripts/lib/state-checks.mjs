@@ -200,7 +200,7 @@ export function checkedNothingReasons({ frames, checks, hasLayerHook }) {
     out.push({ check: "text overlap", reason: "no frame had two texts on screen" });
   }
   if (checks.includes("glyphs") && !frames.some((f) => f.texts.some((t) => t.alpha >= VISIBLE_ALPHA && t.text.trim()))) {
-    out.push({ check: "glyph fallback", reason: "no text was drawn in any sampled frame" });
+    out.push({ check: "glyph fallback", reason: `no text was drawn in any sampled frame (text drawn once at load into an offscreen canvas is not seen: call fillText during seek() on a canvas in the document)` });
   }
   if (checks.includes("flicker") && frames.length < FLICKER_MAX_FRAMES + 1) {
     out.push({ check: "one-frame flicker", reason: `only ${frames.length} sampled frame${frames.length === 1 ? "" : "s"}; a flicker needs a frame on each side` });

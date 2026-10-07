@@ -29,8 +29,9 @@ function estimatedCueStart(line, offsetMs, lead, isLeadLine) {
 
 /**
  * Which kinds of sound a lead carries: `bed` (meta.sound.bed), `cue` (a line cue that sounds
- * before the first story line), `line` (a line marked lead: true).
- * @returns {{bed:boolean, cue:boolean, line:boolean}}
+ * before the first story line), `line` (a line marked lead: true), `page` (meta.sound.page: the
+ * page's own SFX cues sound inside the lead).
+ * @returns {{bed:boolean, cue:boolean, line:boolean, page:boolean}}
  */
 export function leadSound(plan) {
   const lead = leadSec(plan && plan.meta);
@@ -49,7 +50,8 @@ export function leadSound(plan) {
       if (inside) cue = true;
     }
   }
-  return { bed: !!(plan && plan.meta && plan.meta.sound && plan.meta.sound.bed === true), cue, line: leadLines(plan).length > 0 };
+  const sound = (plan && plan.meta && plan.meta.sound) || {};
+  return { bed: sound.bed === true, cue, line: leadLines(plan).length > 0, page: sound.page === true };
 }
 
 /** Validation errors for a plan's lead: none without a lead; a lead needs sound, and lead lines must open the plan. */
@@ -67,8 +69,8 @@ export function leadErrors(plan) {
   });
   if (marked.length === lines.length && lines.length) errors.push("lines: every line is a lead line; the story needs at least one line after the lead");
   const s = leadSound(plan);
-  if (!s.bed && !s.cue && !s.line) {
-    errors.push(`meta.lead: the ${lead} s lead has no sound — add a music bed from t=0 (meta.sound.bed: true), a sound cue inside the lead, or an opening line with lead: true`);
+  if (!s.bed && !s.cue && !s.line && !s.page) {
+    errors.push(`meta.lead: the ${lead} s lead has no sound — add a music bed from t=0 (meta.sound.bed: true), a sound cue inside the lead, an opening line with lead: true, or declare sound the page makes inside the lead (meta.sound.page: true)`);
   }
   return errors;
 }
@@ -96,8 +98,8 @@ export function formatLeadReport(plan) {
   const lead = leadSec(plan && plan.meta);
   if (!lead) return "";
   const s = leadSound(plan);
-  const kinds = Object.entries({ "music bed": s.bed, "sound cue": s.cue, "opening line": s.line }).filter(([, on]) => on).map(([k]) => k);
+  const kinds = Object.entries({ "music bed": s.bed, "sound cue": s.cue, "opening line": s.line, "page sound": s.page }).filter(([, on]) => on).map(([k]) => k);
   return kinds.length
     ? `lead: ${lead} s with sound (${kinds.join(", ")}); planned span, not dead air\n`
-    : `WARN: lead ${lead} s has no sound (no music bed, sound cue or opening line)\n`;
+    : `WARN: lead ${lead} s has no sound (no music bed, sound cue, opening line or page sound)\n`;
 }

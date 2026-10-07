@@ -78,7 +78,8 @@ function rmsWindows(samples, sampleRate, thresholdDb) {
  * Longest run of near-silence (RMS <= thresholdDb) after the first sound in
  * `samples`, scanned in 10ms windows (review.mjs's audio gate: "longest
  * silence >= 1 beat after first sound").
- * @returns {{longestSilenceSec:number, firstSoundSec:number|null}}
+ * @returns {{longestSilenceSec:number, firstSoundSec:number|null, trailingSilenceSec?:number}} the trailing run is
+ *   the silence that reaches the end of `samples`; it is not a gap between sounds
  */
 export function longestSilenceAfterFirstSound(samples, sampleRate, opts) {
   const o = opts || {};
@@ -95,7 +96,8 @@ export function longestSilenceAfterFirstSound(samples, sampleRate, opts) {
     }
   }
   if (curRun > longestRun) longestRun = curRun;
-  return { longestSilenceSec: (longestRun * winLen) / sampleRate, firstSoundSec: (first * winLen) / sampleRate };
+  // curRun is now the silence that runs to the end of the samples (0 when the last window is loud).
+  return { longestSilenceSec: (longestRun * winLen) / sampleRate, firstSoundSec: (first * winLen) / sampleRate, trailingSilenceSec: (curRun * winLen) / sampleRate };
 }
 
 /**

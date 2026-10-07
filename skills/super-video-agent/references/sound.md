@@ -67,7 +67,9 @@ A film with `meta.lead` (seconds before the first story line; `true` = 3 s) must
 the lead — at least one of: a music bed playing from t=0 (declare it with `meta.sound.bed: true`),
 a sound-effect cue inside the lead (a line cue that sounds before the first story line, e.g. `at:
 "start"` with a negative `offsetMs` on the first story line), or an opening line spoken in the
-lead (the first plan lines, marked `lead: true`, inside the lead window).
+lead (the first plan lines, marked `lead: true`, inside the lead window), or sound the page makes itself inside the lead (its `SFX_CUES` kit or custom
+cues, or its own sound path; declare it with `meta.sound.page: true`, and `cue-check.mjs --page`
+lists the page's marks with their times so the claim can be checked).
 `validate-plan.mjs` fails a lead with none of them, and the silence gates report a lead without
 sound. One way to choose the sound is by what comes next: a bed's key or an effect's material that
 leads naturally into the first scene keeps the cut from lead to story from feeling like a
@@ -81,7 +83,10 @@ sfx cue times are measured from the film's t = 0, lead included.
 
 - Master to **-16 LUFS integrated**, true peak ≤ -1 dBTP (render does this) with one static gain
   measured over the whole mix, never a single-pass `loudnorm`: it ramps its gain as it reads, so
-  the start comes out quiet.
+  the start comes out quiet. The gain is capped at **+12 dB**: a mix that measures under -28 LUFS
+  stays under -16. `render.mjs` prints `master gain capped at +12 dB: ...` with the gap in dB when
+  that happens, and `review.mjs` prints a `note:` under the audio line when a file sits more than
+  0.5 dB under -16 LUFS. Both are facts; raise the page's own sound level (below) or accept the level.
 - If you mix with ffmpeg yourself, every `amix` sets `normalize=0`. Its default divides the sum by
   the inputs still playing, so the voice gets louder each time a line or an effect ends.
   `tests/amix-normalize.test.mjs` fails on any bundled `amix` without it.
@@ -119,6 +124,15 @@ sfx cue times are measured from the film's t = 0, lead included.
   page's level to sit that far under the voice, with a note when the peak after it passes -1 dBTP.
   The gap you want is your decision; the tool computes none without `--under`. Apply the offset in
   the page's audio code, render again, and read `review.mjs`'s integrated loudness and true peak.
+- **The silence gate on a film with no narration.** `review.mjs` and `voice.mjs` count a quiet
+  stretch over 1 s between two sounds (the gate) as a gap, unless the plan asks for it
+  (`pauseAfterMs`, `meta.gapMs`). In a film with no narration the lines are the scenes of
+  `voice/timings.json` (`references/assembly.md` "A film with no narration"), the sound is the page's
+  own, and a gap is quiet between two of its sounds, usually at a scene boundary. It is closed by
+  sound under the join (an air or a motion sound under each scene), or the pause is declared in the
+  plan. The quiet after the last sound (an end hold) is not a gap: when the longest silence is over
+  the gate and the film still passes, `review.mjs` prints a `note:` that says why (the tail after the
+  last sound, or a planned pause).
 - `master` soft-clips with tanh; if the review shows true peak over the limit, lower the effect
   gain, not the voice.
 
@@ -153,7 +167,9 @@ words — e.g. "a kitchen promo, warm and bouncy" — the same phrase for every 
 custom: "<free text>"}`). `scripts/sfx-cards.mjs measure <reel-dir>` fills `measured` — duration,
 peak dB, LUFS (when the clip is long enough), attack time, spectral brightness, pitch trend and
 noisiness — from `window.__reel.sfxStems()` (a kit/custom cue rendered alone, no bed, no other
-cues) or, for an `asset` recipe, from the part of the library file the film plays: 0 s to the
+cues, at the cue's own `gain` as it plays before the bed's master gain, so a cue at gain 0.12
+measures 18 dB under the same cue at 1.0; a page that writes its own `sfxStems()` returns each
+stem at its cue's gain too) or, for an `asset` recipe, from the part of the library file the film plays: 0 s to the
 card's `maxSec`, else to the `maxSec` every `plan.json` cue of that asset shares, else the whole
 file (a cue always plays from the file's start, so there is no start offset). `measured.fileSec`
 keeps the file's own length, and `measure`, `report` and the judge prompt all name the span, e.g.
