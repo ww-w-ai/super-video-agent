@@ -8,14 +8,14 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, loadTimings, loadPlan, readJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek } from "./lib/browser.mjs";
+import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek, grayFramesBySeek } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
 import { probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { excludeEndHold } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
 import { captionLayerAliases, placedDuration, serveDirWithAliases } from "./lib/layout-scan-serve.mjs";
-import { markOnsetOffset } from "./lib/sync-marks.mjs";
+import { markOnsetOffset, pictureSampleTimes, pictureBeat, syncVerdict, PICTURE_WINDOW_SEC, PICTURE_FRAME_WIDTH } from "./lib/sync-marks.mjs";
 import { extractGrayFrames, analyzeMotion } from "./lib/frame-diff.mjs";
 import { loudnessSpread } from "./lib/join-report.mjs";
 import {
@@ -405,17 +405,41 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     const stems = hasSfxStems
       ? await session.page.evaluate((sr) => window.__reel.sfxStems(sr), AUDIO_SAMPLE_RATE)
       : [];
-    const markResults = marks.map((m) => {
-      const { offsetMs, source } = markOnsetOffset(m, { stems, mixPcm: pcm, sampleRate: AUDIO_SAMPLE_RATE, windowSec: 0.15 });
+    // The sound side: each mark's onset in its own stem (or the mix). The
+    // picture side: the frame where the canvas changes most within
+    // ±PICTURE_WINDOW_SEC of the mark (sync marks only). The gated offset is
+    // sound onset minus picture beat — the stem alone reads ~0 ms for any cue
+    // placed on its own `at`, so it could never fail a cue drawn off its beat.
+    const markResults = [];
+    for (const m of marks) {
+      const { offsetMs: soundOnsetMs, source } = markOnsetOffset(m, { stems, mixPcm: pcm, sampleRate: AUDIO_SAMPLE_RATE, windowSec: 0.15 });
       const sync = !!m.sync;
       const duckedByNarration = narrationWindows.some((w) => m.at >= w.start && m.at <= w.end);
-      const pass =
-        !sync ||
-        (offsetMs != null && offsetMs >= SYNC_OFFSET_MIN_MS && offsetMs <= SYNC_OFFSET_MAX_MS);
-      return { at: m.at, kind: m.kind, sync, offsetMs, source, duckedByNarration, pass };
-    });
+      let beat = null;
+      let reason = "not a sync mark";
+      if (sync) {
+        const times = pictureSampleTimes(m.at, fps, { duration });
+        const frames = await grayFramesBySeek(session.page, times, { width: PICTURE_FRAME_WIDTH });
+        ({ beat, reason } = pictureBeat(times, frames));
+      }
+      const v = syncVerdict(m, { soundOnsetMs, beat, reason, minMs: SYNC_OFFSET_MIN_MS, maxMs: SYNC_OFFSET_MAX_MS });
+      markResults.push({
+        at: m.at,
+        kind: m.kind,
+        sync,
+        offsetMs: v.offsetMs,
+        pictureAt: v.pictureAt,
+        soundOnsetMs,
+        source,
+        measured: v.measured,
+        notMeasured: v.notMeasured,
+        duckedByNarration,
+        pass: v.pass,
+      });
+    }
     const silencePass = silenceGaps.unplanned.length === 0;
-    const marksPass = markResults.every((m) => m.pass);
+    // A sync mark that could not be measured (pass: null) is reported, not passed or failed.
+    const marksPass = markResults.every((m) => m.pass !== false);
 
     const report = {
       reelDir: dir,
@@ -457,7 +481,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           silenceGaps: { unplanned: silenceGaps.unplanned, planned: silenceGaps.planned },
           marks: markResults,
           onsetSourceNote:
-            "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
+            "offsetMs = the sound's onset minus the picture beat (sync marks only). The sound's onset is mark.at + soundOnsetMs, measured on the cue's own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect, not the voice; otherwise on the full mix (source:'mix'). soundOnsetMs alone is ~0 for any cue by construction (the stem is the cue at its own time) and says nothing about the picture. The picture beat (pictureAt) is where the largest burst of frame-to-frame change (" + PICTURE_FRAME_WIDTH + "-px greyscale, read from seek()) within ±" + PICTURE_WINDOW_SEC + " s of the mark starts, ± half a frame. A sync mark with no clear beat (no change, or steady motion everywhere in the window) is measured:false with the reason in notMeasured, and neither passes nor fails.",
           duckingNote:
             "render.mjs ducks library asset cue sounds (plan.json line `cues`) by meta.sound.sfxDuckDb (default -6dB, ~80ms ramps) while a narration line speaks; each mark above carries duckedByNarration for whether it fell inside a narration window. The sync tolerance (-20..+40ms) is unchanged, but a mark on a ducked sound near that edge is expected, not a regression.",
         },
@@ -481,10 +505,34 @@ function printSummary(report) {
     `dead air: ${c.deadAir.runs.length} run(s) >=0.8s [${c.deadAir.pass ? "PASS" : "FAIL"}]`,
     `layout issues: ${c.layout.issueCount} [${c.layout.pass ? "PASS" : "FAIL"}]`,
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${c.audio.silencePass ? "PASS" : "FAIL"}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
-    `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
+    syncMarksLine(c.audio.marks),
     report.note,
   ];
   process.stdout.write(lines.join("\n") + "\n");
+}
+
+/** One summary line for the sync marks: sound onset vs picture beat, and which ones could not be measured. */
+export function syncMarksLine(marks) {
+  const syncMarks = marks.filter((m) => m.sync);
+  const measured = syncMarks.filter((m) => m.measured);
+  const notMeasured = syncMarks.filter((m) => !m.measured);
+  const verdict = marks.some((m) => m.pass === false)
+    ? "FAIL"
+    : syncMarks.length && !measured.length
+      ? "NOT MEASURED"
+      : "PASS";
+  const each = syncMarks
+    .map((m) =>
+      m.measured
+        ? `${m.kind}@${m.at.toFixed(2)}s ${m.offsetMs >= 0 ? "+" : ""}${m.offsetMs}ms vs picture ${m.pictureAt.toFixed(3)}s`
+        : `${m.kind}@${m.at.toFixed(2)}s not measured (${m.notMeasured})`
+    )
+    .join("; ");
+  return (
+    `sync marks: ${marks.length} (${syncMarks.length} sync, ${measured.length} measured against the picture, ` +
+    `${notMeasured.length} not measured, ${marks.filter((m) => m.source === "mix").length} sound onset(s) on the mix fallback)` +
+    `${each ? " " + each : ""} [${verdict}]`
+  );
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

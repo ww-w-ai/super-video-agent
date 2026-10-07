@@ -11,7 +11,7 @@
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
-| Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its frame |
+| Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its picture beat: where the largest burst of frame-to-frame change within ±0.3 s of the mark starts. A mark whose window has no clear beat (no change, or steady motion throughout) prints `not measured` with the reason — check it by eye on stills, it is not a pass |
 | Silence | `review.mjs` | every silence over 1 s inside the narration (first sound to last line end) is listed with the line ids around it; FAIL unless the plan asks for it (`pauseAfterMs`, or a long `meta.gapMs`) — a planned pause is listed, not failed. Same measurement as the voice stage's silence gate (`voice.mjs`, `dub.mjs`, `fit-track.mjs`), which runs before the voice is locked |
 | Caption breaks | `validate-plan.mjs --breaks [--dub <code>]` | not a gate — the table lists every break; the reviewer finds none that cuts a phrase (`script-review.md` "Caption breaks"; a dub reads it once per language) |
 

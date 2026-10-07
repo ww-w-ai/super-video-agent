@@ -251,6 +251,41 @@ export async function captureFrame(page, t) {
   return Buffer.from(base64, "base64");
 }
 
+/**
+ * Seek to each time in `times` and read the reel's <canvas> back as a
+ * `width`-px-wide greyscale frame (scaled in-page; only the small frame
+ * crosses back). Used by review.mjs to find when the picture changes around
+ * a sync mark (scripts/lib/sync-marks.mjs pictureBeat).
+ * @param {import("playwright-core").Page} page
+ * @param {number[]} times
+ * @param {{width?: number}} [opts]
+ * @returns {Promise<Uint8Array[]>}
+ */
+export async function grayFramesBySeek(page, times, { width = 64 } = {}) {
+  const frames = [];
+  for (const t of times) {
+    await seekTo(page, t);
+    const gray = await page.evaluate((w) => {
+      const canvas = document.querySelector("canvas");
+      if (!canvas) throw new Error("no <canvas> found in reel.html");
+      const h = Math.max(2, Math.round((w * canvas.height) / canvas.width));
+      const small = document.createElement("canvas");
+      small.width = w;
+      small.height = h;
+      const sctx = small.getContext("2d");
+      sctx.drawImage(canvas, 0, 0, w, h);
+      const d = sctx.getImageData(0, 0, w, h).data;
+      const out = new Array(w * h);
+      for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+        out[p] = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+      }
+      return out;
+    }, width);
+    frames.push(Uint8Array.from(gray));
+  }
+  return frames;
+}
+
 /** Read window.__reel.issues() from the live page. */
 export async function readIssues(page) {
   return page.evaluate(() => (window.__reel.issues ? window.__reel.issues() : []));
