@@ -8,7 +8,7 @@ import { readJson, writeJson } from "./reeldir.mjs";
 
 const LANG_TAG = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 // Per-line fields that are the film's timing and structure, the same in every language.
-const LINE_KEEP = ["pauseBeforeMs", "pauseAfterMs", "lead", "rate"];
+const LINE_KEEP = ["pauseBeforeMs", "pauseAfterMs", "lead", "rate", "speaker"];
 // meta.voice fields that name one speaker; they differ per language, so they are left for the user.
 const VOICE_SPEAKER = ["voiceId", "refAudio", "refText", "refTokens"];
 
@@ -53,6 +53,7 @@ export function initDubPlan(dir, code, opts = {}) {
   if (fs.existsSync(target)) throw new Error(`${target} already exists; edit it, or delete it to scaffold again`);
   const base = readJson(path.join(dir, "plan.json"));
   const plan = buildDubPlan(base, code, opts);
+  if (plan.meta.cast) plan.meta.cast = path.relative(path.dirname(target), path.resolve(dir, plan.meta.cast));
   writeJson(target, plan);
   const voiceDropped = !opts.copy && !!(base.meta && base.meta.voice && VOICE_SPEAKER.some((k) => base.meta.voice[k] != null));
   return { planPath: target, lineCount: plan.lines.length, copy: !!opts.copy, voiceDropped };

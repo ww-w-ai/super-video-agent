@@ -1045,3 +1045,8 @@ file there and register it in the page's `@font-face`.
   (an offscreen stamp, a pre-rendered label) keeps the fallback face for the whole film. Draw
   such text every frame, or cache it only after `document.fonts.ready`. List loaded faces with
   `Array.from(document.fonts)`.
+
+## Reusable cast voices
+
+For recurring speakers, consider a shared `meta.cast` file and per-line `speaker` IDs.
+See `cast-voices.md` for language mappings read by synthesis and preserved by dub scaffolding.

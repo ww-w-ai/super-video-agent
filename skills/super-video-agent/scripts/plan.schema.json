@@ -166,6 +166,7 @@
         "ratio": { "type": "string", "enum": ["9:16", "1:1", "16:9", "4:5"] },
         "fps": { "type": "integer", "minimum": 1, "maximum": 60, "default": 30 },
         "look": { "type": "string", "enum": ["2d", "3d"], "default": "2d", "description": "Informational: the film's visual style. Not read by any check." },
+        "cast": { "type": "string", "minLength": 1, "description": "Reusable cast JSON path, relative to this plan directory or absolute. Speaker language voices live only there." },
         "voice": { "$ref": "#/definitions/voice" },
         "pronounce": { "type": "object", "description": "Pronunciation dictionary: {\"<word>\": {\"say\": \"<respelling or replacement>\", \"ipa\": \"<IPA>\"}}. Applied to spoken text only; captions keep `text`. A line's entries override meta.pronounce. See references/readout.md." },
         "gapMs": { "type": "integer", "minimum": 0, "default": 700 },
@@ -284,6 +285,7 @@
             "enum": ["normal", "happy", "sad", "angry", "whisper", "toneup", "tonedown"],
             "description": "typecast only: this line's emotion preset when it differs from the voice's. The line is made in its own request, outside the one-read batch. Providers with inline tags take an {emotion} mark in `say` instead (references/voice.md)."
           },
+          "speaker": { "type": "string", "minLength": 1, "description": "Speaker ID in meta.cast. Resolve the voice from that speaker and this line language." },
           "voice": {
             "$ref": "#/definitions/voice",
             "description": "This line's own voice, for a film with several speakers: any meta.voice keys, merged over meta.voice for this line (line keys win). Works the same in dub/<code>/plan.json. timings.json records each line's resolved provider and voiceId."

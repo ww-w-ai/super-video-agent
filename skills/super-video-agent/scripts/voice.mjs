@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
+import { loadCastVoices } from "./lib/cast-voices.mjs";
 import { reelPaths, loadPlan, writeJson, readJson, ensureDir } from "./lib/reeldir.mjs";
 import { ffmpeg, probeDuration, applyAtempo } from "./lib/ffmpeg.mjs";
 import { computeLineTimes, wordsProportional, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
@@ -361,7 +362,9 @@ export async function main(argv) {
     return;
   }
 
-  let providerName = flags.provider || (plan.meta.voice && plan.meta.voice.provider);
+  let castVoices;
+  try { castVoices = loadCastVoices(plan, dir); } catch (e) { fail(e.message); return; }
+  let providerName = flags.provider || (plan.meta.voice && plan.meta.voice.provider) || castVoices.values().next().value?.provider;
   if (!providerName) {
     const choice = chooseProvider({
       hasVoiceInDir: fs.existsSync(path.join(paths.voiceDir, "in")),
@@ -393,7 +396,7 @@ export async function main(argv) {
   let providerMod;
   try {
     providerMod = await loadProviderModule(providerName);
-    lineVoices = await buildLineVoices(plan, providerName, loadProviderModule);
+    lineVoices = await buildLineVoices(plan, providerName, loadProviderModule, castVoices);
   } catch (e) {
     fail(e.message);
     return;
@@ -1398,9 +1401,10 @@ export function mergedVoice(meta, line) {
  *   key: one string per distinct resolved voice (provider + settings), for
  *   grouping batch synthesis; a typecast line with its own emotion has a key of its own.
  */
-export function resolveLineVoice(meta, line, baseProvider) {
-  const voice = mergedVoice(meta, line);
-  const providerName = (line && line.voice && line.voice.provider) || baseProvider;
+export function resolveLineVoice(meta, line, baseProvider, castVoice) {
+  const defaults = castVoice ? Object.fromEntries(Object.entries(meta.voice || {}).filter(([key]) => !["provider", "voiceId", "refAudio", "refText", "refTokens", "model"].includes(key))) : meta.voice;
+  const voice = castVoice ? { ...defaults, ...castVoice, ...(line.voice || {}) } : mergedVoice(meta, line);
+  const providerName = castVoice?.provider || (line && line.voice && line.voice.provider) || baseProvider;
   const filmCfg = withFishConfidentDelivery(withShortsRate({ ...meta, voice }), meta, providerName);
   // Typecast sets emotion per request, so a line whose own `emotion` differs from the voice's
   // is made in its own request (key carries the line id), outside the one-read batch.
@@ -1444,11 +1448,11 @@ export function lineSpeed(meta, line) {
  * @param {(name: string) => Promise<object>} loadProvider
  * @returns {Promise<Map<string, {providerName, provider, voiceCfg, key}>>}
  */
-export async function buildLineVoices(plan, baseProvider, loadProvider) {
+export async function buildLineVoices(plan, baseProvider, loadProvider, castVoices = new Map()) {
   const modules = new Map();
   const out = new Map();
   for (const line of plan.lines) {
-    const v = resolveLineVoice(plan.meta, line, baseProvider);
+    const v = resolveLineVoice(plan.meta, line, baseProvider, castVoices.get(line.id));
     if (!PROVIDERS.includes(v.providerName)) {
       throw new Error(`line "${line.id}": unknown provider "${v.providerName}", expected one of: ${PROVIDERS.join(", ")}`);
     }
