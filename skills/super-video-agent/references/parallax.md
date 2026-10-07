@@ -4,6 +4,17 @@ Contents: What it is · Depth convention · The call · Camera moves · Depth bl
 
 ## What it is
 
+For a parallax shot, review the whole set: source choice, three-layer separation,
+optional alpha masks and depth maps, and masked key-photo mixing. Use only the parts
+the shot needs. Polygon cuts remain the default.
+
+Choose a real photograph with a foreground subject and a separable middle and far
+background. A flat illustration or a rendered 3D frame does not meet this photo
+workflow. If a suitable photo is unavailable, choose another technique.
+Check reuse rights before editing. Record the source URL, creator, license and
+changes in the project record. Keep a readable source credit visible for the whole
+time the photo is on screen. This source check also applies to other photo scenes.
+
 A still is split into flat layers at different depths. One camera path moves over all of them: a
 near layer slides far, a far layer slides little. The eye reads the difference as depth. The 2D
 engine does this with `Reel.parallax(ctx, t, spec)`; the picture at `t` depends only on `t`, so it
