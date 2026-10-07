@@ -136,3 +136,61 @@ function findMatchingParen(str, openIdx) {
   }
   return -1;
 }
+
+
+/** Advisory fillText inventory. Dynamic expressions stay unresolved rather than claiming coverage. */
+export function pictureTextReport(reelHtmlPath) {
+  const html = fs.readFileSync(reelHtmlPath, "utf8");
+  const { scene } = extractScene(html);
+  const { files } = readSrcFiles(path.dirname(reelHtmlPath));
+  const offset = html.slice(0, html.indexOf(scene)).split("\n").length - 1;
+  return [[reelHtmlPath, scene, offset], ...files].flatMap(([file, code, lineOffset = 0]) =>
+    pictureTextCalls(code).map(call => ({ file, ...call, line: call.line + lineOffset })));
+}
+
+/** Tokenize only enough to inventory call sites; comments and quoted code cannot create calls. */
+function pictureTokens(code) {
+  const pattern = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|"(?:\\[\s\S]|[^"\\])*"|'(?:\\[\s\S]|[^'\\])*'|`(?:\\[\s\S]|[^`\\])*`|[\p{L}_$][\p{L}\p{N}_$]*|\d+(?:\.\d+)?|[^\s]/gu;
+  const tokens = [];
+  let line = 1;
+  let end = 0;
+  for (const match of code.matchAll(pattern)) {
+    line += (code.slice(end, match.index).match(/\n/g) || []).length;
+    const value = match[0];
+    if (!value.startsWith("//") && !value.startsWith("/*")) tokens.push({ value, line });
+    line += (value.match(/\n/g) || []).length;
+    end = match.index + value.length;
+  }
+  return markArgumentBounds(tokens);
+}
+
+// Index each call boundary once so nested expressions do not cause repeated scans.
+function markArgumentBounds(tokens) {
+  const stack = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const value = tokens[i].value;
+    if (["(", "[", "{"].includes(value)) stack.push(i);
+    else if ([")", "]", "}"].includes(value)) {
+      const open = tokens[stack.pop()];
+      if (open) { open.close = i; open.argEnd ??= i; }
+    } else if (value === "," && stack.length) tokens[stack.at(-1)].argEnd ??= i;
+  }
+  return tokens;
+}
+
+/** Direct linguistic literals warn. Direct pictureText calls are registered; other expressions need review. */
+export function pictureTextCalls(code) {
+  const tokens = pictureTokens(code);
+  const calls = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i].value !== "fillText" || tokens[i + 1]?.value !== "(") continue;
+    const arg = tokens[i + 2]?.value || "";
+    const end = tokens[i + 1].argEnd;
+    if (arg === "Reel" && tokens[i + 3]?.value === "." && tokens[i + 4]?.value === "pictureText" && tokens[i + 5]?.value === "(" && tokens[i + 5].close === end - 1) continue;
+    const quoted = /^["'`]/.test(arg);
+    const dynamic = !quoted || end !== i + 3 || (arg.startsWith("`") && arg.includes("${"));
+    if (!dynamic && !/\p{L}/u.test(arg)) continue;
+    calls.push({ line: tokens[i].line, kind: dynamic ? "unresolved" : "unregistered", expression: arg });
+  }
+  return calls;
+}

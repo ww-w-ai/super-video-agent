@@ -119,7 +119,12 @@ use, adapt or ignore; none of it is a template.
      building scenes (a changed line length re-renders every later shot, and a 40 s 3D film
      took 11–20 min to render). Every other case: build the film and fix voice lines after
      (a 2D film re-renders only the changed shots in minutes; picture first only re-dubs)
-3. `assets.mjs fetch`, then build scenes onto the measured times: hardest frame first, look at
+3. From the first build, register every string drawn inside the picture with
+   `Reel.pictureText(key, defaultText)`. Keep stable keys so another language can replace
+   the text without searching scene code. `verify.mjs` reports direct unregistered
+   language literals in `fillText` and identifies dynamic expressions for review.
+   It is advisory, not proof that every drawing API or helper is covered.
+   `assets.mjs fetch`, then build scenes onto the measured times: hardest frame first, look at
    it, fix it; then the rest. Build scene drafts on the locked voice slots; an approved draft can
    be the final segment (e.g. trim or speed only; when one element is fixed, keep the rest). One
    way is to render a draft shot with a short handle before and after its slot: `render.mjs --only

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson } from "./lib/reeldir.mjs";
-import { scanReelHtml, boilCallSiteReport } from "./lib/static-scan.mjs";
+import { scanReelHtml, boilCallSiteReport, pictureTextReport } from "./lib/static-scan.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, glIssues, glReportLines, readEngineFactLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
 import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from "./lib/determinism.mjs";
@@ -107,6 +107,9 @@ export async function main(argv) {
 }
 
 function staticChecks(paths) {
+  for (const text of pictureTextReport(paths.reelHtml)) {
+    process.stdout.write(`picture text ${text.kind}: ${text.file}:${text.line}: fillText(${text.expression}) — prefer Reel.pictureText(key, defaultText) from the first build; advisory only\n`);
+  }
   const staticResult = scanReelHtml(paths.reelHtml);
   if (!staticResult.sceneFound) {
     process.stderr.write(
