@@ -291,3 +291,10 @@ test("52 insertTime: a language that was already a different length is reported;
   assert.equal(fs.readFileSync(path.join(dir2, "dub/ko/timings.placed.json"), "utf8"), before);
   assert.equal(fs.readFileSync(path.join(dir2, "out/other.srt"), "utf8"), SRT);
 });
+
+test("copied dub checks refuse malformed existing base JSON before audio work", async (t) => {
+  const dir = tmp(t, "bad-base-plan");
+  await makeAudioReel(dir);
+  fs.writeFileSync(path.join(dir, "plan.json"), "{");
+  await assert.rejects(dub({ dir, lang: "en", audioOnly: true }), /invalid JSON.*plan.json/);
+});

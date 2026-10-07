@@ -1050,3 +1050,11 @@ file there and register it in the page's `@font-face`.
 
 For recurring speakers, consider a shared `meta.cast` file and per-line `speaker` IDs.
 See `cast-voices.md` for language mappings read by synthesis and preserved by dub scaffolding.
+
+### Copied dub narration
+
+Before caption placement, dub checks its voice timing text against its plan and
+current base `voice/timings.json`. Same-language copies also report base text
+changes. Translated lines are compared with their own plan, using each line's
+language override. Warnings do not stop output or rewrite files. Refresh copied
+timings and matching audio before shipping. A missing base timing file is reported.

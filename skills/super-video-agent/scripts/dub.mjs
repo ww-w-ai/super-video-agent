@@ -65,6 +65,7 @@ import {
   buildPlainSpanArgs,
   buildCaptionSpanArgs,
 } from "./lib/dub-space.mjs";
+import { staleDubText, formatStaleDubText } from "./lib/dub-copy-check.mjs";
 import { initDubPlan, formatInitReport } from "./lib/dub-scaffold.mjs";
 import { gateAvSync, pointLatest, timestamp, concatMp4, checkPicturePair } from "./render.mjs";
 
@@ -382,6 +383,11 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
   let baseTimings = readJson(pictureTimingsJson);
   const dubPlan = loadPlan(dubDir);
   const dubTimings = readJson(dubTimingsPath);
+  const currentBaseTimings = fs.existsSync(paths.timingsJson) ? readJson(paths.timingsJson) : null;
+  const currentBasePlan = fs.existsSync(paths.planJson) ? loadPlan(dir) : null;
+  process.stdout.write(formatStaleDubText(staleDubText({ dubPlan, dubTimings, basePlan: currentBasePlan, baseTimings: currentBaseTimings })));
+  if (!currentBasePlan) process.stdout.write("note: base plan.json is missing; base narration language uses voice/timings.json when available\n");
+  if (!currentBaseTimings) process.stdout.write("note: base voice/timings.json is missing; copied dub text was checked against the dub plan only\n");
 
   const workDir = trackTemp(path.join(dubDir, `.dub-work-${lang}`));
   ensureDir(workDir);
