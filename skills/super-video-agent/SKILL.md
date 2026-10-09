@@ -58,7 +58,8 @@ use, adapt or ignore; none of it is a template.
    hear audio: every claim about either comes from a measurement or a frame you actually looked
    at. Say what you did not check.
 5. **Rendering is the costliest work: reuse what exists.** Render or encode only the spans that
-   changed (`render.mjs --span`, `--only`), copy the rest without re-encoding, and build what
+   changed (`render.mjs --span`, `--only` for browser pictures; affected Blender frames and
+   reassembly in `references/blender.md`), copy the rest without re-encoding, and build what
    several versions share (a picture, a language-neutral span) once. Before any render, synthesis or
    dub, list what changed and make only that; redo the whole thing only when you can say in one line
    why the parts cannot be reused (`references/pipeline.md` "Render reuse").
@@ -119,8 +120,9 @@ use, adapt or ignore; none of it is a template.
      building scenes (a changed line length re-renders every later shot, and a 40 s 3D film
      took 11–20 min to render). Every other case: build the film and fix voice lines after
      (a 2D film re-renders only the changed shots in minutes; picture first only re-dubs)
-3. From the first build, register every string drawn inside the picture with
-   `Reel.pictureText(key, defaultText)`. Keep stable keys so another language can replace
+3. From the first build, register every string drawn inside a browser picture with
+   `Reel.pictureText(key, defaultText)`. For Blender picture text, use the keyed text table
+   described in `references/blender.md`. Keep stable keys so another language can replace
    the text without searching scene code. `verify.mjs` reports direct unregistered
    language literals in `fillText` and identifies dynamic expressions for review.
    It is advisory, not proof that every drawing API or helper is covered.
@@ -212,8 +214,8 @@ own characters adds a cast stage between voice and film.
 | Script | 0, 1, 2 up to the first draft | the source, the user's direction | `FILM.md` with the Brief, `plan.json` (draft), `script-v0.md` (the same draft, never edited again) | xhigh |
 | Review | 2: the review passes | `plan.json`, `FILM.md` (Brief included), the source | the locked `plan.json`; the review record in `FILM.md` | low |
 | Voice | 2 from "make the voice" | `plan.json` | `voice/` with `timings.json` in the base language, in either order; STT flags handled | low |
-| Cast (3D films with their own characters) | between 2 and 3 | `plan.json`, `FILM.md` (who appears, in which lines, doing what) | the character and prop GLBs, a lineup still the owner approved, the contract table in `FILM.md` (`references/3d.md`) | xhigh |
-| Film | 3–5 | `plan.json`, `voice/`, `FILM.md`, the source (and the cast files) | `reel.html`, `out/final.mp4`, the report | xhigh |
+| Cast (3D films with their own characters) | between 2 and 3 | `plan.json`, `FILM.md` (who appears, in which lines, doing what; selected renderer) | character and prop assets for that renderer, an approved lineup still, the contract table in `FILM.md` (`references/3d.md` or `references/blender.md`) | xhigh |
+| Film | 3–5 | `plan.json`, `voice/`, `FILM.md`, the source (and the cast files) | `reel.html`, Blender scene source when selected, final MP4, the report | xhigh |
 | Language dub (one film, several language versions) | after the base voice | the locked base `plan.json`, `voice/timings.json` | `dub/<code>/plan.json`, `voice/`, `out/final-<code>.mp4` | medium |
 
 The language dub stage is adaptation more than creation, so a lighter path is a good starting
@@ -256,19 +258,23 @@ Requests to next stage: what the next stage must do or watch for
 pass. "Files left" is the table the next stage uses to find drafts and done markers instead of
 rebuilding them (`references/unattended.md` "Where the earlier stages left things").
 
-In the film stage `reel.html` is the only source of the film. Make every later edit in it, and
-keep no draft or generator script that could be copied back over those edits.
+For the browser renderer, `reel.html` is the only picture source. Make later edits there.
+For Blender, keep the scene source and overlay source separate (`references/blender.md`).
+Do not keep a stale generator that could overwrite later edits.
 
 When the user asks to fix only some scenes, change only those: regenerate only the changed
-lines' voice (`voice.mjs --lines`), re-render only those shots (`render.mjs --only`), and let
-the renderer splice them into the existing film (`references/pipeline.md`).
+lines' voice (`voice.mjs --lines`). For browser pictures, re-render only those shots
+(`render.mjs --only`) and splice them into the existing film (`references/pipeline.md`).
+For Blender pictures, render the affected frame ranges, reassemble and reinsert the picture,
+then dub it (`references/blender.md`). Do not render the browser placeholder as a replacement.
 
 ### Picture first
 
 "Picture first" does not mean the picture comes before the voice. The base is the user's
 language: build its `voice/` first, same as always, and build the picture on its timings. Other
 languages come after, as variations over that picture. The picture itself renders once, with no caption baked in
-(`render.mjs --no-captions`), and every language — including the base one — is laid over it with
+(`render.mjs --no-captions` for browser pictures; include the full-picture `--insert` for
+Blender as described in `references/blender.md`), and every language — including the base one — is laid over it with
 `dub.mjs`, each in its own `dub/<code>/`. A language whose lines run longer than the base
 language's is sped up to fit (`dub.mjs` and `fit-track.mjs` fit a line by at most 10% faster, 5% slower by
 default) or the film reports which lines to shorten; the picture
@@ -324,7 +330,15 @@ When the user asks for an upload version with an opening or ending attached to a
 end card, a title card, a series episode), read `references/bookends.md`; otherwise skip it.
 
 When the user asks for 3D in any words ("3D", "like a video game", "WebGL", "Three.js"), make a
-3D film: scaffold with `new-reel.mjs --3d`, render picture first, and follow `references/3d.md`.
+3D film and render picture first. Before authoring a new 3D film or its cast, run
+`node <skill>/scripts/probe-blender.mjs`. Use Blender when its JSON says `engine: "blender"`;
+follow `references/blender.md`. Otherwise scaffold with `new-reel.mjs --3d` and follow
+`references/3d.md`. Record the result and selected executable in `FILM.md` for later stages.
+Never install or download Blender for this choice. A missing, failed or timed-out probe uses
+the existing Three.js path. A version check alone is not a successful probe.
+An explicit renderer request takes precedence. Existing-film edits keep their current renderer.
+Ordinary 2D films keep the browser path. This selection guides scene authoring; it does not
+convert existing Three.js code into Blender or change `render.mjs` into a Blender renderer.
 A short request is enough; fill in the camera move, the places and the look yourself. A "one take",
 "no cuts" or "camera that never cuts" request is a continuous camera path (`references/3d.md` "Craft
 that worked"). A photo or screenshot can go on a surface in the scene as a texture, an object
@@ -367,6 +381,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | Step | Script | Gives you |
 |---|---|---|
 | setup | `scripts/setup.mjs [--check] [--dir <reel>] [--stt-models]` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked; browser cache and render-folder disk, real GPU or software renderer (`SVA_GPU`), speech-to-text engines and models listed; `--dir` measures the reel's `out/`; `--stt-models` downloads the speech-to-text models. A browser script run before setup stops with one line naming this command |
+| 3D renderer | `scripts/probe-blender.mjs` | JSON decision after an isolated EEVEE render; Blender if usable, otherwise Three.js; no installation |
 | scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--title "..."] [--fps 30] [--3d\|--testbed]` | page with contract + optional helpers; `--title` sets the page title (default: the folder name) and `--fps` the frame rate (default 30); `--3d` scaffolds a WebGL/three.js reel, `--testbed` a page that shows the GLBs in `assets/models/` one view per second for the cast stage (`references/3d.md`) |
 | model facts | `scripts/glb-info.mjs <file.glb>` | roots, clips with lengths, node names as three.js's GLTFLoader sees them, morph targets, triangle counts — for the cast contract (`references/3d.md`) |
 | script check | `scripts/validate-plan.mjs <dir> [--estimate] [--listener]` — run before the voice | `plan.json` matches the schema; every `word:` cue names a word in its line; `--estimate` the film length before synthesis, `--listener` the ending and punctuation counts for pass 4 (`references/script-review.md`) |
@@ -418,6 +433,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 |---|---|
 | `references/community.md` | How the viral Opus 5.5 films were prompted and built — read first |
 | `references/3d.md` | WebGL/three.js films — when to use them, capture path, determinism, speed, characters and the cast stage |
+| `references/blender.md` | Installed Blender path — scene authoring, render validation, and existing audio/caption pipeline |
 | `references/shorts-formula.md` | The Shorts formula: structure, pacing, banded layout, captions — only when the user chose it |
 | `references/openings.md` | Opening types (result first, question, number card, title sting, mid-scene, preview, cover then motion, ...): what each looks like, when it fits, how to build it — read at the start to recommend three |
 | `references/assembly.md` | A film that shows something built in many ordered steps, driven by data (reading a model file, insertion direction, surface check, timeline JSON, drift guard, the clock of a film with no narration, short scenes) — read only for that film type |

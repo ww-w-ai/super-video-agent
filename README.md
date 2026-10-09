@@ -47,8 +47,10 @@ Say "3D" and the skill takes the 3D path by itself:
 /super-video-agent Show what happens after you press Enter on an AI prompt, in 3D like a video game
 ```
 
-three.js is not bundled; the agent installs it into your reel the first time. WebGL renders on
-the CPU in headless Chromium: the 40-second gallery film took about 11 minutes with 4 workers.
+Already have Blender? The agent tests a small render and uses it for new 3D films if it works.
+Otherwise, it uses the built-in Three.js workflow. You do not need to install Blender.
+Three.js is not bundled; the agent installs it into your reel when that path is used.
+An explicit renderer choice takes precedence, and existing films keep their renderer.
 Details: [`references/3d.md`](skills/super-video-agent/references/3d.md).
 
 ### Adding image and video models
