@@ -2,6 +2,7 @@
 // window.__reel.ready, seeks to a time, and captures the single <canvas>
 // as a PNG buffer via toDataURL (no screenshot compositing, so we get
 // exactly the pixels the engine drew).
+import fs from "node:fs";
 import { deadAirRunsFromHashes } from "./dead-air.mjs";
 import { getChromium } from "./playwright.mjs";
 
@@ -238,8 +239,9 @@ export function stubSeconds(value, timingsPath, exists) {
  * settled) may take readyTimeoutMs(); the error names the step and lists
  * the page's own errors.
  * @param {string} url
- * @param {{width?: number, height?: number, stubSec?: number|null, stubSegments?: number, warm?: boolean, warmShots?: string[]|null, readyTimeoutMs?: number, picture?: {lang: string|null, strings: object}}} [opts]
+ * @param {{width?: number, height?: number, stubSec?: number|null, stubSegments?: number, timingsFile?: string|null, warm?: boolean, warmShots?: string[]|null, readyTimeoutMs?: number, picture?: {lang: string|null, strings: object}}} [opts]
  *   stubSec: serve stubTimings(stubSec, stubSegments) as voice/timings.json.
+ *   timingsFile: serve this file as voice/timings.json (render.mjs --timings).
  *   warm: false skips the per-shot warm-up seeks (verify.mjs's cold probe);
  *     warmShotsOf() can warm chosen shots later.
  *   warmShots: warm only these shot ids (null = every shot). A lazily built
@@ -271,8 +273,8 @@ export async function openReel(url, opts = {}) {
     if (/^Failed to load resource:/.test(msg.text())) return;
     errors.push(msg.text());
   });
-  if (opts.stubSec) {
-    const body = JSON.stringify(stubTimings(opts.stubSec, opts.stubSegments || 1));
+  if (opts.stubSec || opts.timingsFile) {
+    const body = opts.stubSec ? JSON.stringify(stubTimings(opts.stubSec, opts.stubSegments || 1)) : fs.readFileSync(opts.timingsFile, "utf8");
     await page.route(/\/voice\/timings\.json(\?.*)?$/, (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body })
     );

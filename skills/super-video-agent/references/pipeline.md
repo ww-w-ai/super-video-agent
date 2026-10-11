@@ -568,6 +568,18 @@ a line that needs more than `--max-speed` is placed at `--max-speed`, runs past 
 listed as `DRAFT: <id> needs <x>x`. A draft is for listening to; reword the listed lines before the
 final. A failure with no factor (a missing clip or line) still stops.
 
+**Render with a track kept beside the reel's own.** `render.mjs <reel> --narration <wav> --timings
+<json>` renders with that narration and those timings in place of `voice/narration.wav` and
+`voice/timings.json`: the page is served the given timings, so captions, `word:` cues and the clock
+follow them, and the mix and the A/V gate use the given narration. Use it for a re-timed or
+re-placed voice (a fitted track, lines moved onto events) without overwriting the voice the film was
+built on. Either flag works alone; neither combines with `--stub`. Without them nothing changes.
+
+**Mix headroom.** The premaster that the loudness pass measures is written as 32-bit float, so a
+mix whose sum goes over 0 dBFS (a loud bed under a boosted line, a crowd swell) is measured as it
+is instead of clipped; the master gain then brings it to the target. The final file's format is
+unchanged.
+
 The mix is stereo and runs the picture's full length. The bed (`picture.bed.wav`) keeps its own
 channels, so each cue's pan survives; the voice sits centred at full level in both channels. Both
 are padded to the picture, so the bed after the last line (the ending's sounds, the music fade)

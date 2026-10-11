@@ -13,7 +13,8 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { reelPaths, writeJson, readJson, loadPlan, loadTimings } from "./lib/reeldir.mjs";
+import { createTerminationGuard } from "./lib/termination.mjs";
+import { reelPaths, writeJson, readJson, loadPlan } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
@@ -45,6 +46,7 @@ import { draftsDir, draftSpan, draftSidecar, slotCut, reelStamp, slotProbeFrames
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
                  [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
                  [--span <from>-<to>[,<from>-<to>...]] [--assemble <edl.json>] [--fix-picture-duration] [--no-plan-cache]
+                 [--narration <wav>] [--timings <json>]
        render.mjs <reel-dir> --no-captions [--lang <code>] --bed-only
        render.mjs <reel-dir> --check-pair [--lang <code>]
 
@@ -178,6 +180,16 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               picture). Writes out/picture-<code>-<stamp>.mp4
               + out/picture-<code>.mp4, picture-<code>.bed.wav and
               picture-<code>.timings.json; dub.mjs --lang <code> uses them.
+--narration <wav>
+              use this narration instead of voice/narration.wav (mix, A/V
+              gate). For a re-timed or re-placed track kept beside the
+              reel's own, e.g. voice/narration.placed.wav. Not with --stub.
+--timings <json>
+              use this timings file instead of voice/timings.json: the page
+              is served it as voice/timings.json, so captions, cues and the
+              clock follow it; the A/V gate and the mix read it too. Pass
+              both when the track and its timings were placed together.
+              Not with --stub.
 --stub <sec>  for a reel with no voice/timings.json: the page is served one
               silent line of <sec> seconds (id "stub"); nothing is written to
               voice/. With --no-captions, out/picture.timings.json then
@@ -237,6 +249,24 @@ the sound cues; its warm-up seeks only the shots it will capture. The last
 line says how many times the page was opened.
 `;
 
+/**
+ * `--narration <wav>` and `--timings <json>`: the voice files this render uses in place of
+ * voice/narration.wav and voice/timings.json (e.g. a re-timed track kept beside the reel's own).
+ * The page is served the given timings as voice/timings.json. Absent: the reel's own files.
+ */
+export function withVoiceFiles(paths, flags) {
+  const out = { ...paths };
+  for (const [flag, key] of [["narration", "narrationWav"], ["timings", "timingsJson"]]) {
+    if (flags[flag] === undefined) continue;
+    if (typeof flags[flag] !== "string") throw new Error(`--${flag} takes a file path`);
+    if (flags.stub !== undefined) throw new Error(`--${flag} and --stub cannot be combined: --stub serves its own silent clock`);
+    const file = abs(flags[flag]);
+    if (!fs.existsSync(file)) throw new Error(`--${flag}: no such file ${file}`);
+    out[key] = file;
+  }
+  return out;
+}
+
 export async function main(argv) {
   const { positional, flags } = parseArgs(argv);
   if (flags.help || flags.h || positional.length === 0) {
@@ -244,7 +274,9 @@ export async function main(argv) {
     return;
   }
   const dir = abs(positional[0]);
-  const paths = reelPaths(dir);
+  const paths = withVoiceFiles(reelPaths(dir), flags);
+  // SIGTERM / SIGINT end the browser and ffmpeg children too; out/ temps are reported on the next run.
+  createTerminationGuard({ name: "render.mjs" }).install();
   if (flags["check-pair"]) {
     await runCheckPair({ paths, lang: flags.lang === undefined ? null : flags.lang });
     return;
@@ -461,7 +493,7 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
   const pageUrl = pictureUrl(server.url, noCaptions, lang);
   // Every session is opened cold and warmed only for the shots it will capture (pool.warmFor).
   const pool = createSessionPool({
-    open: () => openReel(pageUrl, { stubSec, stubSegments, picture, warm: false }),
+    open: () => openReel(pageUrl, { stubSec, stubSegments, picture, warm: false, timingsFile: ownTimings(dir, paths) ? null : paths.timingsJson }),
     warm: warmShotsOf,
   });
   try {
@@ -573,7 +605,7 @@ async function finishTrack({ dir, paths, pool, videoOnlyPath, expectedFrames, se
   if (sfx) sfxPath = sfx;
 
   const cueInputs = await resolveSoundCues(pool, paths.root);
-  const narrationWindows = narrationWindowsFor(dir, stubSec, stubSegments);
+  const narrationWindows = narrationWindowsFor(paths, stubSec, stubSegments);
   const sfxDuckDb = sfxDuckDbFor(dir);
 
   const stampedPath = path.join(paths.outDir, `${quality}-${timestamp()}.mp4`);
@@ -1422,7 +1454,9 @@ export function planCacheKey({ dir, paths, preview, noCaptions, lang, only, prob
     .createHash("sha256")
     .update(JSON.stringify([treeStats(dir), segmentCacheStats(segDir), baseSegDir ? segmentCacheStats(baseSegDir) : null]))
     .digest("hex");
-  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, fingerprint, skill: skillStamp() });
+  // A --timings file outside the reel is not in treeStats: its path and mtime join the key.
+  const timings = ownTimings(dir, paths) ? null : [paths.timingsJson, fs.statSync(paths.timingsJson).mtimeMs];
+  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, timings, fingerprint, skill: skillStamp() });
 }
 
 /** Which render code made a cached plan: the skill's package.json version and render.mjs's mtime (an edited or updated skill plans again). */
@@ -2255,7 +2289,7 @@ function noteMasterCap(report, measured) {
  * pass-2 gain filter (audio-mix.mjs measureMasterGain). */
 async function measurePremaster(inputArgs, filterComplex, outPath) {
   const premasterPath = uniqueTempPath(`${outPath}.premaster.wav`);
-  await ffmpeg(["-y", ...inputArgs, "-filter_complex", filterComplex, "-map", "[premaster]", "-c:a", "pcm_s16le", premasterPath]);
+  await ffmpeg(["-y", ...inputArgs, "-filter_complex", filterComplex, "-map", "[premaster]", "-c:a", "pcm_f32le", premasterPath]);
   try {
     return await measureMasterGain(premasterPath);
   } finally {
@@ -2324,8 +2358,13 @@ async function muxBedOnly({ sfxPath, cueInputs, durationSec, fadeOutSec, outPath
 }
 
 /** voice/timings.json's lines (or the --stub line) as {start,end} narration windows, for ducking (scripts/lib/duck.mjs). */
-function narrationWindowsFor(dir, stubSec, stubSegments = 1) {
-  const timings = stubSec ? stubTimings(stubSec, stubSegments) : loadTimings(dir);
+/** Whether `paths` uses the reel's own voice/timings.json (no --timings). */
+function ownTimings(dir, paths) {
+  return path.resolve(paths.timingsJson) === path.resolve(reelPaths(dir).timingsJson);
+}
+
+function narrationWindowsFor(paths, stubSec, stubSegments = 1) {
+  const timings = stubSec ? stubTimings(stubSec, stubSegments) : readJson(paths.timingsJson);
   return (timings.lines || []).map((l) => ({ start: l.start, end: l.end }));
 }
 

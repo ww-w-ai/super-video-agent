@@ -14,8 +14,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createTerminationGuard as createGuard } from "./lib/termination.mjs";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
@@ -544,52 +544,9 @@ export function uniqueTempPath(dir, stem, ext) {
   return trackTemp(path.join(dir, `.${stem}.${Date.now()}-${micros}-${process.pid}${ext}`));
 }
 
-/** Ends this process's direct children (ffmpeg, the browser) so none keeps running after a signal. */
-function killChildren() {
-  try {
-    spawnSync("pkill", ["-TERM", "-P", String(process.pid)], { stdio: "ignore" });
-  } catch {
-    // no pkill on this system: the children end when their pipes close with this process
-  }
-}
-
-const SIGNAL_EXIT = { SIGTERM: 143, SIGINT: 130 };
-
-/**
- * SIGTERM / SIGINT stop the run for real: children are ended, this run's temp
- * files are removed, and the process exits with the conventional 128+n code.
- * The handlers are injectable so the behaviour can be tested without a signal.
- */
-export function createTerminationGuard({ temps = runTemps, kill = killChildren, exit = (code) => process.exit(code), write = (s) => process.stderr.write(s) } = {}) {
-  const handlers = new Map();
-  const handle = (signal) => {
-    kill();
-    // A child that is still dying can write into a temp folder while it is removed (ENOTEMPTY);
-    // one failed removal must not stop the others or the exit code.
-    for (const p of temps) {
-      try {
-        fs.rmSync(p, { recursive: true, force: true, maxRetries: 3 });
-      } catch (e) {
-        write(`dub.mjs: could not remove ${p} (${e.code || e.message})\n`);
-      }
-    }
-    write(`dub.mjs: stopped by ${signal}; child processes ended and temporary files removed\n`);
-    exit(SIGNAL_EXIT[signal]);
-  };
-  return {
-    handle,
-    install() {
-      for (const signal of Object.keys(SIGNAL_EXIT)) {
-        const fn = () => handle(signal);
-        handlers.set(signal, fn);
-        process.on(signal, fn);
-      }
-    },
-    uninstall() {
-      for (const [signal, fn] of handlers) process.off(signal, fn);
-      handlers.clear();
-    },
-  };
+/** dub.mjs's SIGTERM / SIGINT guard (lib/termination.mjs) over this run's temp files. */
+export function createTerminationGuard(opts = {}) {
+  return createGuard({ name: "dub.mjs", temps: runTemps, ...opts });
 }
 
 /**
@@ -1192,7 +1149,7 @@ export async function mixDubAudio({ placedClips, bedPath, narrationWindows, duck
   ].join(";");
 
   const premasterPath = `${outPath}.premaster.wav`;
-  await ffmpeg(["-y", ...inputArgs, "-filter_complex", premixComplex, "-map", "[premaster]", "-c:a", "pcm_s16le", premasterPath]);
+  await ffmpeg(["-y", ...inputArgs, "-filter_complex", premixComplex, "-map", "[premaster]", "-c:a", "pcm_f32le", premasterPath]);
   let filter;
   try {
     ({ filter } = await measureMasterGain(premasterPath));
