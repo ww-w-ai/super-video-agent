@@ -3,11 +3,13 @@
 //  - findClipDefects: a start that is cut or carries the previous line's end (HEAD) and a line that stops at
 //    its own loudness (TAIL), both judged by perceived level (perceived-level.mjs) and together the gate
 //    (waveformFlag); a level drop inside the line (DIP); a silence inside the voiced span (PAUSE).
+//    withEndCut adds END_CUT: the clip lost the end of its last syllable that its raw take has (end-cut.mjs).
 //  - pitchTrack / endContour / wordContours: where the voice's pitch goes at the end of a line and
 //    across each word. A tool can measure the contour; whether it is the right one for the language
 //    (a question's rise, a tone, a Vietnamese tone contour) is the reader's judgement.
 import { SILENCE_THRESHOLD_DB } from "../lib/audio-analysis.mjs";
 import { edgeAudibility } from "../lib/perceived-level.mjs";
+import { endCutFacts, describeEndCut } from "./end-cut.mjs";
 
 const ENV_HOP_SEC = 0.01;
 /** HEAD: the voiced span's first 150 ms. */
@@ -128,16 +130,35 @@ export function findClipDefects(samples, rate, mask = {}) {
  * @returns {"TAIL"|"HEAD"|null}
  */
 export function waveformFlag(defects) {
+  const endCut = defects && defects.endCut;
+  // An install cut (raw take whole) comes first: its fix is a re-install, not a new take.
+  if (endCut && endCut.cut && !endCut.rawCut) return "END_CUT";
   const edges = defects && defects.edges;
+  if (edges && edges.tail.cut) return "TAIL";
+  if (endCut && endCut.cut) return "END_CUT";
   if (!edges) return null;
-  if (edges.tail.cut) return "TAIL";
   return edges.head.abrupt ? "HEAD" : null;
+}
+
+/**
+ * The clip's facts with the sentence-end audit against its raw take added (`endCut`, end-cut.mjs).
+ * Without a raw take the facts stay as they are: nothing to compare.
+ * @param {object|null} defects findClipDefects of the clip
+ * @param {{samples:Float32Array, sampleRate:number}} clip
+ * @param {{samples:Float32Array, sampleRate:number}|null} raw
+ */
+export function withEndCut(defects, clip, raw) {
+  if (!defects || !raw || !clip) return defects;
+  const endCut = endCutFacts(raw.samples, clip.samples, clip.sampleRate, raw.sampleRate);
+  return endCut ? { ...defects, endCut } : defects;
 }
 
 /** One short phrase per defect found, empty when the clip is clean. */
 export function describeDefects(defects) {
   if (!defects) return [];
   const out = [];
+  const endCut = describeEndCut(defects.endCut);
+  if (endCut) out.push(endCut);
   const edges = defects.edges;
   if (edges && edges.head.abrupt) out.push(`HEAD cut (sound ${Math.abs(edges.head.relLine)} LU under the line's loudness is already audible at ${(edges.head.audibleAtSec * 1000).toFixed(0)} ms: the start is cut, or carries the end of the previous line)`);
   if (edges && edges.tail.cut) out.push(`TAIL cut (the sound stops ${Math.abs(edges.tail.relLine)} LU under the line's loudness at ${(edges.tail.audibleUntilSec * 1000).toFixed(0)} ms: a natural release dies away well under it)`);
@@ -150,6 +171,7 @@ export function describeDefects(defects) {
 export function defectCodes(defects) {
   if (!defects) return [];
   return [
+    ...(defects.endCut?.cut ? ["END_CUT"] : []),
     ...(defects.edges?.head.abrupt ? ["HEAD-cut"] : []),
     ...(defects.edges?.tail.cut ? ["TAIL-cut"] : []),
     ...defects.dips.map((d) => `DIP@${d.atSec.toFixed(2)}s`),

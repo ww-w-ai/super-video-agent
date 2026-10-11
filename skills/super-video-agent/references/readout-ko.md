@@ -13,7 +13,7 @@ Korean speech changes sounds by the standard pronunciation rules (표준 발음�
 | 유음화 (제20항) | 난로 [날로], 칼날 [칼랄] | keep the normal spelling |
 | 구개음화 (제17항) | 굳이 [구지] | keep the normal spelling |
 | 거센소리되기, ㅎ 탈락 (제12항) | 놓고 [노코], 놓아 [노아] | keep the normal spelling |
-| 된소리되기 (제23–28항), hidden cases | 할 것 [할껏], 발전 [발쩐], 갈등 [갈뜽], 소수점 [소수쩜] | write the sound when the line leans on the word |
+| 된소리되기 (제23–28항), hidden cases | 할 것 [할껏], 발전 [발쩐], 갈등 [갈뜽], 소수점 [소수쩜]; compound nouns (제28항): 반값 [반깝], 반값이 [반깝씨], 물가 [물까], 글자 [글짜], 조건 [조껀], 인기 [인끼] | write the sound in `say` every time; the voice reads the spelling and misses it |
 | ㄴ 첨가 (제29항) | 솜이불 [솜니불], 한여름 [한녀름], 꽃잎 [꼰닙] | write the sound |
 | 사이시옷 (제30항) | 냇가 [내까], 깻잎 [깬닙] | keep the spelling; it already marks the sound |
 
@@ -33,7 +33,7 @@ mark, ㄴ 첨가, the 의 in 우리의 said as [에] — are where a line sounds
 | `6월`, `10월` | 유월, 시월 | fixed forms |
 | `3-2` (score) | 삼 대 이 | |
 | `3~5` | 삼에서 오 | |
-| `Opus 5.5`, `GitHub`, `xhigh` | 오퍼스 오쩜오, 깃허브, 엑스하이 | English names in Hangul, as Korean speakers say them |
+| `Sonnet 5`, `GPT-6`, `Opus 5.5`, `Nano Banana 2.1`, `GitHub`, `xhigh` | 소넷 파이브, 지피티 식스, 오퍼스 오쩜오, 나노 바나나 이쩜일, 깃허브, 엑스하이 | a whole-number version after an English name is read in English (not 소넷 오); a decimal version is read the Korean way with 쩜 (not 파이브 포인트 파이브) |
 
 ## Quoting a wrong reading
 

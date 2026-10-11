@@ -71,7 +71,11 @@ retry) is sent alone.
 head and tail; summed over a film it becomes a voice gap of a second or more. Every synthesized
 line is therefore cut to its voiced span plus 0.05 s at the head and 0.3 s at the tail (voiced =
 above −50 dBFS in 10 ms windows, the level `review.mjs` uses; a pause inside the line is never
-touched), with a 20 ms fade-in and a 30 ms fade-out at the cuts. The untrimmed take is kept at
+touched), with a 20 ms fade-in and a 30 ms fade-out at the cuts. The end never comes before the
+last syllable's decay: the trim follows it down to 45 dB under the line's level (or 6 dB over the
+take's noise floor) and starts the fade-out at least 50 ms after that. The cut and both fades run in
+one filter chain on the cut clip's own clock (`atrim`, `asetpts`, `afade`), so the fade-out sits at
+the clip's real end. The untrimmed take is kept at
 `voice/raw/<id>.wav` and replaced only when a new take is installed; `timings.json` records its
 hash per line as `rawTake`, and `voice.mjs <reel> --raw-status` reports whether each raw file is
 still the take its clip was made from (stale or missing: do not rebuild that line from raw).
@@ -283,10 +287,17 @@ owner to listen to, with its timestamp. The reverse holds too: STT cannot separa
 so a clean check does not prove a name or a homophone was read the intended way
 (`references/readout-en.md`).
 
-- `--retry-flagged N` (default 0) — explicitly opts into re-synthesizing lines flagged `MISHEARD`/`SHORT`/`TAIL`/`HEAD`
+- **Sentence ends** — the same transcript is checked per sentence: each sentence's final syllable
+  must be found in it (character alignment). Misses are stored as `stt.endsMissing` and printed
+  under the STT table as endings to listen to. Advisory: STT often fills in a clipped syllable, so
+  the waveform `END_CUT` check is the gate.
+
+- `--retry-flagged N` (default 0) — explicitly opts into re-synthesizing lines flagged `MISHEARD`/`SHORT`/`TAIL`/`HEAD`/`END_CUT`
   after the check up to `N` more times, keeping whichever take has the lower error rate, or the one that clears a
   `HEAD`/`TAIL` flag at no worse an error rate; a take that adds such a flag is never kept. Skipped
-  for deterministic providers (`say`, `file`, `none`) — regenerating gives the same result.
+  for deterministic providers (`say`, `file`, `none`) — regenerating gives the same result. An
+  `END_CUT` line whose raw take is whole is first installed again from `voice/raw/<id>.wav` (no
+  synthesis, any provider) and kept when the flag clears; only a cut raw take is re-synthesized.
   Prefer selecting confirmed problem lines with `--lines` after inspecting the evidence.
 - `--no-stt` — skips the check entirely (drafts, or when no engine is set up).
 - `--stt-only [--lines id,id]` — re-runs just the STT check against a reel's existing
@@ -336,10 +347,23 @@ abrupt starts or ends show only on the waveform and its level, so those are judg
 transcript result clears them. After each line is made, `voice.mjs` reads the line's own audio, stores
 the result in `timings.json` (`clipFacts`). `review.mjs` remeasures current `voice/line-<id>.wav`
 files with the same perceptual edge rules. It ignores saved facts and reports missing or unreadable
-clips as unchecked. `HEAD` and `TAIL` are the gate:
+clips as unchecked. `HEAD`, `TAIL` and `END_CUT` are the gate:
 the line gets that `voiceFlag`, the run prints a `WARN` naming the line, and the fix is to re-make it
 (`--lines <id>`, or `--retry-flagged N`, which keeps a take only when it does not add the flag). The
 rest are facts to listen to.
+
+`END_CUT` is the sentence-end audit. It compares the installed clip with its raw take
+(`voice/raw/<id>.wav`, only when `--raw-status` would call it current). The clip's 10 ms envelope is
+aligned to the raw take's (tempo 0.7–1.6× and gain found by search, so any install path works). Every
+raw frame of the last syllable and its release that is within 45 dB of the line's level must still
+be in the clip: 20 dB lower than the aligned raw frame (±1 frame), or digital silence, counts as
+lost. 20 ms lost = `END_CUT`; the fix is to install the raw take again
+(`--use <id>=<reel>/voice/raw/<id>.wav`). A raw take that itself stops while speaking (its last
+40 ms of sound within 30 dB of the level) is `TAIL` when the clip check sees it, else `END_CUT`;
+either way it needs a new take. A raw take
+that an earlier install already cut cannot be told from a whole one: re-voice it.
+`TAIL` reads only the clip. A 30 ms fade at a cut hides it, and a fast natural release can trip it,
+so for a cut made by the install `END_CUT` is the evidence.
 
 The edge rule follows how loud the sound is to a listener, not its sample values: a last sample that
 is not zero, or a hiss tens of decibels under the voice, is not a defect. Levels are K-weighted
@@ -353,6 +377,7 @@ that masks it where the clip is placed under one. The constants are in `scripts/
 |---|---|
 | `HEAD` (gate) | sound is already audible in the first 15 ms (within 15 LU of the line's own loudness) that is not a soft rise: a cut start, or the end of the previous line carried over |
 | `TAIL` (gate) | the line ends while it still sounds: the last 20 ms is still within 5 LU of the line's own loudness (loud enough to be heard as a cut), at a level above what the bed under it masks |
+| `END_CUT` (gate) | the clip lost at least 20 ms of its last syllable or release that the raw take has, or the raw take itself stops while speaking (above) |
 | `DIP` | a 150 ms stretch 15 dB under the line's median level, with sound on both sides |
 | `PAUSE` | 0.35 s or more of silence inside the voiced span |
 

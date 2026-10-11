@@ -1,6 +1,6 @@
 ---
 name: super-video-agent
-description: Make a narrated video drawn in code from any source. Use for any video, short, reel, promo or explainer — 영상·쇼츠·릴스·홍보영상, card news/images/article/blog/YouTube/topic → video — even unnamed. Not for editing footage or AI video models.
+description: Make a narrated video drawn in code from any source. Use for any video, short, reel, promo or explainer — 영상·쇼츠·릴스·홍보영상, card news/images/article/blog/YouTube/topic → video — even unnamed. Not for AI video models.
 ---
 
 # Super Video Agent

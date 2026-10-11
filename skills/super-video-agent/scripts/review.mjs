@@ -34,7 +34,8 @@ import {
 } from "./lib/audio-analysis.mjs";
 import { gapsFromPcm, silenceNote } from "./lib/silence-gate.mjs";
 import { loudnessUnderTarget } from "./lib/audio-mix.mjs";
-import { findClipDefects, describeDefects, waveformFlag } from "./voice/take-check.mjs";
+import { findClipDefects, withEndCut, describeDefects, waveformFlag } from "./voice/take-check.mjs";
+import { rawTakeStatus, rawTakePath } from "./lib/raw-take.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
@@ -47,7 +48,9 @@ readAt, with timestamps), scans for dead air, compares audio/video
 duration, and collects layout issues(). Writes
 <reel-dir>/out/review.json and prints a human summary. The summary also lists
 fresh voice clip facts measured from current line audio (HEAD, TAIL, DIP, PAUSE
-per line). Stored clipFacts are ignored; unavailable clips are reported unchecked.
+per line, and END_CUT: the clip lost the end of its last syllable that its
+current raw take voice/raw/<id>.wav has). Stored clipFacts are ignored;
+unavailable clips are reported unchecked.
 
 --mp4   path to an already-rendered video (default: out/final.mp4, or
         out/preview.mp4, or render a preview now if neither exists).
@@ -693,17 +696,27 @@ async function measureVoiceClip(line, voiceDir, decode) {
     const file = path.join(voiceDir, name);
     const pcm = await decode(file, AUDIO_SAMPLE_RATE);
     if (!pcm.length) throw new Error("current clip has no samples");
-    const defects = findClipDefects(pcm, AUDIO_SAMPLE_RATE);
-    return { id: line.id, file, facts: describeDefects(defects), flag: waveformFlag(defects) };
+    const defects = withEndCut(findClipDefects(pcm, AUDIO_SAMPLE_RATE), { samples: pcm, sampleRate: AUDIO_SAMPLE_RATE }, await currentRawTake(line, voiceDir, decode));
+    const flag = waveformFlag(defects);
+    const result = { id: line.id, file, facts: describeDefects(defects), flag };
+    if (flag === "END_CUT" && !defects.endCut.rawCut) result.reinstall = true;
+    return result;
   } catch (error) {
     return { id: line.id, reason: error.message };
   }
 }
 
+/** The line's raw take (voice/raw/<id>.wav) when it is the one its clip was made from, for the END_CUT audit; else null. */
+async function currentRawTake(line, voiceDir, decode) {
+  if (rawTakeStatus(voiceDir, line) !== "current") return null;
+  const samples = await decode(rawTakePath(voiceDir, line.id), AUDIO_SAMPLE_RATE);
+  return samples.length ? { samples, sampleRate: AUDIO_SAMPLE_RATE } : null;
+}
+
 /** Missing measurements remain explicit and never fall back to saved clipFacts. */
 export function voiceClipFactLines({ lines, measured, unmeasured, unavailable = [] }) {
   const out = lines.map((l) => (l.flag
-    ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (current clip, perceived-level evidence; re-make the line: voice.mjs <reel> --lines ${l.id})`
+    ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (current clip, ${l.reinstall ? `compared with its raw take; install that take again: voice.mjs <reel> --use ${l.id}=<reel>/voice/raw/${l.id}.wav` : `perceived-level evidence; re-make the line: voice.mjs <reel> --lines ${l.id}`})`
     : `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (current clip measurement)`));
   if (measured === 0) out.push("voice clip facts: CHECKED NOTHING; no current clips measured.");
   for (const clip of unavailable) out.push(`voice clip facts: CHECKED NOTHING, line "${clip.id}": ${clip.reason}`);

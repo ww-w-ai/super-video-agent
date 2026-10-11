@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { cutSpans, cutLineSamples, decayEnd, withQuietTail, fadeIn } from "../scripts/lib/line-split.mjs";
 import { kWeight, levelLufs, lineLoudness, audibleFloorLufs, edgeAudibility } from "../scripts/lib/perceived-level.mjs";
 import { findClipDefects, describeDefects, waveformFlag } from "../scripts/voice/take-check.mjs";
-import { edgeFadeArgs } from "../scripts/lib/clip-trim.mjs";
+import { edgeFades, trimAndFadeFilter } from "../scripts/lib/clip-trim.mjs";
 import { resolveCueFades, buildCueMixFilter, CUT_FADE_OUT_SEC } from "../scripts/lib/audio-mix.mjs";
 import { cueFadeFields } from "../scripts/lib/cues.mjs";
 import { fitAllLines } from "../scripts/lib/dub-timing.mjs";
@@ -193,8 +193,10 @@ test("11: a made line with a cut end gets voiceFlag TAIL and a WARN, whatever th
 });
 
 test("11: trimmed clips get a 20 ms fade-in and a 30 ms fade-out", () => {
-  assert.deepEqual(edgeFadeArgs(0.04), []);
-  assert.deepEqual(edgeFadeArgs(1), ["-af", "afade=t=in:st=0:d=0.02,afade=t=out:st=0.970000:d=0.03"]);
+  assert.equal(edgeFades(0.04), null);
+  assert.equal(edgeFades(1), "afade=t=in:st=0:d=0.02,afade=t=out:st=0.970000:d=0.03");
+  // The fades run on the cut clip's own clock: atrim + asetpts restamp it from zero first.
+  assert.equal(trimAndFadeFilter(0.5, 1.5), "atrim=start=0.500000:end=1.500000,asetpts=PTS-STARTPTS,afade=t=in:st=0:d=0.02,afade=t=out:st=0.970000:d=0.03");
 });
 
 // --- 12: cue fades -------------------------------------------------------------------------

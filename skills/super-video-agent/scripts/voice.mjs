@@ -11,13 +11,13 @@ import { ffmpeg, probeDuration, applyAtempo } from "./lib/ffmpeg.mjs";
 import { computeLineTimes, wordsProportional, HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { chooseProvider } from "./lib/choose-provider.mjs";
 import { resolvePythonPath } from "./lib/pyenv.mjs";
-import { compareLine, isGrossMismatch, tailCleared, pronounceFolds } from "./lib/stt-compare.mjs";
+import { compareLine, isGrossMismatch, tailCleared, pronounceFolds, sentenceEnds } from "./lib/stt-compare.mjs";
 import { sttTranscribe, sttTranscribeLeveled } from "./lib/stt-engine.mjs";
 import { spokenText, stripCaptionBreaks } from "./lib/pronounce.mjs";
 import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags.mjs";
 import { levelLineWav, formatLevelReport } from "./lib/line-level.mjs";
 import { trimClipToVoice } from "./lib/clip-trim.mjs";
-import { stageRawTake, commitRawTake, discardRawTake, rawTakeProblems, rawTakeWarning } from "./lib/raw-take.mjs";
+import { stageRawTake, commitRawTake, discardRawTake, rawTakeProblems, rawTakeWarning, rawTakeStatus, rawTakePath } from "./lib/raw-take.mjs";
 import { MIN_BREATH_SEC } from "./lib/dub-timing.mjs";
 import { measureNarrationGaps, formatSilenceReport } from "./lib/silence-gate.mjs";
 import { leadSec, formatLeadReport, withLeadHandover } from "./lib/lead.mjs";
@@ -48,7 +48,7 @@ import {
   SAME_LENGTH_SEC,
 } from "./voice/line-edit.mjs";
 import { alignCaptionWords } from "./voice/word-align.mjs";
-import { findClipDefects, describeDefects, defectCodes, waveformFlag, pitchTrack, endContour, wordContours, pitchSummary, PITCH_LIMITS } from "./voice/take-check.mjs";
+import { findClipDefects, withEndCut, describeDefects, defectCodes, waveformFlag, pitchTrack, endContour, wordContours, pitchSummary, PITCH_LIMITS } from "./voice/take-check.mjs";
 import { snapStartsToSound } from "./lib/word-onsets.mjs";
 import { readWav } from "./lib/wav-read.mjs";
 import { measureEdgeEnvelope, voicedSpanWithPads } from "./lib/clip-trim.mjs";
@@ -129,9 +129,15 @@ After a line is made, its own waveform and level are read, and the result is
 printed. Gate (voiceFlag, with a WARN naming the fix, no STT result clears it):
 HEAD (the start is cut, swallowed, or audible at once, or carries the end of the
 previous line) and TAIL (the line ends while it is still loud enough to hear),
-judged by perceived loudness (BS.1770 K-weighting, relative to the line's own level). Facts: DIP (a stretch 15 dB under the line's level), PAUSE
+judged by perceived loudness (BS.1770 K-weighting, relative to the line's own level),
+and END_CUT (sentence-end audit: the installed clip lost the end of its last
+syllable that its raw take voice/raw/<id>.wav still has, or the raw take itself
+stops while speaking). Facts: DIP (a stretch 15 dB under the line's level), PAUSE
 (0.35 s or more of silence inside the line). Re-make a flagged line with
---lines <id>, or --retry-flagged N. Caption words that follow a pause start where their sound begins, not
+--lines <id>, or --retry-flagged N; an END_CUT line with a whole raw take is
+installed again from that take (--use <id>=<reel>/voice/raw/<id>.wav), no new synthesis.
+The STT check also lists each sentence whose final syllable it did not hear
+(advisory, printed under the STT table). Caption words that follow a pause start where their sound begins, not
 where the STT pass put them (--stt-only leaves word times alone).
 
 --raw-status [--lines id,id]
@@ -162,11 +168,13 @@ abrupt edges are judged on the waveform (HEAD / TAIL below) and no transcript
 clears them.
 
 --no-stt            skip the speech-to-text check entirely.
---retry-flagged N   re-synthesize lines flagged MISHEARD/SHORT/TAIL/HEAD up to N
+--retry-flagged N   re-synthesize lines flagged MISHEARD/SHORT/TAIL/HEAD/END_CUT up to N
                      more times, keeping the candidate with the lowest
                      character error rate (default 0; opt in only after reviewing
                      the advisory evidence; skipped for
-                     deterministic providers: say, file, none).
+                     deterministic providers: say, file, none). An END_CUT
+                     line whose raw take is whole is installed again from
+                     voice/raw/<id>.wav first, for every provider.
 --stt-only           run the STT check on the existing voice/line-*.wav
                      files without synthesizing anything; updates
                      timings.json in place and does not touch narration.wav.
@@ -773,7 +781,7 @@ export async function synthesizeAll({
   // line?"): only on lines synthesized THIS run — a `--lines` pass leaves
   // reused lines' previous `stt` untouched (copied above).
   const checkedIds = lines.filter((l) => (!onlySet || onlySet.has(l.id)) && !refused.includes(l.id)).map((l) => l.id);
-  // The waveform check runs first: its HEAD / TAIL flags are what --retry-flagged re-makes lines for.
+  // The waveform check runs first: its HEAD / TAIL / END_CUT flags are what --retry-flagged re-makes lines for.
   await inspectMadeLines(paths, lineResults.filter((l) => checkedIds.includes(l.id)));
   if (sttEnabled && checkedIds.length) {
     const langCode = sttLangCode(lang);
@@ -797,7 +805,7 @@ export async function synthesizeAll({
             (l) =>
               checkedIds.includes(l.id) &&
               needsRetry(l.voiceFlag) &&
-              !DETERMINISTIC_PROVIDERS.has(lineVoice(linesById.get(l.id)).providerName)
+              (reinstallsFromRaw(l) || !DETERMINISTIC_PROVIDERS.has(lineVoice(linesById.get(l.id)).providerName))
           );
           if (!flagged.length) break;
           await retryFlaggedLines({
@@ -1016,7 +1024,16 @@ async function checkRefAudioLength(refAudio, reelDir) {
 }
 
 function needsRetry(voiceFlag) {
-  return voiceFlag === "MISHEARD" || voiceFlag === "SHORT" || voiceFlag === "TAIL" || voiceFlag === "HEAD";
+  return voiceFlag === "MISHEARD" || voiceFlag === "SHORT" || voiceFlag === "TAIL" || voiceFlag === "HEAD" || voiceFlag === "END_CUT";
+}
+
+/**
+ * An END_CUT line whose raw take is whole: --retry-flagged installs that take again (no synthesis).
+ * A raw take that is cut itself needs a new take like any other flag.
+ */
+export function reinstallsFromRaw(lineOut) {
+  const endCut = lineOut.clipFacts && lineOut.clipFacts.endCut;
+  return lineOut.voiceFlag === "END_CUT" && !!endCut && endCut.cut && !endCut.rawCut;
 }
 
 /**
@@ -1090,6 +1107,9 @@ export function applySttResult(lineOut, line, heard, sttWords, langCode, pronoun
     grossMismatch: gross,
     tailMatched: tailOk,
   };
+  // Sentence-end audit on the transcript: each sentence's final syllable (advisory, END_CUT is the gate).
+  const endsMissing = sentenceEnds(targetText, heard, langCode, names).filter((e) => !e.heard).map(({ sentence, final }) => ({ sentence, final }));
+  if (endsMissing.length) lineOut.stt.endsMissing = endsMissing;
   if (model) lineOut.stt.model = model;
 
   if (gross) {
@@ -1134,8 +1154,14 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     const backupPath = outPath + ".prevbest.wav";
     fs.copyFileSync(outPath, backupPath);
 
+    // END_CUT with a whole raw take: the same take is cut again, no new synthesis.
+    const fromRaw = reinstallsFromRaw(lineOut) && fs.existsSync(rawTakePath(paths.voiceDir, line.id));
     let synthResult;
-    if (typeof provider.synthBatch === "function") {
+    if (fromRaw) {
+      fs.copyFileSync(rawTakePath(paths.voiceDir, line.id), outPath);
+      synthResult = { wavPath: outPath };
+      process.stdout.write(`line "${line.id}": END_CUT — installing its raw take again (voice/raw/${line.id}.wav), no new synthesis\n`);
+    } else if (typeof provider.synthBatch === "function") {
       const items = [{ id: line.id, text: spoken, outPath }];
       const res = await withUsageLog(paths.voiceDir, lv, items, () => provider.synthBatch(items, { lang, voiceCfg, reelDir: dir }));
       synthResult = res.find((r) => r.id === line.id);
@@ -1144,7 +1170,7 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     }
 
     const wavPath = synthResult.wavPath;
-    const { leadTrimSec, staged } = await trimLineClip(paths, line.id, wavPath);
+    const { leadTrimSec, staged } = await trimLineClip(paths, line.id, wavPath, fromRaw ? (lineOut.rawTake && lineOut.rawTake.source) || "raw" : "synth");
     await applyLineTempo(wavPath, line, voiceCfg, provider);
     if (voiceCfg.levelLines !== false) {
       process.stdout.write(formatLevelReport(line.id, await levelLineWav(wavPath)));
@@ -1164,8 +1190,10 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     const oldCer = lineOut.stt ? lineOut.stt.cer : Infinity;
 
     const newClip = readLineClip(paths, line.id);
-    const newFacts = newClip ? findClipDefects(newClip.samples, newClip.sampleRate) : null;
-    if (keepsRetake({ newCer, oldCer, oldFlag: waveformFlag(lineOut.clipFacts), newFlag: waveformFlag(newFacts) })) {
+    const newFacts = newClip ? clipFactsAgainstRaw(newClip, staged.stagedPath) : null;
+    // A re-install of the same take says the same words: it stays when it clears the waveform flag.
+    const keep = fromRaw ? !waveformFlag(newFacts) : keepsRetake({ newCer, oldCer, oldFlag: waveformFlag(lineOut.clipFacts), newFlag: waveformFlag(newFacts) });
+    if (keep) {
       const delta = newDur - (lineOut.end - lineOut.start);
       lineOut.end = lineOut.start + newDur;
       const idx = lineResults.indexOf(lineOut);
@@ -1213,6 +1241,10 @@ function printSttTable(checkedLines) {
     const diffs = l.stt && l.stt.diffs && l.stt.diffs.length ? l.stt.diffs.map((d) => `${d.want}→${d.heard}`).join("; ") : "-";
     process.stdout.write(`${l.id}\t${cerStr}\t${flag}\t${diffs}\n`);
   }
+  const ends = checkedLines.filter((l) => l.stt && l.stt.endsMissing && l.stt.endsMissing.length);
+  if (!ends.length) return;
+  process.stdout.write("sentence ends the STT did not hear (advisory; listen to these endings):\n");
+  for (const l of ends) process.stdout.write(`${l.id}\t${l.stt.endsMissing.map((e) => `s${e.sentence} "${e.final}"`).join(", ")}\n`);
 }
 
 /** timings.json written whole through a temp name, so an interrupted write never leaves half a file. */
@@ -1661,18 +1693,36 @@ function reportAgainstExisting(freshLines, previousById) {
 }
 
 /**
- * What freshly made lines' own waveform and level say (HEAD, TAIL, EDGE, DIP, PAUSE), stored as
- * `clipFacts` and printed. HEAD and TAIL set the line's voiceFlag (when it has none) and print a
- * WARN: the speech-to-text check cannot see a click or a cut. Never stops the run.
+ * What freshly made lines' own waveform and level say (HEAD, TAIL, EDGE, DIP, PAUSE), plus the
+ * sentence-end audit against the line's current raw take (END_CUT), stored as `clipFacts` and printed.
+ * HEAD and TAIL set the line's voiceFlag (when it has none), END_CUT always; each prints a WARN: the
+ * speech-to-text check cannot see a click or a cut. Never stops the run.
  */
 async function inspectMadeLines(paths, freshLines) {
   for (const lineOut of freshLines) {
     const clip = readLineClip(paths, lineOut.id);
     if (!clip) continue;
-    const found = findClipDefects(clip.samples, clip.sampleRate);
+    const rawFile = rawTakeStatus(paths.voiceDir, lineOut) === "current" ? rawTakePath(paths.voiceDir, lineOut.id) : null;
+    const found = clipFactsAgainstRaw(clip, rawFile);
     if (found) lineOut.clipFacts = found; // timings.json keeps them for review.mjs
     reportClipDefects(lineOut, found);
   }
+}
+
+/**
+ * A clip's waveform facts plus the sentence-end audit (END_CUT) against `rawFile`, the untrimmed take
+ * it was made from. No raw file (or one that is not the clip's own): the audit is left out.
+ */
+function clipFactsAgainstRaw(clip, rawFile) {
+  const found = findClipDefects(clip.samples, clip.sampleRate);
+  if (!rawFile) return found;
+  let raw = null;
+  try {
+    raw = readWav(rawFile);
+  } catch {
+    return found;
+  }
+  return withEndCut(found, clip, raw);
 }
 
 function reportClipDefects(lineOut, found) {
@@ -1683,8 +1733,11 @@ function reportClipDefects(lineOut, found) {
     process.stdout.write(`line "${lineOut.id}": ${defects.join("; ")} — facts the STT check cannot hear; listen before keeping\n`);
     return;
   }
-  if (!lineOut.voiceFlag) lineOut.voiceFlag = flag;
-  process.stdout.write(`WARN line "${lineOut.id}": ${flag} — ${defects.join("; ")} — waveform evidence, no transcript clears it; re-make it: voice.mjs <reel> --lines ${lineOut.id} (or --retry-flagged N)\n`);
+  if (!lineOut.voiceFlag || flag === "END_CUT") lineOut.voiceFlag = flag;
+  const fix = reinstallsFromRaw(lineOut)
+    ? `install its raw take again: voice.mjs <reel> --use ${lineOut.id}=<reel>/voice/raw/${lineOut.id}.wav`
+    : `re-make it: voice.mjs <reel> --lines ${lineOut.id}`;
+  process.stdout.write(`WARN line "${lineOut.id}": ${flag} — ${defects.join("; ")} — waveform evidence, no transcript clears it; ${fix} (or --retry-flagged N)\n`);
 }
 
 /** N16: caption words after a pause start where their sound begins, on freshly made lines. */

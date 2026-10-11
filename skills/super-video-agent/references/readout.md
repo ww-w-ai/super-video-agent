@@ -32,7 +32,9 @@ to the take, or accept it on the STT check when nobody can (item 7).
 2. **Units and symbols** said once, in full: `%`, `$`, `km`, `x`, `→`, `/`, `#`, `@`.
 3. **Acronyms and names**: spell out the ones said letter by letter (`API`, `STT`); write the
    ones said as a word the way they are said (`GitHub`, `xhigh` → x-high). Foreign names in the
-   film's language as its speakers say them.
+   film's language as its speakers say them. An English name and the number or version that
+   belongs to it: a whole-number version is read in English (`Sonnet 5` → Sonnet five); a decimal
+   version is read the way the film's language reads decimals (Korean `5.5` → 오쩜오). See the language file.
 4. **URLs and commands** are not read out character by character; say a short form
    ("the link in the description").
 5. **Hidden sounds**: the language file lists the sound changes the spelling does not show.

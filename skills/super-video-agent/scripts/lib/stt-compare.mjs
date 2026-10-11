@@ -261,3 +261,55 @@ export function tailCleared(target, heard, lang = null, names = null) {
   const tail = nt.slice(-2);
   return nh.endsWith(tail);
 }
+
+const SENTENCE_END = /[.?!。？！]+(?=\s|$)|[。？！]+/u;
+
+/**
+ * Sentence-end audit on the transcript: for each sentence of `target`, whether its final character
+ * (normalized) is matched in `heard` by a character alignment (longest common subsequence). A final
+ * syllable that a cut removed is usually missing or changed in the transcript; one the model fills in
+ * from context is not caught here (the waveform END_CUT check is the gate).
+ * @param {string} target
+ * @param {string} heard
+ * @param {string|null} [lang]
+ * @param {[string,string][]|null} [names] pronounceFolds()
+ * @returns {{sentence:number, final:string, heard:boolean}[]}
+ */
+export function sentenceEnds(target, heard, lang = null, names = null) {
+  const parts = stripTags(target)
+    .split(SENTENCE_END)
+    .map((p) => normalize(p, lang, names))
+    .filter(Boolean);
+  if (!parts.length) return [];
+  const t = parts.join("");
+  const matched = matchedTargetIndexes(t, normalize(heard, lang, names));
+  let end = 0;
+  return parts.map((p, i) => {
+    end += p.length;
+    return { sentence: i + 1, final: t[end - 1], heard: matched.has(end - 1) };
+  });
+}
+
+/** Indexes of `a` that a longest-common-subsequence alignment with `b` matches. */
+function matchedTargetIndexes(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = new Set();
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      out.add(i);
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+    else j++;
+  }
+  return out;
+}
