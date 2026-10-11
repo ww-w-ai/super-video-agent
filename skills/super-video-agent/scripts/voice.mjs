@@ -801,12 +801,14 @@ export async function synthesizeAll({
       reportAgainstExisting(lineResults.filter((l) => checkedIds.includes(l.id)), previousById);
 
       if (retryFlagged > 0) {
+        // Re-installing the same raw take is deterministic: a second try gives the same clip.
+        const rawTried = new Set();
         for (let round = 0; round < retryFlagged; round++) {
           const flagged = lineResults.filter(
             (l) =>
               checkedIds.includes(l.id) &&
               needsRetry(l.voiceFlag) &&
-              (reinstallsFromRaw(l) || !DETERMINISTIC_PROVIDERS.has(lineVoice(linesById.get(l.id)).providerName))
+              ((reinstallsFromRaw(l) && !rawTried.has(l.id)) || !DETERMINISTIC_PROVIDERS.has(lineVoice(linesById.get(l.id)).providerName))
           );
           if (!flagged.length) break;
           await retryFlaggedLines({
@@ -821,6 +823,7 @@ export async function synthesizeAll({
             paths,
             slots,
             providerTimed,
+            rawTried,
           });
         }
       }
@@ -1137,7 +1140,7 @@ function shiftLine(lineOut, deltaSec) {
  * rate. A duration change on an accepted candidate shifts every later
  * line's start/end (mirrors the `--lines` "moved" mechanism).
  */
-async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, pronounce, lang: filmLang, langCode: filmLangCode, dir, paths, slots, providerTimed }) {
+async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, pronounce, lang: filmLang, langCode: filmLangCode, dir, paths, slots, providerTimed, rawTried = new Set() }) {
   for (const lineOut of flagged) {
     const line = linesById.get(lineOut.id);
     const slot = slots.get(lineOut.id);
@@ -1155,8 +1158,9 @@ async function retryFlaggedLines({ flagged, lineResults, linesById, lineVoice, p
     const backupPath = outPath + ".prevbest.wav";
     fs.copyFileSync(outPath, backupPath);
 
-    // END_CUT with a whole raw take: the same take is cut again, no new synthesis.
-    const fromRaw = reinstallsFromRaw(lineOut) && fs.existsSync(rawTakePath(paths.voiceDir, line.id));
+    // END_CUT with a whole raw take: the same take is cut again, no new synthesis — once per line.
+    const fromRaw = reinstallsFromRaw(lineOut) && !rawTried.has(line.id) && fs.existsSync(rawTakePath(paths.voiceDir, line.id));
+    if (fromRaw) rawTried.add(line.id);
     let synthResult;
     if (fromRaw) {
       fs.copyFileSync(rawTakePath(paths.voiceDir, line.id), outPath);

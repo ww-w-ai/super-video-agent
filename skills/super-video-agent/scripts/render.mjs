@@ -276,7 +276,13 @@ export async function main(argv) {
     return;
   }
   const dir = abs(positional[0]);
-  const paths = withVoiceFiles(reelPaths(dir), flags);
+  let paths;
+  try {
+    paths = withVoiceFiles(reelPaths(dir), flags);
+  } catch (e) {
+    fail(e.message);
+    return;
+  }
   // SIGTERM / SIGINT end the browser and ffmpeg children too; out/ temps are reported on the next run.
   createTerminationGuard({ name: "render.mjs" }).install();
   if (flags["check-pair"]) {
