@@ -16,7 +16,7 @@ function driftingReel() {
 function captureStderr(fn) {
   const orig = process.stderr.write;
   let out = "";
-  process.stderr.write = (s) => ((out += s), true);
+  process.stderr.write = (s, ...rest) => (typeof s === "string" ? ((out += s), true) : orig.call(process.stderr, s, ...rest));
   try {
     fn();
   } finally {

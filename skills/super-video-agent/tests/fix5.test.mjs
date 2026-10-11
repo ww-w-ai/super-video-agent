@@ -89,7 +89,7 @@ test("49: a frame that is not a sample is skipped; an engine without setCaptions
   assert.equal(collector.unsupported, true);
   const out = [];
   const write = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (s) => { out.push(String(s)); return true; };
+  process.stdout.write = (s, ...rest) => (typeof s === "string" ? (out.push(String(s)), true) : write.call(process.stdout, s, ...rest));
   try {
     reportRenderContrast(collector, path.join(tmp("sva-fix5-"), "contrast.json"));
   } finally {

@@ -243,7 +243,7 @@ async function joinNotes(argv) {
   const notes = [];
   const origErr = process.stderr.write.bind(process.stderr);
   const origOut = process.stdout.write.bind(process.stdout);
-  process.stderr.write = (s) => (notes.push(String(s)), true);
+  process.stderr.write = (s, ...rest) => (typeof s === "string" ? (notes.push(String(s)), true) : origErr.call(process.stderr, s, ...rest));
   process.stdout.write = silenceText(origOut);
   try {
     await joinMain(argv);

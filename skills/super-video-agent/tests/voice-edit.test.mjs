@@ -44,6 +44,7 @@ async function captureStdout(fn) {
   const orig = process.stdout.write.bind(process.stdout);
   let out = "";
   process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return orig.call(process.stdout, chunk, ...rest);
     out += String(chunk);
     return true;
   };

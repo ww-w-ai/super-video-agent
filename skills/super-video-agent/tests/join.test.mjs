@@ -120,7 +120,7 @@ function firstSoundAfter(pcm, sampleRate, fromSec) {
 
 async function joinQuietly(args) {
   const origWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = () => true;
+  process.stdout.write = (c, ...rest) => (typeof c === "string" ? true : origWrite.call(process.stdout, c, ...rest));
   try {
     await main(args);
   } finally {

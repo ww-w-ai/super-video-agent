@@ -119,7 +119,7 @@ test("reportGl: a GL warning is printed once; a GL error code stops the segment"
   const session = { gl };
   let printed = "";
   const orig = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (s) => ((printed += String(s)), true);
+  process.stdout.write = (s, ...rest) => (typeof s === "string" ? ((printed += String(s)), true) : orig.call(process.stdout, s, ...rest));
   try {
     reportGl(session, "frames [0,20)");
     reportGl(session, "frames [20,40)");
@@ -243,8 +243,8 @@ test("join.mjs: parts that share their stream are joined by packet copy (video f
     const notes = [];
     const origErr = process.stderr.write.bind(process.stderr);
     const origOut = process.stdout.write.bind(process.stdout);
-    process.stderr.write = (s) => (notes.push(String(s)), true);
-    process.stdout.write = () => true;
+    process.stderr.write = (s, ...rest) => (typeof s === "string" ? (notes.push(String(s)), true) : origErr.call(process.stderr, s, ...rest));
+    process.stdout.write = (c, ...rest) => (typeof c === "string" ? true : origOut.call(process.stdout, c, ...rest));
     try {
       await joinMain([path.join(dir, "ab.mp4"), a, b, "--json"]);
       await joinMain([path.join(dir, "ac.mp4"), a, c, "--json"]);
@@ -303,7 +303,7 @@ function setTimings(dir, duration) {
 const quiet = async (fn) => {
   const orig = process.stdout.write.bind(process.stdout);
   let text = "";
-  process.stdout.write = (s) => ((text += String(s)), true);
+  process.stdout.write = (s, ...rest) => (typeof s === "string" ? ((text += String(s)), true) : orig.call(process.stdout, s, ...rest));
   try {
     return { result: await fn(), text };
   } finally {
@@ -385,7 +385,7 @@ test("end to end: picture render, plan cache, --span (publish or throw), --bed-o
     assert.match(planned.text, /NEW  out\/new-a\.mp4  \[0,30\)/);
     const err = [];
     const origErr = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (s) => (err.push(String(s)), true);
+    process.stderr.write = (s, ...rest) => (typeof s === "string" ? (err.push(String(s)), true) : origErr.call(process.stderr, s, ...rest));
     let asm;
     try {
       asm = await quiet(() => pictureRender(dir, { assemble: edl }));
@@ -428,7 +428,7 @@ test("end to end: picture render, plan cache, --span (publish or throw), --bed-o
     await quiet(() => pictureRender(dir));
     fs.writeFileSync(edl, JSON.stringify({ entries: [{ segment: "a" }, { segment: "b" }, { segment: "c" }] }));
     const own = [];
-    process.stderr.write = (s) => (own.push(String(s)), true);
+    process.stderr.write = (s, ...rest) => (typeof s === "string" ? (own.push(String(s)), true) : origErr.call(process.stderr, s, ...rest));
     try {
       await quiet(() => pictureRender(dir, { assemble: edl }));
     } finally {

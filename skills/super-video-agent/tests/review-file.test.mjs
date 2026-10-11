@@ -75,7 +75,8 @@ test("review.mjs main() --file --json --out: needs no reel directory and writes 
 
   let captured = "";
   const origWrite = process.stdout.write.bind(process.stdout);
-  process.stdout.write = (chunk) => {
+  process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return origWrite.call(process.stdout, chunk, ...rest);
     captured += chunk;
     return true;
   };

@@ -30,7 +30,8 @@ const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 async function capture(fn) {
   const write = process.stdout.write.bind(process.stdout);
   let out = "";
-  process.stdout.write = (chunk) => {
+  process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return write.call(process.stdout, chunk, ...rest);
     out += String(chunk);
     return true;
   };

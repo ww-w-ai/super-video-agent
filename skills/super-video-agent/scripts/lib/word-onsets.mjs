@@ -109,12 +109,30 @@ function firstLoud(frames, floor, from, to) {
 }
 
 /**
- * N16: a word after a pause is timed early by the speech-to-text pass (it starts inside the
- * pause), so a caption changes before the voice. Moves such a word's start to where its sound
- * begins in the line's own energy envelope — one 10 ms RMS pass, no second recognition. Only ever
- * later: a start the pause leaves untouched, a word already on its sound, a pause with a breath
- * above the floor, and a sound that is not found before the next word stay as they are. A word
- * that sat wholly inside the pause keeps its duration at the new start.
+ * First frame of the loud run that reaches frame `to` from before, or -1 when frame `to - 1` is
+ * quiet (no run reaches the word) or the run reaches back past `from` (it is the previous word's
+ * sound, not this word's).
+ */
+function runStartBefore(frames, floor, from, to) {
+  let f = to - 1;
+  if (f < 0 || f >= frames.length || frames[f] < floor) return -1;
+  while (f - 1 >= from && frames[f - 1] >= floor) f--;
+  if (f === from && from > 0 && frames[from - 1] >= floor) return -1;
+  return f;
+}
+
+/**
+ * N16: the speech-to-text pass times a word after a pause, or a line's first word, away from its
+ * sound, so a caption or a `word:` cue changes before or after the voice. Moves such a word's
+ * start to where its sound begins in the line's own energy envelope — one 10 ms RMS pass, no
+ * second recognition.
+ * Later: a start inside the silence moves to the first loud frame after it (a sound not found
+ * before the next word leaves it).
+ * Earlier: a start recorded after its sound began moves back to the start of the loud run that
+ * reaches it, at most 0.6 s and never into the previous word; a loud stretch cut off from the word
+ * by silence (a breath) does not pull it.
+ * A word already on its sound stays. A word that sat wholly inside the pause keeps its duration at
+ * the new start.
  * @param {{w:string, start:number, end:number}[]} words on the clip's clock plus `offsetSec`
  * @param {Float32Array} samples the line's clip, mono
  * @param {number} sampleRate
@@ -128,12 +146,24 @@ export function snapStartsToSound(words, samples, sampleRate, offsetSec = 0) {
   const floor = soundFloor(frames);
   const at = (sec) => Math.round(sec / RMS_WIN_SEC);
   const moved = [];
+  const moveBackToRun = (word, i, start, prevEnd) => {
+    const from = at(Math.max(i === 0 ? 0 : prevEnd + SNAP_END_MARGIN_SEC, start - SNAP_REACH_SEC));
+    const onset = runStartBefore(frames, floor, from, at(start));
+    if (onset < 0) return;
+    const sound = onset * RMS_WIN_SEC;
+    if (start - sound < MIN_SNAP_SEC) return;
+    word.start = round3(sound + offsetSec);
+    moved.push({ index: i, w: word.w, from: round3(words[i].start), to: word.start });
+  };
   out.forEach((word, i) => {
     if (typeof word.start !== "number" || typeof word.end !== "number") return;
     const start = word.start - offsetSec;
     const prevEnd = i === 0 ? 0 : out[i - 1].end - offsetSec;
     if (i > 0 && start - prevEnd < PAUSE_BEFORE_WORD_SEC) return;
-    if (firstLoud(frames, floor, at(Math.max(0, prevEnd)), at(start)) >= 0) return;
+    if (firstLoud(frames, floor, at(Math.max(0, prevEnd)), at(start)) >= 0) {
+      moveBackToRun(word, i, start, prevEnd);
+      return;
+    }
     const next = i < out.length - 1 && typeof out[i + 1].start === "number" ? out[i + 1].start - offsetSec : Infinity;
     const limit = Math.min(next - SNAP_END_MARGIN_SEC, start + SNAP_REACH_SEC);
     const onset = firstLoud(frames, floor, at(start), at(limit));

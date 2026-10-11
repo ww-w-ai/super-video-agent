@@ -262,7 +262,7 @@ test("review 2: the second model's transcript replaces the first only when its e
 test("review 3: printTakesTable names the reason when the STT check was skipped", () => {
   const written = [];
   const real = process.stdout.write;
-  process.stdout.write = (s) => { written.push(String(s)); return true; };
+  process.stdout.write = (s, ...rest) => (typeof s === "string" ? (written.push(String(s)), true) : real.call(process.stdout, s, ...rest));
   try {
     printTakesTable([
       { id: "l1", k: 1, mark: null, durationSec: 1, lengthSec: 1, cer: null, cerSkipped: 'STT model "small" is not downloaded' },

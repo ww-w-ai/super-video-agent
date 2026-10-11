@@ -132,7 +132,7 @@ test("voice stage: lines are trimmed to the voiced span (0.05 s head, 0.3 s tail
     const lines = [{ id: "l1", text: "one", pauseAfterMs: 2000 }, { id: "l2", text: "two" }, { id: "l3", text: "three" }];
     const out = [];
     const orig = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (s, ...rest) => (out.push(String(s)), true);
+    process.stdout.write = (s, ...rest) => (typeof s === "string" ? (out.push(String(s)), true) : orig.call(process.stdout, s, ...rest));
     let result;
     try {
       result = await synthesizeAll({ dir, paths, provider, providerName: "none", voiceCfg: { levelLines: false }, lang: "en-US", gapMs: 250, sttEnabled: false, lines });
@@ -169,7 +169,7 @@ test("voice stage: dead air left in a clip's middle is reported with its line id
     };
     const out = [];
     const orig = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (s) => (out.push(String(s)), true);
+    process.stdout.write = (s, ...rest) => (typeof s === "string" ? (out.push(String(s)), true) : orig.call(process.stdout, s, ...rest));
     let result;
     try {
       result = await synthesizeAll({ dir, paths, provider, providerName: "none", voiceCfg: { levelLines: false }, lang: "en-US", gapMs: 250, sttEnabled: false, lines: [{ id: "x", text: "one" }] });

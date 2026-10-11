@@ -18,7 +18,8 @@ const tmp = (p = "sva-fix14-") => fs.mkdtempSync(path.join(os.tmpdir(), p));
 async function captureStdout(fn) {
   const orig = process.stdout.write.bind(process.stdout);
   let out = "";
-  process.stdout.write = (chunk) => {
+  process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return orig.call(process.stdout, chunk, ...rest);
     out += String(chunk);
     return true;
   };

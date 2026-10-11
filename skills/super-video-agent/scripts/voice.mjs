@@ -1824,7 +1824,8 @@ function readLineClip(paths, id) {
 }
 
 /**
- * N16: moves each measured word that follows a pause to where its sound begins (snapStartsToSound).
+ * N16: moves a line's first measured word and each one that follows a pause to where its sound
+ * begins, later or earlier (snapStartsToSound).
  * Words that were only spread evenly (wordsMeasured 0) stay.
  */
 function snapLineWords(lineOut, clip) {
@@ -1833,7 +1834,7 @@ function snapLineWords(lineOut, clip) {
   if (!snapped.moved.length) return;
   lineOut.words = snapped.words;
   const first = snapped.moved[0];
-  process.stdout.write(`line "${lineOut.id}": ${snapped.moved.length} word start(s) after a pause moved to where the sound begins (first: "${first.w}" ${first.from.toFixed(3)} -> ${first.to.toFixed(3)} s)\n`);
+  process.stdout.write(`line "${lineOut.id}": ${snapped.moved.length} word start(s) moved to where the sound begins (first: "${first.w}" ${first.from.toFixed(3)} -> ${first.to.toFixed(3)} s)\n`);
 }
 
 /** plan.json's meta, or {} when the plan is missing or unreadable. */

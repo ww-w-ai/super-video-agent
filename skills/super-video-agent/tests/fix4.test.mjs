@@ -302,7 +302,7 @@ test("tempo.mjs reports without writing unless --out is given, and --out needs a
   const tlPath = path.join(dir, "timeline.json");
   fs.writeFileSync(tlPath, JSON.stringify({ duration: 20, steps: STAGES }));
   const write = process.stdout.write;
-  process.stdout.write = () => true;
+  process.stdout.write = (c, ...rest) => (typeof c === "string" ? true : write.call(process.stdout, c, ...rest));
   try {
     tempoMain(["--timeline", tlPath, "--target", "10"]);
     assert.equal(fs.readFileSync(tlPath, "utf8").includes('"tempo"'), false);

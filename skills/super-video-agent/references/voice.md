@@ -597,9 +597,11 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - Without `SVA_STT_PYTHON` (or with `--no-stt`) word times fall back to an even spread by letters
   across the line (`wordsMeasured: 0`), which has been up to ~0.4 s off the sound and misses
   pauses. Word ends inside continuous speech are less exact than word starts; land beats on starts.
-  After a pause inside a line, a caption word starts where its sound begins, not where the
-  speech-to-text pass put it (`voice.mjs` snaps it to the audio after each line is made;
-  `--stt-only` does the same).
+  A line's first word, and a word after a pause inside a line, starts where its sound begins,
+  not where the speech-to-text pass put it: a start recorded inside the silence moves later, and a
+  start recorded after the sound already began moves back to where that sound starts (at most
+  0.6 s, never into the previous word). `voice.mjs` snaps it to the audio after each line is made;
+  `--stt-only` does the same.
 - **Do not cut a line's audio at a word end.** A word end is the least exact time, and a cut there
   clips the first sound of the next word. To split speech after a word, synthesize the two parts
   as separate lines and put the pause between them (`pauseAfterMs`, or `--insert-pause` on a

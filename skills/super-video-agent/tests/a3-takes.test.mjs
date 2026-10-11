@@ -24,7 +24,8 @@ const tmp = (p = "sva-a3-") => fs.mkdtempSync(path.join(os.tmpdir(), p));
 async function captureStdout(fn) {
   const orig = process.stdout.write.bind(process.stdout);
   let out = "";
-  process.stdout.write = (chunk) => {
+  process.stdout.write = (chunk, ...rest) => {
+    if (typeof chunk !== "string") return orig.call(process.stdout, chunk, ...rest);
     out += String(chunk);
     return true;
   };
@@ -341,6 +342,27 @@ test("N16: a breath above the floor in the pause, or sound not found before the 
   assert.deepEqual(stays.moved, [], "no sound between the recorded start and the next word");
 });
 
+test("N16: a start recorded after its sound began moves back to where that sound starts (first word and after a pause)", () => {
+  const sig = asFloat(signal([{ sec: 0.2 }, { amp: 0.5, hz: 150, sec: 0.6 }, { sec: 0.6 }, { amp: 0.5, hz: 150, sec: 0.6 }]));
+  const words = [{ w: "a", start: 0.35, end: 0.8 }, { w: "b", start: 1.6, end: 2.0 }];
+  const { words: out, moved } = snapStartsToSound(words, sig, RATE);
+  assert.deepEqual(moved.map((m) => m.w), ["a", "b"]);
+  assert.ok(Math.abs(out[0].start - 0.2) <= 0.02, `a starts ${out[0].start}`);
+  assert.ok(Math.abs(out[1].start - 1.4) <= 0.02, `b starts ${out[1].start}`);
+  assert.deepEqual([out[0].end, out[1].end], [0.8, 2.0]);
+  const offset = snapStartsToSound([{ w: "a", start: 10.35, end: 10.8 }], sig, RATE, 10);
+  assert.ok(Math.abs(offset.words[0].start - 10.2) <= 0.02, `${offset.words[0].start}`);
+});
+
+test("N16: a move back never reaches into the previous word or past 0.6 s, and a breath cut off by silence does not pull", () => {
+  // b's sound joins a's with no silence: the run is a's tail, so b stays.
+  const joined = asFloat(signal([{ amp: 0.5, hz: 150, sec: 0.6 }, { amp: 0.5, hz: 170, sec: 0.6 }]));
+  assert.deepEqual(snapStartsToSound([{ w: "a", start: 0, end: 0.3 }, { w: "b", start: 0.9, end: 1.2 }], joined, RATE).moved, []);
+  // A sound that began more than 0.6 s before the recorded first-word start is not followed.
+  const long = asFloat(signal([{ amp: 0.5, hz: 150, sec: 1.5 }]));
+  assert.deepEqual(snapStartsToSound([{ w: "a", start: 1.0, end: 1.5 }], long, RATE).moved, []);
+});
+
 test("N16: a provider-timed line gets its word start moved to the sound at install", async (t) => {
   const dir = tmp();
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -356,7 +378,7 @@ test("N16: a provider-timed line gets its word start moved to the sound at insta
   });
   const line = run.timings.lines[0];
   assert.ok(Math.abs(line.words[1].start - (line.start + 1.0)) <= 0.02, `${line.words[1].start} vs ${line.start + 1}`);
-  assert.match(out, /line "x": 1 word start\(s\) after a pause moved to where the sound begins/);
+  assert.match(out, /line "x": 1 word start\(s\) moved to where the sound begins/);
 });
 
 // --- TTS usage log -----------------------------------------------------------------------------
