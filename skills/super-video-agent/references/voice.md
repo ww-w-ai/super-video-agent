@@ -521,7 +521,7 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - A re-made take is fitted to the old line's slot, in the order `dub.mjs` fits a language:
   1. trim the clip's edges to its voiced span;
   2. speed it up by at most 1.1× if it is longer than the slot (`atempo`, pitch kept);
-  3. keep at least 0.5 s of breath after it;
+  3. keep at least the minimum breath after it (`meta.minBreathMs`, default 500 ms);
   4. leave a voice-free gap of at most 1.0 s (a much shorter take is slowed by at most 0.95×,
      then reported);
   5. a take that still does not fit is **refused**: the old clip stays, the take is kept at
@@ -572,7 +572,10 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   with how far under it stays.
 - Head 0.4 s, gap `meta.gapMs` (default 700 ms) between lines, tail 0.4 s. A line's own
   `pauseAfterMs` replaces the gap after it: short when the next line continues the thought, long
-  at a scene change (`references/script-review.md`, "Narration that flows"). Changing pauses
+  at a scene change (`references/script-review.md`, "Narration that flows"). Every pause is
+  at least `meta.minBreathMs` (default 500 ms; a shorter pause is raised to it and reported).
+  `pauseAfterMs` is a designated silence: kept as written, never shrunk by a dub or retake fit.
+  A dub plan copies the base plan's `meta`, so dubs keep the same minimum breath. Changing pauses
   needs no re-synthesis: `voice.mjs --lines ""` re-lays the existing clips. A line's
   `pauseBeforeMs` adds silence before it, after the previous line's pause: the picture plays that
   long before the line starts (a first line: after the head). It is recorded as `pauseBeforeSec`

@@ -14,6 +14,14 @@ const DEFAULT_MAX_ATEMPO = 1.1;
 // Silence kept after a line when its slot leaves room (SKILL.md: about 0.5 s
 // after each line). A slot without room is reported, never cut silently.
 export const MIN_BREATH_SEC = 0.5;
+/**
+ * The plan's minimum breath (meta.minBreathMs) in seconds, else MIN_BREATH_SEC.
+ * A fast-paced film (live sports commentary) sets it shorter.
+ * @param {{minBreathMs?:number}} [meta]
+ */
+export function minBreathSecOf(meta) {
+  return meta && Number.isFinite(meta.minBreathMs) && meta.minBreathMs >= 0 ? meta.minBreathMs / 1000 : MIN_BREATH_SEC;
+}
 // Longest silence after a line: the silence gate's limit.
 export const MAX_BREATH_SEC = 1.0;
 // Slowest a line may be played to close a gap over MAX_BREATH_SEC.

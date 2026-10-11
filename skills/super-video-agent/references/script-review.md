@@ -96,6 +96,14 @@ becomes a pause, and every line boundary gets the same silence.
 A listener needs a beat to take in each line. Shorter gaps than these sound rushed, most of all
 with a bright voice at 1.1× or faster.
 
+Every pause is raised to the minimum breath, `meta.minBreathMs` (default 500). Fast live talk is
+the exception: for sports play-by-play or other live commentary, recommend short breaths in the
+script stage, e.g. `meta.gapMs` about 250 and `meta.minBreathMs` about 200 (lines in a measured
+basketball commentary sat about 0.25 s apart while the talk flowed). The silences that must stay
+(a held breath before a shot, a beat after a big play) get their own `pauseAfterMs`: a line's
+`pauseAfterMs` is a designated silence and is kept as written; every other line gets the short
+`meta.gapMs`. A starting point, not a rule: judge it by listening.
+
 Before and after (`/` separates two lines; the number is the pause between them):
 
 | Choppy | Flows |

@@ -29,6 +29,7 @@ import {
   buildPlacedTimings,
   computeSlots,
   plannedGapMap,
+  minBreathSecOf,
   planCaptionSpans,
   langFrameRanges,
   promoteSharedSpan,
@@ -415,7 +416,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
     // 2. speed (at most maxSpeed) and 3. the voice-free gap: fitAllLines.
     // A pause the plan (pauseAfterMs) or the picture declared is planned silence, never slowed away.
     const plannedFor = (timings) => plannedGapMap(pictureGapPlan(timings.lines, dubPlan.lines));
-    const fitSlots = (timings) => fitOrThrow(timings.lines, dubLines, clipDurations, timings.duration, maxSpeed, { plannedGapSec: plannedFor(timings) });
+    const fitSlots = (timings) => fitOrThrow(timings.lines, dubLines, clipDurations, timings.duration, maxSpeed, { plannedGapSec: plannedFor(timings), minBreathSec: minBreathSecOf(dubPlan.meta) });
     let fit = fitSlots(baseTimings);
 
     // --min-gap: from here on this language's final uses the widened

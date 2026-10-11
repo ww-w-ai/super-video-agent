@@ -169,7 +169,8 @@
         "cast": { "type": "string", "minLength": 1, "description": "Reusable cast JSON path, relative to this plan directory or absolute. Speaker language voices live only there." },
         "voice": { "$ref": "#/definitions/voice" },
         "pronounce": { "type": "object", "description": "Pronunciation dictionary: {\"<word>\": {\"say\": \"<respelling or replacement>\", \"ipa\": \"<IPA>\"}}. Applied to spoken text only; captions keep `text`. A line's entries override meta.pronounce. See references/readout.md." },
-        "gapMs": { "type": "integer", "minimum": 0, "default": 700 },
+        "gapMs": { "type": "integer", "minimum": 0, "default": 700, "description": "Silence after a line that has no pauseAfterMs of its own. Fast live commentary (sports play-by-play) uses about 250 together with a lower minBreathMs." },
+        "minBreathMs": { "type": "integer", "minimum": 0, "default": 500, "description": "Shortest silence kept after a line, in ms; a shorter gapMs or pauseAfterMs is raised to it. Default 500. Fast live commentary (sports play-by-play) uses about 200." },
         "tailSec": {
           "type": "number",
           "minimum": 0,
@@ -272,7 +273,7 @@
           "pauseAfterMs": {
             "type": "integer",
             "minimum": 0,
-            "description": "Silence after this line in ms, overriding meta.gapMs. About 400 when the next line continues the same sentence or thought, meta.gapMs (700) for a new point, about 1000 at a scene or topic change."
+            "description": "Silence after this line in ms, overriding meta.gapMs: a designated silence. It is kept as written (raised only to meta.minBreathMs) and no dub or retake fit slows a line to shrink it; lines without it get meta.gapMs. About 400 when the next line continues the same sentence or thought, meta.gapMs (700) for a new point, about 1000 at a scene or topic change."
           },
           "rate": {
             "type": "number",

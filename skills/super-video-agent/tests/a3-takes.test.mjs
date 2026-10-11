@@ -100,7 +100,7 @@ test("51: planRetakeFit follows the dub order: unchanged, sped up to 1.1x, refus
 test("51: previousSlots: start to the next start; the last line adds its planned pause", () => {
   const prev = [{ id: "a", start: 0.4, end: 2.4 }, { id: "b", start: 2.9, end: 3.3 }];
   const slots = previousSlots(prev, [{ id: "a" }, { id: "b", pauseAfterMs: 1200 }], 250);
-  assert.deepEqual(slots.get("a"), { slotSec: 2.5, oldClipSec: 2.0 });
+  assert.deepEqual(slots.get("a"), { slotSec: 2.5, oldClipSec: 2.0, minBreathSec: 0.5 });
   assert.ok(Math.abs(slots.get("b").slotSec - (0.4 + 1.2)) < 1e-9);
 });
 

@@ -9,7 +9,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { readJson, ensureDir } from "./lib/reeldir.mjs";
 import { probeDuration } from "./lib/ffmpeg.mjs";
-import { computeSlots, plannedGapMap } from "./lib/dub-timing.mjs";
+import { computeSlots, plannedGapMap, minBreathSecOf } from "./lib/dub-timing.mjs";
 import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
 import { MAX_SPEED_DEFAULT, trimVoiceClips, shiftForTrim, fitOrThrow, fitDraft, formatDraftOverflow, placeLineClips, buildNarrationTrack } from "./lib/fit-track.mjs";
 import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
@@ -91,7 +91,7 @@ export async function fitTrack({ timingsPath, voiceDir, outPath, videoPath = nul
     const durations = new Map([...trims].map(([id, t]) => [id, t.trimmedDurationSec]));
     const voiceLines = shiftForTrim(voice.lines, trims);
     const planned = plannedGapMap(pictureGapPlan(base.lines, planLines));
-    const breath = { plannedGapSec: planned };
+    const breath = { plannedGapSec: planned, minBreathSec: minBreathSecOf(plan.meta) };
     const fit = draft ? fitDraft(base.lines, voiceLines, durations, seconds, maxSpeed, breath) : fitOrThrow(base.lines, voiceLines, durations, seconds, maxSpeed, breath);
     if (draft) process.stdout.write(formatDraftOverflow(fit.overflow, maxSpeed));
     const fill = formatFillWarnings(reportLineFill(fit.lines, computeSlots(base.lines, seconds), base.lines, planned));

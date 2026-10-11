@@ -18,7 +18,7 @@ import { forEngine, unknownMarks, applyDeliveryMark, EMOTIONS } from "./lib/tags
 import { levelLineWav, formatLevelReport } from "./lib/line-level.mjs";
 import { trimClipToVoice } from "./lib/clip-trim.mjs";
 import { stageRawTake, commitRawTake, discardRawTake, rawTakeProblems, rawTakeWarning, rawTakeStatus, rawTakePath } from "./lib/raw-take.mjs";
-import { MIN_BREATH_SEC } from "./lib/dub-timing.mjs";
+import { MIN_BREATH_SEC, minBreathSecOf } from "./lib/dub-timing.mjs";
 import { measureNarrationGaps, formatSilenceReport } from "./lib/silence-gate.mjs";
 import { leadSec, formatLeadReport, withLeadHandover } from "./lib/lead.mjs";
 import {
@@ -411,6 +411,7 @@ export async function main(argv) {
   }
 
   const gapMs = plan.meta.gapMs == null ? 700 : plan.meta.gapMs;
+  const minBreathSec = minBreathSecOf(plan.meta);
   const tailSec = plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec;
   const voiceCfg = resolveLineVoice(plan.meta, null, providerName).voiceCfg;
   if (voiceCfg.rate != null && (plan.meta.voice || {}).rate == null) {
@@ -447,7 +448,7 @@ export async function main(argv) {
 
   if (flags.use) {
     try {
-      await runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
+      await runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, minBreathSec, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -456,7 +457,7 @@ export async function main(argv) {
 
   if (flags.pick) {
     try {
-      await runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
+      await runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices, gapMs, minBreathSec, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -475,7 +476,7 @@ export async function main(argv) {
 
   if (pickBy && !flags.takes) {
     try {
-      await runPickBy({ dir, paths, plan, flags, pickBy, lineIds: onlyLineIds, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
+      await runPickBy({ dir, paths, plan, flags, pickBy, lineIds: onlyLineIds, providerMod, providerName, voiceCfg, lineVoices, gapMs, minBreathSec, tailSec, sttEnabled });
     } catch (e) {
       fail(e.message);
     }
@@ -507,7 +508,7 @@ export async function main(argv) {
         lineVoices,
         pronounce: plan.meta.pronounce,
         lang: plan.meta.lang || "ko-KR",
-        gapMs,
+        gapMs, minBreathSec,
         tailSec,
         sttEnabled,
         keepTiming: keepOldSlots(dir, flags),
@@ -530,7 +531,7 @@ export async function main(argv) {
       lineVoices,
       pronounce: plan.meta.pronounce,
       lang: plan.meta.lang || "ko-KR",
-      gapMs,
+      gapMs, minBreathSec,
       tailSec,
       onlyLineIds,
       sttEnabled,
@@ -566,7 +567,7 @@ export async function synthesizeAll({
   voiceCfg,
   pronounce,
   lang,
-  gapMs,
+  gapMs, minBreathSec = MIN_BREATH_SEC,
   tailSec = TAIL_SILENCE_SEC,
   onlyLineIds,
   sttEnabled = true,
@@ -610,7 +611,7 @@ export async function synthesizeAll({
     try {
       const prev = JSON.parse(fs.readFileSync(paths.timingsJson, "utf8"));
       previousById = new Map((prev.lines || []).map((l) => [l.id, l]));
-      oldSlots = slotsWithoutPauseBefore(prev.lines || [], lines, gapMs);
+      oldSlots = slotsWithoutPauseBefore(prev.lines || [], lines, gapMs, minBreathSec);
     } catch {
       previousById = new Map();
     }
@@ -755,8 +756,8 @@ export async function synthesizeAll({
     if (i < lines.length - 1) {
       const plannedGapSec = (line.pauseAfterMs ?? gapMs) / 1000;
       // Never less than the minimum breath after a line; a plan pause below it is raised and reported.
-      let gapSec = Math.max(plannedGapSec, MIN_BREATH_SEC);
-      if (gapSec > plannedGapSec) warnings.push(`line "${line.id}": pause after it ${plannedGapSec.toFixed(2)}s raised to the ${MIN_BREATH_SEC}s minimum breath`);
+      let gapSec = Math.max(plannedGapSec, minBreathSec);
+      if (gapSec > plannedGapSec) warnings.push(`line "${line.id}": pause after it ${plannedGapSec.toFixed(2)}s raised to the ${minBreathSec}s minimum breath`);
       // The last lead line hands over to the story at HEAD + lead (the lead span, not a pause).
       if (hasLeadLines && line.lead && !lines[i + 1].lead) gapSec = Math.max(gapSec, HEAD_SILENCE_SEC + lead - end);
       // A take that borrowed breath from the pause after it (this run, or an earlier one this line is
@@ -1633,8 +1634,8 @@ export function foldPauseBefore(planLines, gapMs) {
  * previousSlots with the pause recorded before the next line (timings `pauseBeforeSec`) taken out: the
  * pause belongs to the next line, so a re-take is not charged for it and does not borrow it.
  */
-export function slotsWithoutPauseBefore(prevLines, planLines, gapMs) {
-  const slots = previousSlots(prevLines, planLines, gapMs);
+export function slotsWithoutPauseBefore(prevLines, planLines, gapMs, minBreathSec) {
+  const slots = previousSlots(prevLines, planLines, gapMs, minBreathSec);
   prevLines.forEach((l, i) => {
     const before = (prevLines[i + 1] && prevLines[i + 1].pauseBeforeSec) || 0;
     if (before > 0) slots.get(l.id).slotSec -= before;
@@ -1947,7 +1948,7 @@ function saveTakesManifest(paths, manifest) {
  * and narration.wav stay untouched; install with --pick (or --pick-by). A line
  * with no installed clip yet gets take 1 so the reel is complete.
  */
-export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, lineVoices = null, pronounce, lang, gapMs, tailSec, sttEnabled, keepTiming, pickBy = null }) {
+export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provider, providerName, voiceCfg, lineVoices = null, pronounce, lang, gapMs, minBreathSec, tailSec, sttEnabled, keepTiming, pickBy = null }) {
   const filmVoice = { provider, providerName, voiceCfg, key: "" };
   const takesDir = path.join(paths.voiceDir, "takes");
   ensureDir(takesDir);
@@ -2001,7 +2002,7 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
   }
 
   saveTakesManifest(paths, manifest);
-  await addTakeFacts(rows, { paths, plan, lineVoices, filmVoice, keepSlots: keepTiming, withInstalled: !!pickBy, gapMs });
+  await addTakeFacts(rows, { paths, plan, lineVoices, filmVoice, keepSlots: keepTiming, withInstalled: !!pickBy, gapMs, minBreathSec });
   const picked = pickBy ? pickTakes(rows, lineIds, pickBy) : new Map(lineIds.map((id) => [id, 1]));
   printTakesTable(rows, pickBy ? picked : null);
 
@@ -2026,7 +2027,7 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
     lineVoices,
     pronounce,
     lang,
-    gapMs,
+    gapMs, minBreathSec,
     tailSec,
     onlyLineIds: installIds,
     sttEnabled,
@@ -2123,10 +2124,10 @@ function installedRow(paths, id, prev) {
  * cannot hear. With `withInstalled` the line's installed take joins as row k = 0, so a pick compares
  * with it. Rows stay plain data for printTakesTable and chooseTake.
  */
-async function addTakeFacts(rows, { paths, plan, lineVoices, filmVoice, keepSlots, withInstalled, gapMs }) {
+async function addTakeFacts(rows, { paths, plan, lineVoices, filmVoice, keepSlots, withInstalled, gapMs, minBreathSec }) {
   const prevLines = fs.existsSync(paths.timingsJson) ? readJson(paths.timingsJson).lines || [] : [];
   const prevById = new Map(prevLines.map((l) => [l.id, l]));
-  const slots = slotsWithoutPauseBefore(prevLines, plan.lines, gapMs);
+  const slots = slotsWithoutPauseBefore(prevLines, plan.lines, gapMs, minBreathSec);
   const linesById = new Map(plan.lines.map((l) => [l.id, l]));
   if (withInstalled) {
     for (const id of new Set(rows.map((r) => r.id))) {
@@ -2237,7 +2238,7 @@ export function parseUse(useStr) {
  * finished line already has it). It is still leveled and STT-checked, and
  * narration.wav/timings.json are rebuilt as --lines does.
  */
-async function runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
+async function runUse({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, minBreathSec, tailSec, sttEnabled }) {
   const uses = parseUse(flags.use).map((u) => ({ ...u, file: path.resolve(u.file) }));
   const known = new Set(plan.lines.map((l) => l.id));
   const unknown = uses.filter((u) => !known.has(u.id));
@@ -2255,7 +2256,7 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
     lineVoices,
     pronounce: plan.meta.pronounce,
     lang: plan.meta.lang || "ko-KR",
-    gapMs,
+    gapMs, minBreathSec,
     tailSec,
     onlyLineIds: uses.map((u) => u.id),
     sttEnabled,
@@ -2279,8 +2280,8 @@ async function runUse({ dir, paths, plan, flags, providerMod, providerName, voic
  * mark to plan.json meta.voice.delivery, so the remaining lines are made
  * in that tone.
  */
-async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
-  await installPicks({ dir, paths, plan, flags, picks: parsePick(flags.pick), providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
+async function runPick({ dir, paths, plan, flags, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, minBreathSec, tailSec, sttEnabled }) {
+  await installPicks({ dir, paths, plan, flags, picks: parsePick(flags.pick), providerMod, providerName, voiceCfg, lineVoices, gapMs, minBreathSec, tailSec, sttEnabled });
 }
 
 /**
@@ -2289,7 +2290,7 @@ async function runPick({ dir, paths, plan, flags, providerMod, providerName, voi
  * them for `stt`), prints the table with the chosen take marked, and
  * installs the chosen takes as --pick does.
  */
-async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
+async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, minBreathSec, tailSec, sttEnabled }) {
   const manifest = loadTakesManifest(paths);
   const ids = lineIds && lineIds.length ? lineIds : Object.keys(manifest);
   if (!ids.length) throw new Error("--pick-by: no takes to choose from — run --takes first, or name the lines with --lines");
@@ -2316,12 +2317,12 @@ async function runPickBy({ dir, paths, plan, flags, pickBy, lineIds, providerMod
     }
   }
   const keepSlots = !flags.retime && !dubCode(dir);
-  await addTakeFacts(rows, { paths, plan, lineVoices, filmVoice: { provider: providerMod, voiceCfg }, keepSlots, withInstalled: true, gapMs });
+  await addTakeFacts(rows, { paths, plan, lineVoices, filmVoice: { provider: providerMod, voiceCfg }, keepSlots, withInstalled: true, gapMs, minBreathSec });
   const picked = pickTakes(rows, ids, pickBy);
   printTakesTable(rows, picked);
   reportPickOutcome(ids, picked);
   const picks = ids.filter((id) => picked.get(id) > 0).map((id) => ({ id, k: picked.get(id) }));
-  if (picks.length) await installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices, gapMs, tailSec, sttEnabled });
+  if (picks.length) await installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices, gapMs, minBreathSec, tailSec, sttEnabled });
 }
 
 /** Take numbers k with a voice/takes/<id>-<k>.wav on disk, ascending. */
@@ -2350,7 +2351,7 @@ async function takesCer(paths, line, ks, langCode, { level = true, pronounce = n
  * Installs each picked voice/takes/<id>-<k>.wav without re-synthesis
  * (shared by --pick and --pick-by).
  */
-async function installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, tailSec, sttEnabled }) {
+async function installPicks({ dir, paths, plan, flags, picks, providerMod, providerName, voiceCfg, lineVoices = null, gapMs, minBreathSec, tailSec, sttEnabled }) {
   const missing = picks.filter((p) => !fs.existsSync(path.join(paths.voiceDir, "takes", `${p.id}-${p.k}.wav`)));
   if (missing.length) {
     throw new Error(`--pick: no candidate take(s) for ${missing.map((p) => `${p.id}=${p.k}`).join(", ")} — run --takes first`);
@@ -2370,7 +2371,7 @@ async function installPicks({ dir, paths, plan, flags, picks, providerMod, provi
     lineVoices,
     pronounce: plan.meta.pronounce,
     lang: plan.meta.lang || "ko-KR",
-    gapMs,
+    gapMs, minBreathSec,
     tailSec,
     onlyLineIds: picks.map((p) => p.id),
     sttEnabled,
@@ -2450,6 +2451,7 @@ export async function runInsertPause({ dir, paths, plan, spec }) {
     pronounce: plan.meta.pronounce,
     lang: timings.lang || plan.meta.lang || "ko-KR",
     gapMs: plan.meta.gapMs == null ? 700 : plan.meta.gapMs,
+    minBreathSec: minBreathSecOf(plan.meta),
     tailSec: plan.meta.tailSec == null ? TAIL_SILENCE_SEC : plan.meta.tailSec,
     onlyLineIds: [],
     sttEnabled: false,

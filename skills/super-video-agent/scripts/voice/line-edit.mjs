@@ -17,16 +17,17 @@ export const SAME_LENGTH_SEC = 0.005;
  * @param {{id:string, start:number, end:number}[]} prevLines timings.json lines of the run being edited
  * @param {{id:string, pauseAfterMs?:number}[]} planLines
  * @param {number} gapMs meta.gapMs
- * @returns {Map<string, {slotSec:number, oldClipSec:number}>}
+ * @param {number} [minBreathSec] the plan's minimum breath (minBreathSecOf)
+ * @returns {Map<string, {slotSec:number, oldClipSec:number, minBreathSec:number}>}
  */
-export function previousSlots(prevLines, planLines, gapMs) {
+export function previousSlots(prevLines, planLines, gapMs, minBreathSec = MIN_BREATH_SEC) {
   const planned = new Map(planLines.map((l) => [l.id, l]));
   const slots = new Map();
   prevLines.forEach((l, i) => {
     const oldClipSec = l.end - l.start;
     const pauseSec = ((planned.get(l.id) || {}).pauseAfterMs ?? gapMs) / 1000;
     const next = prevLines[i + 1];
-    slots.set(l.id, { slotSec: next ? next.start - l.start : oldClipSec + Math.max(pauseSec, MIN_BREATH_SEC), oldClipSec });
+    slots.set(l.id, { slotSec: next ? next.start - l.start : oldClipSec + Math.max(pauseSec, minBreathSec), oldClipSec, minBreathSec });
   });
   return slots;
 }
@@ -72,14 +73,14 @@ export function splitPlanByAudio(planLines, pickedIds, hasClip) {
 
 /**
  * Whether a re-made base-language take fits the slot of the take it replaces, in the order dub.mjs
- * fits a language: speed up by at most 10% when too long, keep at least 0.5 s of breath after it,
- * slow down (not below 0.95x) to close a voice-free gap over 1.0 s. A gap the film already had
- * (a planned pause) is not counted against the take.
+ * fits a language: speed up by at most 10% when too long, keep at least the minimum breath after it
+ * (0.5 s unless the plan sets meta.minBreathMs), slow down (not below 0.95x) to close a voice-free
+ * gap over 1.0 s. A gap the film already had (a planned pause) is not counted against the take.
  * @returns {ReturnType<typeof fitLineToSlot>}
  */
-export function planRetakeFit(takeSec, { slotSec, oldClipSec }) {
+export function planRetakeFit(takeSec, { slotSec, oldClipSec, minBreathSec = MIN_BREATH_SEC }) {
   const maxBreathSec = Math.max(MAX_BREATH_SEC, slotSec - oldClipSec);
-  return fitLineToSlot(takeSec, slotSec, MAX_ATEMPO_DEFAULT, { minBreathSec: MIN_BREATH_SEC, maxBreathSec, minAtempo: MIN_ATEMPO });
+  return fitLineToSlot(takeSec, slotSec, MAX_ATEMPO_DEFAULT, { minBreathSec, maxBreathSec, minAtempo: MIN_ATEMPO });
 }
 
 /**
@@ -93,7 +94,7 @@ export function retakeFitMessage(id, takeSec, slot, fit) {
   }
   const how = fit.atempoFactor > 1.0005 ? `sped up ${fit.atempoFactor.toFixed(2)}x` : fit.atempoFactor < 0.9995 ? `slowed to ${fit.atempoFactor.toFixed(2)}x` : "as is";
   const notes = [`${fit.breathSec.toFixed(2)}s of silence after it`];
-  if (fit.breathShort) notes.push(`under the ${MIN_BREATH_SEC}s breath`);
+  if (fit.breathShort) notes.push(`under the ${slot.minBreathSec ?? MIN_BREATH_SEC}s breath`);
   if (fit.longGap) notes.push(`voice-free gap over ${MAX_BREATH_SEC}s: a longer take or a rewrite closes it`);
   return `${head} — fits (${how}; ${notes.join("; ")})`;
 }

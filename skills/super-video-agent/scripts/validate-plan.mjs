@@ -15,6 +15,7 @@ import { leadErrors, leadSec } from "./lib/lead.mjs";
 import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { withShortsRate, lineSpeed } from "./voice.mjs";
 import { GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "./lib/dub-fill.mjs";
+import { minBreathSecOf } from "./lib/dub-timing.mjs";
 
 const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>] [--lead <sec>] [--starts]] [--listener]
 
@@ -114,6 +115,7 @@ export async function main(argv) {
     process.stdout.write(`warning: ${stale.length} line(s) whose say differs from text (a say left from an older text?)\n`);
     for (const w of stale) process.stdout.write(`  - ${w}\n`);
   }
+  for (const fact of breathFacts(plan)) process.stdout.write(`${fact}\n`);
   const noteWarns = noteWordWarnings(plan);
   if (noteWarns.length) {
     process.stdout.write(`warning: ${noteWarns.length} line note(s) whose word matches no word of the line text\n`);
@@ -246,7 +248,8 @@ export function estimateLength(plan, opts = {}) {
 
   const lead = opts.leadSec != null ? opts.leadSec : leadSec(meta);
   const headSec = HEAD_SILENCE_SEC + lead;
-  const pauses = plan.lines.map((l, i) => (i === plan.lines.length - 1 ? 0 : (l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000));
+  const breathSec = minBreathSecOf(meta);
+  const pauses = plan.lines.map((l, i) => (i === plan.lines.length - 1 ? 0 : Math.max((l.pauseAfterMs == null ? gapMs : l.pauseAfterMs) / 1000, breathSec)));
   const befores = plan.lines.map((l) => (l.pauseBeforeMs || 0) / 1000);
   let at = headSec;
   const perLine = lines.map((l, i) => {
@@ -687,6 +690,21 @@ function contractFacts(dir, schema, errors) {
     out.push(...missingOverlayKeys(keys, dubs));
     if (keys.notScanned) out.push(`overlay keys: ${keys.notScanned} Reel.pictureText/overlayText call(s) use a key that is not a string literal and were not scanned`);
   }
+  return out;
+}
+
+/**
+ * Pauses under the minimum breath (meta.minBreathMs, else 0.5 s): voice.mjs raises them to it.
+ * A fact, not an error: a fast film lowers meta.minBreathMs instead.
+ * @returns {string[]}
+ */
+export function breathFacts(plan) {
+  const meta = plan.meta || {};
+  const breathMs = Math.round(minBreathSecOf(meta) * 1000);
+  const out = [];
+  if (meta.gapMs != null && meta.gapMs < breathMs) out.push(`breath: meta.gapMs ${meta.gapMs} is under the minimum breath ${breathMs} ms; voice.mjs raises those pauses to ${breathMs} ms (set meta.minBreathMs to allow shorter)`);
+  const raised = (plan.lines || []).slice(0, -1).filter((l) => l.pauseAfterMs != null && l.pauseAfterMs < breathMs);
+  if (raised.length) out.push(`breath: ${raised.length} line(s) with pauseAfterMs under the minimum breath ${breathMs} ms are raised to it: ${raised.map((l) => l.id).join(", ")}`);
   return out;
 }
 
