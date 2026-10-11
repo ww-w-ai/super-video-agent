@@ -3,7 +3,7 @@
 // as a PNG buffer via toDataURL (no screenshot compositing, so we get
 // exactly the pixels the engine drew).
 import fs from "node:fs";
-import { deadAirRunsFromHashes } from "./dead-air.mjs";
+import { scanFreezes, scanSize } from "./freeze-scan.mjs";
 import { getChromium } from "./playwright.mjs";
 
 const DEFAULT_READY_TIMEOUT_MS = 120000;
@@ -607,49 +607,59 @@ export async function readEngineFactLines(page) {
 }
 
 /**
- * Dead-air detection from what the page actually draws, not an ffmpeg
- * pixel-diff: seek(t) through the timeline at a fixed `stepSec`, hash the
- * full native-resolution canvas each time (in-page — only the hash comes
- * back, never the pixel data), and report a run when consecutive identical
- * hashes span >= `runSecMin`. Any pixel change counts as motion, so this
- * catches fine "aliveness" jitter (e.g. a thin line's boil) that a
- * downscaled 64px ffmpeg diff can lose.
- * @param {import("playwright-core").Page} page
- * @param {{duration:number, stepSec?:number, runSecMin?:number}} args
- * @returns {Promise<{runs:{startSec:number,durationSec:number}[], hashes:string[], times:number[]}>}
+ * The canvas now, scaled in-page to w x h greyscale (nearest neighbour, like
+ * the file decode) and sent back as base64: about 77 KB per frame instead of
+ * a full-size PNG.
+ * @returns {Promise<Buffer>}
  */
-export async function scanDeadAirBySeek(page, { duration, stepSec = 0.1, runSecMin = 0.8 }) {
-  const times = [];
-  for (let t = 0; t < duration - 1e-9; t += stepSec) times.push(t);
-  times.push(duration); // always include the final instant, however it falls on the step grid
+async function grabGrey(page, w, h) {
+  const b64 = await page.evaluate(({ w, h }) => {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) throw new Error("no <canvas> found in reel.html");
+    let s = window.__svaGreyScratch;
+    if (!s || s.width !== w || s.height !== h) {
+      s = window.__svaGreyScratch = document.createElement("canvas");
+      s.width = w;
+      s.height = h;
+    }
+    const ctx = s.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(canvas, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let bin = "";
+    // BT.601 luma in integer weights, the same full 0-255 range the file decode delivers.
+    for (let i = 0; i < d.length; i += 4) bin += String.fromCharCode((77 * d[i] + 150 * d[i + 1] + 29 * d[i + 2]) >> 8);
+    return btoa(bin);
+  }, { w, h });
+  return Buffer.from(b64, "base64");
+}
 
-  const hashes = [];
-  for (const t of times) {
-    await page.evaluate(async (time) => {
-      const r = window.__reel;
-      const result = r.seek(time);
-      if (result && typeof result.then === "function") await result;
-    }, t);
-    const hash = await page.evaluate(() => {
-      const canvas = document.querySelector("canvas");
-      if (!canvas) throw new Error("no <canvas> found in reel.html");
-      const ctx = canvas.getContext("2d");
-      const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-      // A 64-bit-ish FNV-1a-style hash over every pixel byte, computed
-      // in-page so no pixel data ever crosses back to Node — only this
-      // hex string does.
-      let h1 = 0x811c9dc5;
-      let h2 = 0x9e3779b9 ^ data.length;
-      for (let i = 0; i < data.length; i++) {
-        h1 = Math.imul(h1 ^ data[i], 16777619);
-        h2 = Math.imul(h2 ^ data[i], 2654435761);
-      }
-      return ((h1 >>> 0).toString(16) + (h2 >>> 0).toString(16));
-    });
-    hashes.push(hash);
-  }
-
-  return { times, hashes, runs: deadAirRunsFromHashes(times, hashes, runSecMin) };
+/**
+ * Freeze (dead-air) scan from what the page draws, before any encode, by the
+ * shared method (scripts/lib/freeze-scan.mjs) the file check also uses:
+ * every `stepSec` compare the frame at t with the frame 1/fps later at 320-px
+ * grey, then re-check every frame +-1 s around a run of unchanged samples.
+ * @param {import("playwright-core").Page} page
+ * @param {{duration:number, fps:number, stepSec?:number, runSecMin?:number}} args
+ * @returns {Promise<{runs:{startSec:number,durationSec:number}[], times:number[], recheckSpans:{fromSec:number,toSec:number}[], frameCount:number}>}
+ *   times = the sampled seek times
+ */
+export async function scanDeadAirBySeek(page, { duration, fps, stepSec = 0.1, runSecMin = 0.8 }) {
+  if (!(fps > 0)) throw new Error("scanDeadAirBySeek needs the page's fps");
+  const dims = await page.evaluate(() => {
+    const c = document.querySelector("canvas");
+    return c ? { width: c.width, height: c.height } : null;
+  });
+  if (!dims) throw new Error("no <canvas> found in reel.html");
+  const { w, h } = scanSize(dims.width, dims.height);
+  const frameCount = Math.round(duration * fps);
+  const getFrame = async (i) => {
+    await seekTo(page, i / fps);
+    return grabGrey(page, w, h);
+  };
+  const scan = await scanFreezes(getFrame, { frameCount, fps, stepSec, minSec: runSecMin });
+  return { runs: scan.runs, times: scan.sampleTimes, recheckSpans: scan.recheckSpans, frameCount };
 }
 
 /**
@@ -658,8 +668,7 @@ export async function scanDeadAirBySeek(page, { duration, stepSec = 0.1, runSecM
  * problem that only shows up mid-shot (e.g. a label sliding in from
  * off-screen) is caught — the normal Layout gate (review.mjs) reads
  * issues() once per shot, at its `readAt` (qa.md "What the tools cannot
- * see"). Only the issues themselves cross back to Node, same as
- * scanDeadAirBySeek only returning a hash.
+ * see"). Only the issues themselves cross back to Node.
  * @param {import("playwright-core").Page} page
  * @param {{duration:number, stepSec?:number}} args
  * @returns {Promise<{times:number[], issuesByTime:Array[]}>}

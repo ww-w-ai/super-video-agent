@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { ffmpeg } from "../scripts/lib/ffmpeg.mjs";
 import { main, reviewFile, parseParts } from "../scripts/review.mjs";
 
@@ -44,7 +45,16 @@ test("reviewFile: stream delta, per-part loudness, dead air and black runs of a 
   const clip = path.join(tmp, "upload.mp4");
   await makeFixture(clip);
 
-  const r = await reviewFile({ file: clip, cuts: [1.5] });
+  const decodes = [];
+  const spawnFn = (bin, args, opts) => {
+    decodes.push(args.join(" "));
+    return spawn(bin, args, opts);
+  };
+  const r = await reviewFile({ file: clip, cuts: [1.5], spawnFn });
+
+  assert.equal(decodes.length, 1, "freeze, black and frame counts read one picture decode");
+  assert.equal(r.frames.decoded, 30);
+  assert.equal(r.frames.expected, 30);
 
   assert.ok(Math.abs(r.streams.videoSec - 3) < 0.02, `video ${r.streams.videoSec}`);
   assert.ok(Math.abs(r.streams.audioMinusVideoMs - 200) < 60, `audio overhang ~200 ms, got ${r.streams.audioMinusVideoMs}`);

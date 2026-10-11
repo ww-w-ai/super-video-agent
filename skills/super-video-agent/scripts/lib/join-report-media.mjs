@@ -1,12 +1,14 @@
 // Media measurements over a finished file, shared by join.mjs (report after
 // a join) and review.mjs --file (review of an upload file with no page).
 // Each function reads the file with ffmpeg/ffprobe and returns facts; the
-// pure helpers (partSpans, parseBlackDetect) are unit-tested without ffmpeg.
+// pure helpers (partSpans, isBlackFrame, createBlackRuns) are unit-tested without ffmpeg.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { run, ffmpeg, ffprobe } from "./ffmpeg.mjs";
+import { ffmpeg, ffprobe } from "./ffmpeg.mjs";
 import { measureLoudness } from "./audio-analysis.mjs";
+import { streamGrayFrames } from "./frame-diff.mjs";
+import { createFreezeStream } from "./freeze-scan.mjs";
 
 const SAMPLE_RATE = 48000;
 
@@ -85,34 +87,74 @@ export async function measureSpansLoudness(filePath, spans) {
   }
 }
 
-/** Parse ffmpeg blackdetect lines into runs. */
-export function parseBlackDetect(stderr) {
-  const runs = [];
-  const re = /black_start:\s*([\d.]+)\s+black_end:\s*([\d.]+)\s+black_duration:\s*([\d.]+)/g;
-  let m;
-  while ((m = re.exec(stderr)) !== null) {
-    runs.push({ startSec: parseFloat(m[1]), endSec: parseFloat(m[2]), durationSec: parseFloat(m[3]) });
-  }
-  return runs;
+/** Grey value at or under which a pixel is black: ffmpeg blackdetect's default pix_th (0.10) of the full 0-255 range the grey decode delivers. */
+export const BLACK_PIXEL_MAX = 25;
+/** Share of black pixels that makes a black picture (blackdetect pic_th=0.98). */
+export const BLACK_PICTURE_SHARE = 0.98;
+
+/** True when at least BLACK_PICTURE_SHARE of the grey frame's pixels are at or under BLACK_PIXEL_MAX. */
+export function isBlackFrame(frame) {
+  let black = 0;
+  for (let i = 0; i < frame.length; i++) if (frame[i] <= BLACK_PIXEL_MAX) black++;
+  return frame.length > 0 && black / frame.length >= BLACK_PICTURE_SHARE;
 }
 
 /**
- * Black-picture runs via ffmpeg blackdetect (98 % of pixels under the
- * default darkness threshold). blackdetect logs at info level, so this
- * calls `run` directly like measureLoudness does.
- * @param {{minSec?:number}} opts shortest run to report (default one frame at 30 fps)
+ * Black runs from per-frame flags pushed in order, reported as blackdetect
+ * did: start, end (the first frame after the run), duration, when the run
+ * lasts at least `minSec`.
+ * @returns {{push:(black:boolean)=>void, finish:()=>{startSec:number,endSec:number,durationSec:number}[]}}
  */
-export async function detectBlackRuns(filePath, { minSec = 1 / 30 } = {}) {
-  const { stderr } = await run("ffmpeg", [
-    "-hide_banner",
-    "-i",
-    filePath,
-    "-an",
-    "-vf",
-    `blackdetect=d=${minSec.toFixed(4)}:pic_th=0.98`,
-    "-f",
-    "null",
-    "-",
-  ]);
-  return parseBlackDetect(stderr.toString());
+export function createBlackRuns(fps, minSec = 1 / fps) {
+  const runs = [];
+  let start = -1;
+  let index = -1;
+  const close = (end) => {
+    if (start >= 0 && (end - start) / fps >= minSec - 1e-9) runs.push({ startSec: start / fps, endSec: end / fps, durationSec: (end - start) / fps });
+    start = -1;
+  };
+  return {
+    push(black) {
+      index++;
+      if (!black) close(index);
+      else if (start < 0) start = index;
+    },
+    finish() {
+      close(index + 1);
+      return runs;
+    },
+  };
 }
+
+/**
+ * Picture facts of a finished file from ONE decode at 320-px grey, every
+ * frame streamed through three checks: freezes (the shared method in
+ * freeze-scan.mjs), black runs, and frame count vs expected with identical
+ * neighbouring frames. Holds the freeze look-back ring, not the film.
+ * @param {string} file
+ * @param {{width:number, height:number, fps:number, expectedSec?:number|null, spawnFn?:Function}} opts
+ *   width/height/fps = the video stream's own; expectedSec = video stream length; spawnFn injectable to count decodes
+ */
+export async function scanFilePicture(file, { width, height, fps, expectedSec = null, spawnFn }) {
+  const freeze = createFreezeStream({ fps });
+  const black = createBlackRuns(fps);
+  let prev = null;
+  let identicalNeighbours = 0;
+  const onFrame = (frame) => {
+    freeze.push(frame);
+    black.push(isBlackFrame(frame));
+    if (prev && prev.equals(frame)) identicalNeighbours++;
+    prev = frame;
+  };
+  const { frames } = await streamGrayFrames(file, { width, height, onFrame, spawnFn });
+  const scan = freeze.finish();
+  const expected = expectedSec == null ? null : Math.round(expectedSec * fps);
+  return {
+    freezeRuns: scan.runs,
+    recheckSpans: scan.recheckSpans,
+    sampleCount: scan.sampleCount,
+    blackRuns: black.finish(),
+    frames: { decoded: frames, expected, decodedMinusExpected: expected == null ? null : frames - expected, identicalNeighbours },
+  };
+}
+
