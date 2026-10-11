@@ -50,6 +50,7 @@ import {
 import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
 import { formatLeadReport } from "./lib/lead.mjs";
 import { measureCaptionContrast, formatContrastReport } from "./lib/caption-contrast.mjs";
+import { captionRecordsAtSamples } from "./lib/render-contrast.mjs";
 import { parseLangTag, sameLanguageTag } from "./lib/lang-tag.mjs";
 
 export { sameLanguageTag };
@@ -163,8 +164,10 @@ picture and its scene text for this language; caption text is still translated.
 Text outside the scene is drawn in the caption layer from
 dub/<code>/plan.json (labels in its meta.overlay, corner notes in a line's \`notes\`).
 
-Caption contrast: for up to three frames per line the caption layer's drawn colour is
-compared with the picture behind its text box as a WCAG contrast ratio, in both
+Caption contrast: for up to three frames per line the engine's own caption draws are read
+first (text colour against the box drawn under it, or against the picture inside the text
+box when there is no opaque box); the caption layer's drawn pixels are used only for an
+older engine. WCAG contrast ratio, in both
 directions (light text on a bright picture, dark text on a dark one). Frames under 3:1
 are reported LOW, under 4.5:1 marginal, per line id and time; the full rows go to
 dub/<code>/contrast.json. It is a report, never a stop. --no-contrast skips it.
@@ -702,20 +705,23 @@ async function buildCaptionedVideo({ dir, paths, lang, fit, baseTimings, meta, f
   const duration = baseTimings.duration;
   const planFor = (labelSpans) => planCaptionSpans({ lines: fit.lines, duration, fps, labelSpans });
   const baseLang = readBaseLang(dir);
-  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor, lines: fit.lines, keepBasePictureText });
+  const ownLayer = await tryOwnCaptionLayer({ reelDir: dir, lang, baseLang, pictureSource, fps, framesDir: captionsDir, planFor, lines: fit.lines, keepBasePictureText, contrast });
   if (ownLayer.fatal) throw new Error(ownLayer.fatal);
   let plan = ownLayer.plan;
   let captionNote = null;
+  let records = ownLayer.records || null;
   if (!ownLayer.ok) {
     plan = planFor([]);
-    captionNote = await renderCaptionLayer({
+    const drawn = await renderCaptionLayer({
       reelDir: dir, reelHtmlPath: paths.reelHtml, lines: fit.lines, duration, width: meta.width, height: meta.height,
-      fps, framesDir: captionsDir, ranges: langFrameRanges(plan), notes: await dubCornerNotes({ dir, lang }), lang,
+      fps, framesDir: captionsDir, ranges: langFrameRanges(plan), notes: await dubCornerNotes({ dir, lang }), lang, contrast,
     });
+    captionNote = drawn.note;
+    records = drawn.records;
     if (ownLayer.note) captionNote = captionNote ? `${ownLayer.note} ${captionNote}` : ownLayer.note;
   } else captionNote = ownLayer.note || null;
   process.stdout.write(formatSpanReport(plan, fps));
-  if (contrast) await reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps });
+  if (contrast) await reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps, records });
   const videoPath = path.join(workDir, "video-captioned.mp4");
   if (plan.sharedFrames === 0) await overlayCaptions({ pictureMp4: gridPictureMp4, captionsDir, fps, outPath: videoPath });
   else await assembleSpans({ plan, pictureMp4, gridPictureMp4, captionsDir, fps, workDir, outDir: paths.outDir, outPath: videoPath });
@@ -762,10 +768,10 @@ export function sceneSpanNote({ spans, lang, baseLang, pictureSource, keepBasePi
 }
 
 /** Contrast of the drawn captions against the picture, per line and time: printed, saved, never a stop. */
-async function reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps }) {
+async function reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, fit, meta, fps, records = null }) {
   try {
     const rows = await measureCaptionContrast({
-      captionsDir, pictureMp4: gridPictureMp4, lines: fit.lines, fps, width: meta.width, height: meta.height, frameFile: frameFileName,
+      captionsDir, pictureMp4: gridPictureMp4, lines: fit.lines, fps, width: meta.width, height: meta.height, frameFile: frameFileName, records,
     });
     writeJson(path.join(dir, "dub", lang, "contrast.json"), { lang, rows });
     process.stdout.write(formatContrastReport(rows));
@@ -919,7 +925,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string, fatal?:string, plan?:object}>} fatal stops the step; note is a fact to print
  */
-async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines, keepBasePictureText }) {
+async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines, keepBasePictureText, contrast }) {
   const server = await serveDir(reelDir);
   let session;
   let declared = null; // stays null when the page's spans were never read
@@ -940,7 +946,8 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
     let plan = planFor(layerSpans);
     await captureRanges(session.page, framesDir, langFrameRanges(plan), fps);
     plan = await settleSharedSpans({ page: session.page, framesDir, plan, fps, declaredCount: layerSpans.length, lines });
-    return { ok: true, plan, note: spanNote };
+    const records = contrast ? await captionRecordsAtSamples({ page: session.page, lines, fps }) : null;
+    return { ok: true, plan, note: spanNote, records };
   } catch (e) {
     const failed = `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.`;
     const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource, keepBasePictureText });
@@ -957,11 +964,11 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
  * PNG-with-alpha per frame. Never touches reel.html's own scene code, so
  * the picture is never re-rendered. Used only when the reel does not
  * support drawing its own caption layer (tryOwnCaptionLayer above).
- * @returns {Promise<string|null>} a note when the reel's own scene draws
- *   captions another way (the engine's default look is used instead), or
- *   null when reel.html calls Reel.caption() itself (same look).
+ * @returns {Promise<{note: string|null, records: Map<number, object[]>|null}>} note: set when the reel's
+ *   own scene draws captions another way (the engine's default look is used instead), null when reel.html
+ *   calls Reel.caption() itself (same look); records: the caption draws at the contrast sample frames.
  */
-async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir, ranges, notes = [], lang }) {
+async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, width, height, fps, framesDir, ranges, notes = [], lang, contrast }) {
   const captionNote = sceneUsesEngineCaption(reelHtmlPath)
     ? null
     : "reel.html's scene code does not call Reel.caption() directly — the caption layer uses the engine's default caption look, which may not match this film's own captions.";
@@ -972,10 +979,12 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
   fs.writeFileSync(pagePath, buildCaptionPageHtml({ engineSrc, width, height, fps, duration, lines, notes, lang }), "utf8");
 
   const server = await serveDir(reelDir);
+  let records = null;
   try {
     const session = await openReel(`${server.url}${pageName}`, { width, height });
     try {
       await captureRanges(session.page, framesDir, ranges, fps);
+      if (contrast) records = await captionRecordsAtSamples({ page: session.page, lines, fps });
     } finally {
       await session.close();
     }
@@ -983,7 +992,7 @@ async function renderCaptionLayer({ reelDir, reelHtmlPath, lines, duration, widt
     await server.close();
     fs.rmSync(pagePath, { force: true });
   }
-  return captionNote;
+  return { note: captionNote, records };
 }
 
 /**

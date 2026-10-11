@@ -235,10 +235,12 @@ re-rendered. Every render prints one REUSE or RENDER line per segment with
 the reason.
 
 Caption contrast: a render with captions on (voice-first, real narration) measures, for up to
-three frames per line it draws, the caption's colour against the picture behind its text box
-as a WCAG contrast ratio (the same measure dub.mjs prints), in both directions (light on
-light, dark on dark). The frame is drawn once more without captions
-(window.Reel.setCaptionsOn(false)) and the pixels that differ are the caption; no screenshots.
+three frames per line it draws, the engine's own caption draws are read first (text colour
+against the box drawn under it, or against the picture inside the text box when there is no
+opaque box) as a WCAG contrast ratio (the same measure dub.mjs prints), in both directions
+(light on light, dark on dark). Only an older engine falls back to drawing the frame once more
+without captions (window.Reel.setCaptionsOn(false)) and taking the pixels that differ as the
+caption; no screenshots.
 Frames under 3:1 are LOW, under 4.5:1 marginal, per line id and time; rows go to
 out/contrast.json. A report, never a stop. Segments reused from the cache are not drawn
 again, so a fully cached render prints "checked nothing"; re-render the segments to measure.

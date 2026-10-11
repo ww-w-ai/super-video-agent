@@ -66,9 +66,9 @@ function pngOf(bgHex, boxHex) {
   return r.stdout;
 }
 
-test("49: measureDrawnFrame draws the instant again without captions and reports the ratio; the page is left with captions on", async () => {
+test("49: an engine without tagged caption draws: measureDrawnFrame draws the instant again without captions and reports the ratio; the page is left with captions on", async () => {
   const calls = [];
-  const page = { evaluate: async (fn) => { calls.push(String(fn).includes("setCaptionsOn(false)") ? "off" : String(fn).includes("setCaptionsOn(true)") ? "on" : "seek"); return true; } };
+  const page = { evaluate: async (fn) => { if (String(fn).includes("drawRoles")) return false; calls.push(String(fn).includes("setCaptionsOn(false)") ? "off" : String(fn).includes("setCaptionsOn(true)") ? "on" : "seek"); return true; } };
   const collector = createContrastCollector({ lines: [{ id: "l1", start: 0, end: 2 }], fps: 10, width: W, height: H });
   const [frameNo] = [...collector.frames.keys()];
   await measureDrawnFrame(collector, { page, frame: frameNo, withPng: pngOf("0xe0e0e0", "white"), capture: async () => pngOf("0xe0e0e0") });

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Page-state checks: text boxes that overlap, glyphs drawn by a fallback font, and one-frame
-// flicker. Source review first (flicker only: show/hide windows in the reel's code), then a state
+// Page-state checks: text boxes that overlap, glyphs drawn by a fallback font, one-frame
+// flicker, and text contrast from the drawn colours. Source review first (flicker only: show/hide windows in the reel's code), then a state
 // scan of every frame confirms in the rendered timeline. Facts only; exit 0 whatever it finds, except
 // langglyphs: a character a language's loaded font lacks exits 1 (see the exit contract in HELP).
 import fs from "node:fs";
@@ -12,18 +12,19 @@ import { openReel, stubSeconds, glIssues, glReportLines } from "./lib/browser.mj
 import { parseTimeRange } from "./lib/determinism.mjs";
 import { installTextProbe, collectFrameStates, glyphCoverage } from "./lib/page-probe.mjs";
 import { textOverlapSpans, glyphFallbacks, findFlicker, visibleKeys, formatStateChecks, namedFamilies, checkedNothingReasons,
-  regionCovers, regionScope, coverNothingReason, reserveScope, reserveIntrusions, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage } from "./lib/state-checks.mjs";
+  regionCovers, regionScope, coverNothingReason, reserveScope, reserveIntrusions, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage, VISIBLE_ALPHA } from "./lib/state-checks.mjs";
+import { contrastFindings } from "./lib/text-contrast.mjs";
 import { gatherSources, visibilitySourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 
-const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,reserve,langglyphs] [--step <frames>] [--fps <n>]
+const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,reserve,langglyphs,contrast] [--step <frames>] [--fps <n>]
                         [--range <t0>-<t1>] [--source-only] [--no-source] [--out <json>] [--stub <sec>] [--outline-em <n>]
 
---range <t0>-<t1> reads the frame checks (overlap, glyphs, flicker, reserve) only between t0 and t1 seconds
+--range <t0>-<t1> reads the frame checks (overlap, glyphs, flicker, reserve, contrast) only between t0 and t1 seconds
 (e.g. --range 42-61.5); the other checks are unchanged. Progress goes to stderr about every 10 s
 ("frames 1200/4800 (25%, 31 s)"). WebGL console warnings and errors the page logged are printed
 to stderr; they do not change the exit code here.
 
-Six checks. overlap, glyphs, flicker and reserve read the page's state at every frame (default every frame; --step N samples every Nth):
+Seven checks. overlap, glyphs, flicker, reserve and contrast read the page's state at every frame (default every frame; --step N samples every Nth):
   overlap  text boxes that overlap other text boxes, per pair: the spans and the shared px²
   glyphs   characters of every on-screen string that the font in use does not have, so a fallback
            font drew them (a script missing from the chosen font); generic-only families are listed
@@ -31,8 +32,15 @@ Six checks. overlap, glyphs, flicker and reserve read the page's state at every 
   flicker  an element visible for a single sampled frame with neither neighbour showing it: drawn
            texts, plus any layer the page lists through the optional hook window.__reel.visibleAt(t)
            -> [{id: "<name>", opacity?: 0..1}]
-The state comes from wrapping the canvas 2D text calls while the page seeks, so any reel works with
-no change; nothing is read from pixels.
+  contrast every drawn text's WCAG contrast, from the colours the page drew with. A text on its own
+           opaque solid box (or outline) is a pair of known colours: text vs box, no pixels. Any other
+           text (bare on a picture, a gradient, a translucent band) is measured against the poorest
+           tenth of the canvas pixels inside its box, read just before the text was drawn. DOM text over
+           the canvas uses its computed colour and the nearest background behind it. Grouped (pair: by
+           text colour, backing colour and font size; picture: by text) with times and frame counts;
+           low < 3:1, marginal < 4.5:1. Text drawn by WebGL is not measured.
+The state comes from wrapping the canvas 2D drawing calls while the page seeks, so any reel works with
+no change; only contrast reads pixels, and only inside a text box whose background is not a known colour.
   covers      a label, an always-on overlay or a reserved corner that covers key content. Only regions the page
               declares are checked: window.__reel.regions = [{id, kind: "key"|"label"|"overlay"|"reserve", box: [x0,y0,x1,y1] (canvas
               px), outline?: px, from?: s, to?: s}] (no from/to = the whole film), or a function returning it.
@@ -52,7 +60,7 @@ A check that looked at nothing says "checked nothing" with the reason, never "no
 "checked N key regions against M label/overlay regions, 0 covered" when it looked and found nothing.
 Intended slow-motion spans are declared with window.__reel.holds = [{from, to}] and read by review.mjs.
 
-Exit contract (the default --only set runs all six checks):
+Exit contract (the default --only set runs all seven checks):
   exit 1  only when langglyphs finds a character that a language's font does not have. That is
           definitely wrong for that language (it would draw in a fallback font), so it stops this step.
           Missing = the character, drawn as "<font>, <generic>", looks exactly like plain monospace, serif or
@@ -61,7 +69,7 @@ Exit contract (the default --only set runs all six checks):
           installed or draws the letters "H" and "a" exactly like a generic family (so a glyph cannot be told
           from a fallback), langglyphs prints "not checked: font not loaded" and does not exit 1.
   exit 1  also for unusable arguments or an unreadable reel (nothing was checked).
-  exit 0  every other finding: overlap, glyphs, flicker, covers, "checked nothing". These are
+  exit 0  every other finding: overlap, glyphs, flicker, covers, contrast, "checked nothing". These are
           judgements or facts for the reviewer; none stops the run. Use --only overlap,glyphs,flicker,covers
           to run without the one check that can exit 1.
 
@@ -73,8 +81,8 @@ inside the test, and fades of 0 or 1 frame, each with file:line. --fps overrides
 Writes <reel-dir>/out/state-checks.json.
 `;
 
-const CHECKS = ["overlap", "glyphs", "flicker", "covers", "reserve", "langglyphs"];
-const FRAME_CHECKS = ["overlap", "glyphs", "flicker", "reserve"];
+const CHECKS = ["overlap", "glyphs", "flicker", "covers", "reserve", "langglyphs", "contrast"];
+const FRAME_CHECKS = ["overlap", "glyphs", "flicker", "reserve", "contrast"];
 
 /**
  * A progress callback for collectFrameStates: a line on stderr (stdout stays the
@@ -210,8 +218,9 @@ export async function main(argv) {
     let frames = [], hook = false;
     if (range) report.range = range;
     if (frameChecks.length) {
-      await installTextProbe(session.page);
-      ({ frames, hook } = await collectFrameStates(session.page, { fps, duration, step, range, onProgress: progressPrinter() }));
+      const contrast = only.includes("contrast");
+      await installTextProbe(session.page, { pixels: contrast });
+      ({ frames, hook } = await collectFrameStates(session.page, { fps, duration, step, range, onProgress: progressPrinter(), dom: contrast }));
     }
     for (const l of glReportLines(glIssues(session))) process.stderr.write(`${l}\n`);
     report.sampledFrames = frames.length;
@@ -235,10 +244,11 @@ export async function main(argv) {
       report.flicker = findFlicker(frames.map((f) => ({ frame: f.frame, keys: visibleKeys(f) })), { fps });
       report.flickerHook = hook;
     }
+    if (only.includes("contrast")) report.contrast = contrastFindings(frames, { fps, minAlpha: VISIBLE_ALPHA });
     Object.assign(result, { state: report });
     process.stdout.write(formatStateChecks({ overlaps: report.overlaps, glyphs: report.glyphs, flicker: report.flicker,
       sampledFrames: frames.length, hooks: hook, nothing: report.nothing, covers: report.covers, coverScope: report.coverScope,
-      langGlyphs: report.langGlyphs, reserve: report.reserve, reserveCorners: report.reserveCorners }));
+      langGlyphs: report.langGlyphs, reserve: report.reserve, reserveCorners: report.reserveCorners, contrast: report.contrast }));
     writeJson(outPath, result);
     process.stdout.write(`wrote ${outPath}\n`);
     // A character a language's font lacks is definitely wrong for that language: this step exits non-zero.

@@ -183,17 +183,23 @@ function backgroundHistogram(rgba, rgb, width, height, box, threshold) {
       const r = Math.round(rgb[j] * (1 - w) + rgba[i] * w);
       const g = Math.round(rgb[j + 1] * (1 - w) + rgba[i + 1] * w);
       const b = Math.round(rgb[j + 2] * (1 - w) + rgba[i + 2] * w);
-      hist[Math.round(Math.sqrt(relLuminance(r, g, b)) * 255)]++;
+      hist[lumBand(r, g, b)]++;
       n++;
     }
   }
   return { hist, n };
 }
 
-const bandLum = (band) => (band / 255) ** 2;
+/** Relative luminance of a histogram band (bands are sqrt(luminance) x 255). */
+export const bandLum = (band) => (band / 255) ** 2;
+
+/** The histogram band (0..255) of an 8-bit sRGB colour: sqrt(luminance) x 255, so dark tones get finer bands. */
+export function lumBand(r, g, b) {
+  return Math.round(Math.sqrt(relLuminance(r, g, b)) * 255);
+}
 
 /** Luminance at the given share of the picture's pixels, darkest first. */
-function histogramQuantile({ hist, n }, share) {
+export function histogramQuantile({ hist, n }, share) {
   let seen = 0;
   for (let b = 0; b < 256; b++) {
     seen += hist[b];
@@ -202,10 +208,14 @@ function histogramQuantile({ hist, n }, share) {
   return 1;
 }
 
-/** The ratio that WORST_SHARE of the background pixels fall at or below, against one text luminance. */
-function worstRatio({ hist, n }, textLum) {
+/**
+ * The ratio that WORST_SHARE of the background pixels fall at or below. `textLum` is one luminance, or a
+ * function of the background luminance (translucent text takes on part of what lies under it).
+ */
+export function worstRatio({ hist, n }, textLum) {
+  const lumOver = typeof textLum === "function" ? textLum : () => textLum;
   const ratios = [];
-  for (let b = 0; b < 256; b++) if (hist[b]) ratios.push([contrastRatio(textLum, bandLum(b)), hist[b]]);
+  for (let b = 0; b < 256; b++) if (hist[b]) ratios.push([contrastRatio(lumOver(bandLum(b)), bandLum(b)), hist[b]]);
   ratios.sort((x, y) => x[0] - y[0]);
   let seen = 0;
   for (const [ratio, count] of ratios) {
@@ -248,6 +258,11 @@ export function analyzeCaptionFrame({ caption, picture, width, height }) {
     caption, picture, width, height, threshold, box: r.box,
     own: (x, y) => cellRegion[Math.floor(y / CELL) * cw + Math.floor(x / CELL)] === id,
   }));
+  return withPoorest(measured);
+}
+
+/** The regions, with the poorest one's fields repeated at the top so a one-row reader sees the worst case. */
+function withPoorest(measured) {
   const rank = (r) => (Number.isFinite(r.ratio) ? r.ratio : Infinity);
   const poorest = [...measured].sort((a, b) => rank(a) - rank(b))[0];
   return { ...poorest, regions: measured };
@@ -308,15 +323,69 @@ export function readPictureFrame(pictureMp4, t, width, height) {
   return readRaw(["-ss", String(t), "-i", pictureMp4, "-frames:v", "1", "-vf", `scale=${width}:${height}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
 }
 
+const INK_TOLERANCE = 24; // summed channel difference: a layer pixel this close to the text colour is a letter
+
 /**
- * Measures every sampled caption frame of a language against its picture.
- * @param {{captionsDir: string, pictureMp4: string, lines: {id:string,start:number,end:number}[], fps: number, width: number, height: number, frameFile: (frame:number)=>string}} o
+ * Luminance histogram of what lies behind one text inside its box: the caption layer composited over the
+ * picture, with the layer's letter pixels (the known text colour) taken out so the picture shows there.
+ * Unlike dropping those pixels, this keeps white picture under white text in the count.
+ * @param {{caption: Uint8Array, picture: Uint8Array, width: number, height: number}} f caption = RGBA, picture = RGB
+ */
+export function backgroundUnderText({ caption, picture, width, height }, box, ink) {
+  const hist = new Float64Array(256);
+  let n = 0;
+  const [x0, y0] = [Math.max(0, Math.floor(box[0])), Math.max(0, Math.floor(box[1]))];
+  const [x1, y1] = [Math.min(width, Math.ceil(box[2])), Math.min(height, Math.ceil(box[3]))];
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const p = y * width + x;
+      const i = p * 4;
+      const letter = ink && Math.abs(caption[i] - ink[0]) + Math.abs(caption[i + 1] - ink[1]) + Math.abs(caption[i + 2] - ink[2]) <= INK_TOLERANCE;
+      const a = letter ? 0 : caption[i + 3] / 255;
+      const mix = (c) => Math.round(caption[i + c] * a + picture[p * 3 + c] * (1 - a));
+      hist[lumBand(mix(0), mix(1), mix(2))]++;
+      n++;
+    }
+  }
+  return { hist, n };
+}
+
+/**
+ * One sample measured from the caption layer's own draw records: a text on an opaque solid box is a pair of
+ * known colours (no pixels read); any other text is measured against the composited frame inside its box.
+ */
+async function rowFromRecords({ s, drawn, file, pictureMp4, width, height }) {
+  // Loaded here, not at the top: text-contrast.mjs imports this module.
+  const tc = await import("./text-contrast.mjs");
+  const texts = drawn.filter((r) => !r.servesAsOutline && String(r.text || "").trim());
+  if (!texts.length) return { lineId: s.lineId, t: s.t, grade: "no-caption" };
+  const frame = texts.some(tc.needsPicture) && fs.existsSync(file)
+    ? { caption: await readCaptionPixels(file, width, height), picture: await readPictureFrame(pictureMp4, s.t, width, height), width, height }
+    : null;
+  const regions = texts.map((rec) => {
+    const ink = tc.parseCssColor(rec.color);
+    const measured = frame && tc.needsPicture(rec) ? { ...rec, picture: backgroundUnderText(frame, rec.box, ink && ink.rgb) } : rec;
+    return tc.recordAsRegion(rec, tc.judgeRecord(measured));
+  });
+  return { lineId: s.lineId, t: s.t, ...withPoorest(regions) };
+}
+
+/**
+ * Measures every sampled caption frame of a language against its picture. `records` (frame -> the caption
+ * layer's text draw records from lib/page-probe.mjs), when given for a frame, measures it from the drawn
+ * colours; frames without records use the pixel path.
+ * @param {{captionsDir: string, pictureMp4: string, lines: {id:string,start:number,end:number}[], fps: number, width: number, height: number, frameFile: (frame:number)=>string, records?: Map<number, object[]>|null}} o
  * @returns {Promise<object[]>} one row per sample: {lineId, t, ...analysis} or {lineId, t, grade: "no-caption"}
  */
-export async function measureCaptionContrast({ captionsDir, pictureMp4, lines, fps, width, height, frameFile }) {
+export async function measureCaptionContrast({ captionsDir, pictureMp4, lines, fps, width, height, frameFile, records = null }) {
   const rows = [];
   for (const s of sampleTimesForLines(lines, fps)) {
     const file = path.join(captionsDir, frameFile(s.frame));
+    const drawn = records ? records.get(s.frame) : null;
+    if (drawn) {
+      rows.push(await rowFromRecords({ s, drawn, file, pictureMp4, width, height }));
+      continue;
+    }
     if (!fs.existsSync(file)) {
       rows.push({ lineId: s.lineId, t: s.t, grade: "no-caption" });
       continue;
@@ -339,10 +408,10 @@ export function formatContrastReport(rows) {
   const out = [`caption contrast (WCAG ratio, each text vs the picture behind its own box; low < ${CONTRAST_LOW}, marginal < ${CONTRAST_MARGINAL}): ${measured.length} frames measured, ${flagged.length} flagged`];
   for (const r of flagged) {
     for (const g of (r.regions || [r]).filter((x) => Number.isFinite(x.ratio) && x.grade !== "ok")) {
-      out.push(
-        `  ${r.lineId} t=${r.t.toFixed(2)}s ${g.grade.toUpperCase()} ${g.ratio.toFixed(2)}:1 (${g.kind || "caption"}, ${g.direction}; text ${hex(g.tones[0].color)}, ` +
-          `picture median luminance ${g.bgMedianLum.toFixed(2)}, poorest tenth ${g.worstRatio.toFixed(2)}:1)`
-      );
+      const against = g.method === "pair"
+        ? `on its own box ${g.backColor} (pair)`
+        : `picture median luminance ${g.bgMedianLum.toFixed(2)}, poorest tenth ${g.worstRatio.toFixed(2)}:1${g.method ? ` (${g.method})` : ""}`;
+      out.push(`  ${r.lineId} t=${r.t.toFixed(2)}s ${g.grade.toUpperCase()} ${g.ratio.toFixed(2)}:1 (${g.kind || "caption"}, ${g.direction}; text ${hex(g.tones[0].color)}, ${against})`);
     }
   }
   return out.join("\n") + "\n";

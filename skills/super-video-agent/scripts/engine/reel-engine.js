@@ -1303,7 +1303,22 @@
     // An explicit o.color is the page's own choice and draws no band unless o.band is given.
     const look = o.color == null ? { color: "#fff", band: "rgba(0,0,0,0.62)" } : {};
     const captionOpts = Object.assign({ align: "center", font: font, lineHeight: lineHeight, lang: pictureLang() || undefined }, look, o);
-    return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
+    return drawingAs("caption", function () {
+      return textBlock(ctx, stripCaptionBreaksForDisplay(line.text), x, y, boxW, boxH, captionOpts);
+    });
+  }
+
+  // drawingAs(role, fn) — runs fn with globalThis.__svaDrawing = role. The text probe
+  // (scripts/lib/page-probe.mjs) tags each text draw with it, so a contrast check knows
+  // which draws are the caption layer without reading pixels.
+  function drawingAs(role, fn) {
+    const prev = globalThis.__svaDrawing;
+    globalThis.__svaDrawing = role;
+    try {
+      return fn();
+    } finally {
+      globalThis.__svaDrawing = prev;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1574,7 +1589,10 @@
     const safe = safeArea(width, height);
     const boxW = Math.round(Math.min(safe.w * 0.45, width * 0.4));
     const font = o.font || "700 " + fontPx + "px " + (captionFontFor(o.captionFonts, o.lang) || "'Pretendard'");
-    (notes || []).forEach(function (n) {
+    drawingAs("caption", function () {
+      (notes || []).forEach(drawOne);
+    });
+    function drawOne(n) {
       if (t < n.from || t >= n.to) return;
       const a = Math.min(1, (t - n.from) / NOTE_FADE_SEC, (n.to - t) / NOTE_FADE_SEC);
       ctx.save();
@@ -1590,7 +1608,7 @@
         font: font, lineHeight: lineHeight, color: o.color || "#fff", lang: o.lang, width: width, height: height,
       });
       ctx.restore();
-    });
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -2077,6 +2095,9 @@
     caption,
     captionsOn,
     setCaptionsOn,
+    drawingAs,
+    // This engine tags its caption-layer draws (drawingAs above); render.mjs's contrast check reads the tags.
+    drawRoles: true,
     layer,
     dubCode,
     layerFiles,

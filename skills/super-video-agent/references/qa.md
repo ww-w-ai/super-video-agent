@@ -6,7 +6,8 @@
 |---|---|---|
 | Contract | `verify.mjs` static scan | no `Math.random`, `Date`, `performance.now`, `requestAnimationFrame`, timers, `fetch` in scene code |
 | Determinism | `verify.mjs` probe | shuffled-seek PNG hashes equal in-order hashes at ≥ 12 times (shot edges, boil bucket edges); a cold probe — a fresh page seeking each time with no warm-up — matches the warm hash too. On a mismatch it names the earlier seek time that changes the frame and the bounding box of the pixel difference |
-| Dead air | `review.mjs` | seek(t) every 0.1 s through the timeline, hash the native-resolution canvas; no run of identical hashes ≥ 0.8 s before the last line ends. The end hold after it (`meta.tailSec`) is reported as `endHoldSec`, not flagged |
+| Dead air | `review.mjs` | one freeze method for the page and for `--file`: every 0.1 s the frame at t is compared with the very next frame at 320-px greyscale; a pair is unchanged when under 0.2 % of pixels change. A run of unchanged samples is re-checked at every frame 1 s either side. No freeze (no frame-to-frame change) ≥ 0.8 s before the last line ends. The page check seeks and scales the canvas in the page; the file check reads the one decode below. The end hold after the last line (`meta.tailSec`) is reported as `endHoldSec`, not flagged |
+| Black frames | `review.mjs --file` | from the same single decode: a frame is black when 98 % of its pixels are at or under 0.10 of full scale (ffmpeg blackdetect's defaults); every black run is listed with start and end. The same pass counts decoded frames against stream length × fps and identical neighbouring frames. The file is never decoded a second time for these |
 | Boil call sites | `verify.mjs` | not a gate — counts `boil(` call sites in the scene code and how many pass a `moving` option, printed as one info line |
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area, no chip outside its box, no highlight missing or under its target (`references/pipeline.md` "Children, highlights and corners") |
@@ -40,7 +41,7 @@ whatever the canvas held before. Draw blur and glow over an opaque copy of the f
 
 A finished or joined file has no page to seek. `review.mjs --file <mp4> [--parts t1,t2,...]`
 reviews it directly: audio and video stream lengths, integrated loudness of the whole file and of
-each part, dead air and black frames (`references/bookends.md`). A picture that is meant to move
+each part, dead air, black frames (`references/bookends.md`) and frame counts. A picture that is meant to move
 slowly or hold (a deliberate still, a slow push) reads as dead air: name those spans with `--holds
 12.5-15,40-44` (seconds) and they are listed as intended holds, not flagged. In a reel review the
 page declares them itself: `window.__reel.holds = [{from, to}]`. The freeze test reads 320-px
@@ -159,14 +160,24 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   own morph-weight keyframes for the blink targets, with no page. A screenshot cannot catch a
   blink that lasts two frames; this does.
 - **Caption contrast** — `dub.mjs` for a language layer (`--no-contrast` skips it) and `render.mjs`
-  for a voice-first film's own render. For up to three frames per line it compares the caption's
-  drawn colour with the picture behind the text box as a WCAG contrast ratio, from pixels already
-  drawn, with no screenshot (`render.mjs` draws the same instant once more without captions and
-  takes the pixels that differ). It works in both directions: light text on a bright picture, and
-  dark text on a dark one. Under 3:1 is `LOW`, under 4.5:1 `marginal`, per line id and time; the
+  for a voice-first film's own render. For up to three frames per line it reads the engine's own
+  caption draws (it tags them; `Reel.drawRoles`): the text colour against the opaque box drawn
+  under it (pair), or, with no opaque box, against the poorest tenth of the picture inside the
+  text box (picture). The pixels are read, no screenshot taken. Only an older engine falls back to
+  pixels: the caption layer's drawn pixels in `dub.mjs`, or the same instant drawn once more
+  without captions in `render.mjs` (the pixels that differ). It works in both directions: light
+  text on a bright picture, and dark text on a dark one. Under 3:1 is `LOW`, under 4.5:1 `marginal`, per line id and time; the
   full rows go to `dub/<code>/contrast.json` or `out/contrast.json`. The grade is a number for the
   reviewer to act on; it never stops a run. It says `checked nothing` when no sampled frame has a
   caption over a measurable picture (a render that reuses every cached segment draws none).
+- **Text contrast (state-checks `contrast`)** — `scripts/state-checks.mjs <dir> --only contrast`
+  (also in the default set) grades every text the page draws, not only captions, over the frames it
+  samples. *pair*: the text's known colour against its opaque backing (a box drawn under it, an
+  outline, or the DOM ancestor's background), grouped by colours and size across frames with first
+  and last time. *picture*: the text's colour against the poorest tenth of the picture inside the
+  text box (read before the text was drawn). Text drawn by WebGL is listed as not measured. Same
+  grades as caption contrast (`LOW` under 3:1, `marginal` under 4.5:1). Facts only: it never
+  changes the exit code. `--step` and `--range` limit the frames read.
 - **Waveform cut check** — `dub.mjs` lists each placed line whose start or end is still loud in
   the final narration, an abrupt cut the silence gate cannot see. A report, not a stop. After
   the cut is found, re-make the line or give it room (`references/voice.md` "Fixing one line").

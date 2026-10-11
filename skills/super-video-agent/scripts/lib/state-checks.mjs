@@ -3,6 +3,7 @@
 // the logic is unit-tested on plain data. Facts only; nothing here fails a reel.
 import { overlapSpans } from "./overlap.mjs";
 import { checkedNothingNext } from "./checked-nothing.mjs";
+import { formatContrastFindings } from "./text-contrast.mjs";
 
 /** A text drawn with canvas alpha under this counts as not visible. */
 export const VISIBLE_ALPHA = 0.05;
@@ -150,8 +151,8 @@ export function glyphFallbacks(frames, covered, { fps }) {
   };
 }
 
-/** Printable report of the three checks; each section says what it covered. */
-export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, coverScope, langGlyphs, reserve = null, reserveCorners = 0 }) {
+/** Printable report of the checks that ran; each section says what it covered. */
+export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, hooks, nothing, covers, coverScope, langGlyphs, reserve = null, reserveCorners = 0, contrast = null }) {
   let s = `sampled ${sampledFrames} frames\n`;
   const skip = new Set((nothing || []).map((n) => n.check));
   if (overlaps) {
@@ -187,6 +188,7 @@ export function formatStateChecks({ overlaps, glyphs, flicker, sampledFrames, ho
   }
   s += formatReserve(reserve, reserveCorners);
   if (langGlyphs) s += formatLangGlyphs(langGlyphs);
+  if (contrast) s += formatContrastFindings(contrast);
   return s;
 }
 
