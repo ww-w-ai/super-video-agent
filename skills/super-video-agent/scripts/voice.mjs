@@ -31,8 +31,7 @@ import {
   sttOnlyLang,
   parseInsertPause,
   pauseWindow,
-  quietestSample,
-  insertSilence,
+  spliceSilence,
   shiftForPause,
   readWavMono16,
   writeWavMono16,
@@ -260,9 +259,14 @@ STT engine (env): SVA_STT_PYTHON  python with mlx-whisper installed.
                      insert <ms> of silence into the finished line <id>
                      between word <word> (0-based index into that line's
                      timings.json words) and the next, at the quietest 10 ms
-                     point there. No re-synthesis: the line grows by exactly
-                     the pause, its later words and every later line move by
-                     the same amount, narration.wav/timings.json are rebuilt.
+                     point of the gap between them, with 4 ms fades. That
+                     point and 5 ms on each side must be -40 dB or quieter
+                     against the line's loudest 10 ms; otherwise the pause is
+                     refused, its clip is left unchanged, the other pauses
+                     still apply, and the run exits 1. No re-synthesis: the
+                     line grows by exactly the pause, its later words and
+                     every later line move by the same amount,
+                     narration.wav/timings.json are rebuilt.
 `;
 
 const PROVIDERS = ["say", "fish", "elevenlabs", "typecast", "file", "none", "qwen3", "melotts", "fishspeech"];
@@ -2415,11 +2419,57 @@ function writePickedTones({ paths, plan, picks, providerName, lineVoices }) {
 }
 
 /**
+ * Pass 1 of `--insert-pause`: decides every edit in memory, nothing on disk
+ * changes. Accepted edits update the in-memory clip and shift `work`
+ * timings, so a later edit on the same line sees the earlier pause; a
+ * refused edit changes nothing. Unknown ids, missing clips and bad word
+ * indexes throw here, before any write.
+ * @returns {{clips:Map<string,{wavPath:string,rate:number,samples:Int16Array,edited:boolean}>, notes:string[], refused:number}}
+ */
+function decidePauses(edits, work, voiceDir) {
+  const clips = new Map();
+  const notes = [];
+  let refused = 0;
+  for (const edit of edits) {
+    const line = work.lines.find((l) => l.id === edit.id);
+    if (!line) throw new Error(`--insert-pause: unknown line id "${edit.id}"`);
+    if (!clips.has(edit.id)) {
+      const wavPath = path.join(voiceDir, `line-${edit.id}.wav`);
+      if (!fs.existsSync(wavPath)) throw new Error(`--insert-pause: no ${wavPath}`);
+      clips.set(edit.id, { wavPath, ...readWavMono16(wavPath), edited: false });
+    }
+    const clip = clips.get(edit.id);
+    const win = pauseWindow(line.words || [], edit.word, line.start, clip.samples.length / clip.rate);
+    const count = Math.round((edit.ms / 1000) * clip.rate);
+    const res = spliceSilence(clip.samples, clip.rate, win.fromSec, win.toSec, count);
+    const word = line.words[edit.word];
+    if (res.refused) {
+      refused++;
+      notes.push(
+        `line "${edit.id}": pause after word ${edit.word} "${word.w ?? ""}" refused — the quietest 10 ms between ${win.fromSec.toFixed(3)}s and ${win.toSec.toFixed(3)}s is ${res.refused.levelDb.toFixed(1)} dB against the line's loudest 10 ms (needs -40 dB or quieter); clip unchanged\n`
+      );
+      continue;
+    }
+    clip.samples = res.samples;
+    clip.edited = true;
+    shiftForPause(work, edit.id, edit.word, count / clip.rate);
+    notes.push(
+      `line "${edit.id}": inserted ${(count / clip.rate).toFixed(3)}s after word ${edit.word} "${word.w ?? ""}" at ${(res.at / clip.rate).toFixed(3)}s into the line\n`
+    );
+  }
+  return { clips, notes, refused };
+}
+
+/**
  * `--insert-pause id@word=ms`: inserts silence into finished line audio at
  * the quietest 10 ms point between word `word` and the next (no
- * re-synthesis, no tempo, no leveling), shifts the timings by exactly the
- * pause, and rebuilds narration.wav/timings.json keeping every line's
- * measured word times.
+ * re-synthesis, no tempo, no leveling) when that point is silent
+ * (-40 dB or quieter against the line's loudest 10 ms), with 4 ms fades at
+ * the splice. Every edit is decided before anything is written: a refused
+ * pause leaves its clip untouched, the others still apply, and the run ends
+ * with exit code 1. Accepted pauses shift the timings by exactly the pause
+ * and rebuild narration.wav/timings.json keeping every line's measured word
+ * times; with none accepted nothing is written.
  */
 export async function runInsertPause({ dir, paths, plan, spec }) {
   const edits = parseInsertPause(spec);
@@ -2428,23 +2478,17 @@ export async function runInsertPause({ dir, paths, plan, spec }) {
   }
   const timings = readJson(paths.timingsJson);
   const startsBefore = new Map(timings.lines.map((l) => [l.id, l.start]));
-  for (const edit of edits) {
-    const line = timings.lines.find((l) => l.id === edit.id);
-    if (!line) throw new Error(`--insert-pause: unknown line id "${edit.id}"`);
-    const wavPath = path.join(paths.voiceDir, `line-${edit.id}.wav`);
-    if (!fs.existsSync(wavPath)) throw new Error(`--insert-pause: no ${wavPath}`);
-    const { rate, samples } = readWavMono16(wavPath);
-    const win = pauseWindow(line.words || [], edit.word, line.start, samples.length / rate);
-    const at = quietestSample(samples, rate, win.fromSec, win.toSec);
-    const count = Math.round((edit.ms / 1000) * rate);
-    writeWavMono16(wavPath, insertSilence(samples, at, count), rate);
-    shiftForPause(timings, edit.id, edit.word, count / rate);
-    const word = line.words[edit.word];
-    process.stdout.write(
-      `line "${edit.id}": inserted ${(count / rate).toFixed(3)}s after word ${edit.word} "${word.w ?? ""}" at ${(at / rate).toFixed(3)}s into the line\n`
-    );
+  const work = structuredClone(timings);
+  const { clips, notes, refused } = decidePauses(edits, work, paths.voiceDir);
+  const accepted = [...clips.values()].filter((c) => c.edited);
+  for (const clip of accepted) writeWavMono16(clip.wavPath, clip.samples, clip.rate);
+  for (const note of notes) process.stdout.write(note);
+  if (refused) {
+    process.stdout.write(`--insert-pause: ${refused} of ${edits.length} pause(s) refused; pick a word gap that is silent in the audio\n`);
+    process.exitCode = 1;
   }
-  writeJson(paths.timingsJson, timings);
+  if (!accepted.length) return timings;
+  writeJson(paths.timingsJson, work);
 
   const result = await synthesizeAll({
     dir,

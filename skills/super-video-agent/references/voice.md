@@ -559,7 +559,12 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   `--lines`, `--pick` and `--use` alike.
 - A finished take that needs a breath inside it gets one without re-synthesis:
   `--insert-pause <id>@<word-index>=<ms>` inserts that much silence at the quietest 10 ms
-  between that word and the next, and shifts the later word times by the same amount.
+  of the measured gap between that word and the next (a gap under 20 ms is searched as 20 ms
+  around the boundary), fades 4 ms into and out of it, and shifts the later word times by the
+  same amount. The pause goes in only when that 10 ms and the 5 ms on each side are -40 dB or
+  quieter against the line's loudest 10 ms — zeros spliced into voiced audio click. Otherwise
+  the pause is refused: the reason is printed, that clip stays unchanged, the other pauses still
+  apply, and the run exits 1. Pick another word gap, or re-voice the line with the pause in it.
 - Keep a copy of `voice/` before a larger redo, so the user can compare and go back.
 
 ## Timing model

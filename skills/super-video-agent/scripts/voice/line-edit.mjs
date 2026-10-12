@@ -266,14 +266,24 @@ export function parseInsertPause(value) {
     });
 }
 
-// How far past the measured word edges the quiet point may be searched:
-// measured word boundaries are approximate, so the true gap can sit a little
-// outside them — but never past the middle of either word.
-const PAUSE_SEARCH_PAD_SEC = 0.08;
+// A pause span narrower than this is widened symmetrically around the word
+// boundary (still never past the middle of either word).
+const PAUSE_MIN_SPAN_SEC = 0.02;
+
+// Pause gate. Zeros spliced into voiced audio click: on shipped tracks every
+// audible click sat at a cut point 9–28 dB below the line's loudest 10 ms.
+// A pause goes in only where the quietest 10 ms window and the 5 ms outside it
+// on each side are all at or below PAUSE_GATE_DB against the line's loudest
+// 10 ms; the splice edges fade over PAUSE_FADE_SEC.
+const PAUSE_GATE_DB = -40;
+const PAUSE_SIDE_SEC = 0.005;
+const PAUSE_FADE_SEC = 0.004;
 
 /**
  * The span of a line (seconds from the line's own start) searched for the
- * quietest point between word `wordIndex` and the next one.
+ * quietest point between word `wordIndex` and the next one: the measured gap
+ * `[w.end, next.start]`. A gap under 20 ms (or overlapping words) becomes a
+ * 20 ms span centred on the boundary, clamped to the two words' middles.
  * @param {{start:number,end:number}[]} words absolute word times
  * @param {number} wordIndex
  * @param {number} lineStart absolute line start
@@ -285,11 +295,62 @@ export function pauseWindow(words, wordIndex, lineStart, lineDur) {
   const n = words[wordIndex + 1];
   if (!w) throw new Error(`--insert-pause: no word ${wordIndex} (the line has ${words.length})`);
   if (!n) throw new Error(`--insert-pause: word ${wordIndex} is the line's last word — nothing follows it`);
-  const lo = Math.min(w.end, n.start) - PAUSE_SEARCH_PAD_SEC;
-  const hi = Math.max(w.end, n.start) + PAUSE_SEARCH_PAD_SEC;
-  const from = Math.max(lo, (w.start + w.end) / 2) - lineStart;
-  const to = Math.min(hi, (n.start + n.end) / 2) - lineStart;
+  let lo = w.end;
+  let hi = n.start;
+  if (n.start - w.end < PAUSE_MIN_SPAN_SEC) {
+    const centre = (w.end + n.start) / 2;
+    lo = Math.max(centre - PAUSE_MIN_SPAN_SEC / 2, (w.start + w.end) / 2);
+    hi = Math.min(centre + PAUSE_MIN_SPAN_SEC / 2, (n.start + n.end) / 2);
+  }
+  // Rounded to 1 ns so absolute-to-relative subtraction noise (10.4 - 10 =
+  // 0.40000000000000036) does not push the span past a word edge.
+  const from = Math.round((lo - lineStart) * 1e9) / 1e9;
+  const to = Math.round((hi - lineStart) * 1e9) / 1e9;
   return { fromSec: Math.max(0, from), toSec: Math.min(lineDur, Math.max(to, from)) };
+}
+
+/** RMS of samples[a, b), or 0 for an empty range. */
+function rmsOf(samples, a, b) {
+  const lo = Math.max(0, a);
+  const hi = Math.min(samples.length, b);
+  if (hi <= lo) return 0;
+  let e = 0;
+  for (let i = lo; i < hi; i++) e += samples[i] * samples[i];
+  return Math.sqrt(e / (hi - lo));
+}
+
+/** RMS of the loudest 10 ms window (5 ms hop) over the whole clip. */
+function loudestWindowRms(samples, rate) {
+  const win = Math.max(2, Math.round(rate / 100));
+  const hop = Math.max(1, Math.floor(win / 2));
+  if (samples.length < win) return rmsOf(samples, 0, samples.length);
+  let best = 0;
+  for (let s = 0; s + win <= samples.length; s += hop) best = Math.max(best, rmsOf(samples, s, s + win));
+  return best;
+}
+
+/**
+ * Inserts `count` zero samples at the quietest 10 ms point of
+ * [fromSec, toSec] when that point is silent enough, else refuses.
+ * Only window centres whose 10 ms window and 5 ms sides all fit inside the
+ * span are searched. `levelDb` is the loudest of the window and its two
+ * outside sides, in dB against the clip's loudest 10 ms window.
+ * @param {Int16Array} samples mono PCM16 (never modified)
+ * @param {number} rate
+ * @returns {{samples:Int16Array, at:number, levelDb:number} | {refused:{levelDb:number, fromSec:number, toSec:number}}}
+ */
+export function spliceSilence(samples, rate, fromSec, toSec, count) {
+  const win = Math.max(2, Math.round(rate / 100));
+  const half = Math.floor(win / 2);
+  const side = Math.round(PAUSE_SIDE_SEC * rate);
+  const at = quietestSample(samples, rate, fromSec + PAUSE_SIDE_SEC, toSec - PAUSE_SIDE_SEC);
+  const loud = loudestWindowRms(samples, rate);
+  const w0 = at - half;
+  const w1 = w0 + win;
+  const quiet = Math.max(rmsOf(samples, w0, w1), rmsOf(samples, w0 - side, w0), rmsOf(samples, w1, w1 + side));
+  const levelDb = loud > 0 && quiet > 0 ? 20 * Math.log10(quiet / loud) : -Infinity;
+  if (loud > 0 && levelDb > PAUSE_GATE_DB) return { refused: { levelDb, fromSec, toSec } };
+  return { samples: insertSilence(samples, at, count, Math.round(PAUSE_FADE_SEC * rate)), at, levelDb };
 }
 
 /**
@@ -317,11 +378,22 @@ export function quietestSample(samples, rate, fromSec, toSec) {
   return bestAt;
 }
 
-/** `samples` with `count` zero samples inserted at index `at`. */
-export function insertSilence(samples, at, count) {
+/**
+ * `samples` with `count` zero samples inserted at index `at`. With
+ * `fadeCount`, the `fadeCount` samples before the zeros fade out and the
+ * `fadeCount` after them fade in linearly, both reaching 0 next to the zeros.
+ */
+export function insertSilence(samples, at, count, fadeCount = 0) {
   const out = new Int16Array(samples.length + count);
   out.set(samples.subarray(0, at), 0);
   out.set(samples.subarray(at), at + count);
+  for (let j = 1; j <= fadeCount; j++) {
+    const g = (j - 1) / fadeCount;
+    const before = at - j;
+    const after = at + count - 1 + j;
+    if (before >= 0) out[before] = Math.round(out[before] * g);
+    if (after < out.length) out[after] = Math.round(out[after] * g);
+  }
   return out;
 }
 
