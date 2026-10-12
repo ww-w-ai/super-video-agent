@@ -170,7 +170,10 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
               render always returns fallback). Segments go to
               out/segments-<code>/<final|preview>-nocap/; a segment whose
               probe hashes equal the base segment's in out/segments/ is
-              copied from it, not rendered. A base segment whose frames read
+              copied from it, not rendered. A language segment is reused only
+              while the base segment file it was made from is unchanged (size
+              and modification time, recorded as "base" in its .json);
+              otherwise it is copied again or rendered. A base segment whose frames read
               no picture string this language sets (and never Reel.lang) is
               copied without probing: every render records, per segment, the
               strings its page read up to the end of that segment (load,
@@ -539,7 +542,7 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
     return { draftsOnly: true, drafts };
   }
   if (spans) {
-    return await renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, lang, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
+    return await renderSpanFilm({ dir, paths, pool, segments, segDir, baseSegDir, spans, plan, lang, fps, crf, preset: cPreset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality });
   }
   if (assemble) {
     return await renderAssembled({ dir, paths, pool, segments, segDir, edlPath: assemble, plan, fps, crf, preset: cPreset, targetWidth, targetHeight, noCaptions, stubSec, stubSegments, fixPictureDuration, quality, keepAssembledCopies });
@@ -571,7 +574,7 @@ async function renderWithPool({ dir, paths, pool, picture, preview, workers, onl
 
   copyBaseSegments({ decisions, baseSegDir, segDir });
   const contrast = contrastCollectorFor({ noCaptions, stubSec, paths, meta });
-  await renderNeeded({ pool, decisions, fps, crf, preset: cPreset, scaleFilter, workers, contrast });
+  await renderNeeded({ pool, decisions, baseSegDir, fps, crf, preset: cPreset, scaleFilter, workers, contrast });
   if (contrast) reportRenderContrast(contrast, path.join(paths.outDir, "contrast.json"));
   if (pending.length) return { partial: true, pending, decisions };
 
@@ -774,6 +777,21 @@ function segJsonPath(segDir, id) {
   return path.join(segDir, `${id}.json`);
 }
 
+/** The base segment .mp4's {size, mtimeMs} (the pair segmentCacheStats uses), or null when it does not exist. */
+export function baseStampOf(baseSegDir, id) {
+  const s = fs.statSync(segMp4Path(baseSegDir, id), { throwIfNoEntry: false });
+  return s ? { size: s.size, mtimeMs: s.mtimeMs } : null;
+}
+
+/**
+ * A language segment's .json with `base` = the stamp of the base segment it
+ * was made from (decideLangSegment / decideLangUnprobed reuse it only while
+ * that stamp still holds). A base render (baseSegDir null) gets meta as is.
+ */
+export function withBaseStamp(meta, baseSegDir, id) {
+  return baseSegDir ? { ...meta, base: baseStampOf(baseSegDir, id) } : meta;
+}
+
 function readStoredMeta(segDir, id) {
   const p = segJsonPath(segDir, id);
   if (!fs.existsSync(p)) return null;
@@ -863,6 +881,7 @@ function decideWithoutPage({ segment, segDir, baseSegDir, fps, targetWidth, targ
     strings: langStrings,
     baseMp4Exists: fs.existsSync(segMp4Path(baseSegDir, segment.id)),
     langMp4Exists: fs.existsSync(mp4Path),
+    baseNow: baseStampOf(baseSegDir, segment.id),
   });
   if (!d) return null;
   if (d.action === "REUSE") return { segment, action: "REUSE", reason: d.reason };
@@ -892,6 +911,7 @@ async function decideOne({ session, segment, segDir, baseSegDir = null, fps, tar
       current,
       langMp4Exists: fs.existsSync(mp4Path),
       baseMp4Exists: fs.existsSync(segMp4Path(baseSegDir, segment.id)),
+      baseNow: baseStampOf(baseSegDir, segment.id),
     });
     if (d.action === "REUSE") return { segment, action: "REUSE", reason: d.reason };
     if (d.action === "COPY") {
@@ -910,7 +930,7 @@ function copyBaseSegments({ decisions, baseSegDir, segDir }) {
   for (const d of decisions) {
     if (d.action !== "COPY") continue;
     fs.copyFileSync(d.baseMp4Path, d.mp4Path);
-    writeJson(d.jsonPath, d.current);
+    writeJson(d.jsonPath, withBaseStamp(d.current, baseSegDir, d.segment.id));
   }
 }
 
@@ -921,7 +941,7 @@ function contrastCollectorFor({ noCaptions, stubSec, paths, meta }) {
   return Array.isArray(lines) && lines.length ? createContrastCollector({ lines, fps: meta.fps, width: meta.width, height: meta.height }) : null;
 }
 
-async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, workers, contrast = null }) {
+async function renderNeeded({ pool, decisions, baseSegDir = null, fps, crf, preset, scaleFilter, workers, contrast = null }) {
   const toRender = decisions.filter((d) => d.action === "RENDER");
   let idx = 0;
 
@@ -957,7 +977,7 @@ async function renderNeeded({ pool, decisions, fps, crf, preset, scaleFilter, wo
             },
           }
         );
-        writeJson(d.jsonPath, reads ? { ...d.current, picture: reads } : d.current);
+        writeJson(d.jsonPath, withBaseStamp(reads ? { ...d.current, picture: reads } : d.current, baseSegDir, d.segment.id));
       }
     } finally {
       if (session) pool.release(session);
@@ -1305,7 +1325,7 @@ export function spanPictureReads({ stored, sessionReads, pieces }) {
   return stored && stored.picture ? mergePictureReads(stored.picture, sessionReads) : null;
 }
 
-async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, scaleFilter, width, height, headerRef }) {
+async function rebuildSegmentSpan({ session, touched, segDir, baseSegDir = null, fps, crf, preset, scaleFilter, width, height, headerRef }) {
   const { id, segment } = touched;
   const target = segMp4Path(segDir, id);
   const workDir = uniqueTempPath(path.join(segDir, `_span-${id}`));
@@ -1324,13 +1344,13 @@ async function rebuildSegmentSpan({ session, touched, segDir, fps, crf, preset, 
     for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
     const picture = spanPictureReads({ stored, sessionReads: await sessionPictureReads(session), pieces: touched.pieces });
     const assembledCopy = stored?.assembledCopy && touched.pieces.some(p => p.kind === "old") ? { assembledCopy: stored.assembledCopy } : {};
-    writeJson(segJsonPath(segDir, id), { ...assembledCopy, frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) });
+    writeJson(segJsonPath(segDir, id), withBaseStamp({ ...assembledCopy, frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) }, baseSegDir, id));
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
 }
 
-async function renderSpans({ pool, segments, touched, segDir, fps, crf, preset, scaleFilter, width, height, workers }) {
+async function renderSpans({ pool, segments, touched, segDir, baseSegDir = null, fps, crf, preset, scaleFilter, width, height, workers }) {
   const touchedIds = new Set(touched.map((t) => t.id));
   const untouched = segments.find((s) => !touchedIds.has(s.id));
   const headerRef = untouched ? segMp4Path(segDir, untouched.id) : null;
@@ -1341,7 +1361,7 @@ async function renderSpans({ pool, segments, touched, segDir, fps, crf, preset, 
     try {
       while (idx < touched.length) {
         if (!session) session = await pool.acquire();
-        await rebuildSegmentSpan({ session, touched: touched[idx++], segDir, fps, crf, preset, scaleFilter, width, height, headerRef });
+        await rebuildSegmentSpan({ session, touched: touched[idx++], segDir, baseSegDir, fps, crf, preset, scaleFilter, width, height, headerRef });
       }
     } finally {
       if (session) pool.release(session);
@@ -1388,7 +1408,7 @@ async function noteLongKeyframeGaps({ touched, segDir, fps }) {
   }
 }
 
-async function renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan, lang = null, fps, crf, preset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
+async function renderSpanFilm({ dir, paths, pool, segments, segDir, baseSegDir = null, spans, plan, lang = null, fps, crf, preset, scaleFilter, targetWidth, targetHeight, workers, noCaptions, stubSec, stubSegments, fixPictureDuration, quality }) {
   const filmStart = segments[0].frameStart;
   const filmEnd = segments[segments.length - 1].frameEnd;
   const ranges = planSpanFrames({ spans, fps, filmStart, filmEnd });
@@ -1400,7 +1420,7 @@ async function renderSpanFilm({ dir, paths, pool, segments, segDir, spans, plan,
   const rendered = decisions.reduce((n, d) => n + (d.frames || 0), 0);
   process.stdout.write(`span: ${ranges.map((r) => `[${r.startFrame},${r.endFrame})`).join(" ")} — ${rendered} of ${filmEnd - filmStart} frames rendered\n`);
   if (plan) return { planOnly: true, decisions };
-  await renderSpans({ pool, segments, touched, segDir, fps, crf, preset, scaleFilter, width: targetWidth, height: targetHeight, workers });
+  await renderSpans({ pool, segments, touched, segDir, baseSegDir, fps, crf, preset, scaleFilter, width: targetWidth, height: targetHeight, workers });
   return await joinAndFinish({ dir, paths, pool, segments, segDir, decisions, fps, crf, preset, noCaptions, stubSec, stubSegments, lang, quality, fixPictureDuration });
 }
 

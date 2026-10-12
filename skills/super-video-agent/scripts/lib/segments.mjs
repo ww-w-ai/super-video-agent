@@ -109,20 +109,50 @@ export function decideSegmentReuse({ stored, current, mp4Exists }) {
 }
 
 /**
+ * Whether the base segment .mp4 a language segment was made from is still
+ * the same file. A language segment's .json records `base` = {size, mtimeMs}
+ * of the base .mp4 when it was copied or rendered (null: there was none).
+ * Probe hashes cannot see a change between the probe frames, so a stale
+ * language segment would otherwise be reused after the base was re-rendered.
+ * `baseNow` is the base .mp4's stamp now (null: none); undefined means the
+ * caller did not stat it and the check passes.
+ * @param {{base?: {size:number, mtimeMs:number}|null}} storedLang
+ * @param {{size:number, mtimeMs:number}|null|undefined} baseNow
+ * @returns {{ok: boolean, reason: string}}
+ */
+export function baseStampMatches(storedLang, baseNow) {
+  if (baseNow === undefined) return { ok: true, reason: "" };
+  const recorded = storedLang ? storedLang.base : undefined;
+  if (recorded === undefined) {
+    return baseNow === null ? { ok: true, reason: "" } : { ok: false, reason: "no record of the base segment this language's segment was made from" };
+  }
+  if (recorded === null) {
+    return baseNow === null ? { ok: true, reason: "" } : { ok: false, reason: "the base segment exists now but did not when this language's segment was made" };
+  }
+  if (baseNow === null) return { ok: false, reason: "the base segment this language's segment was made from is gone" };
+  if (recorded.size !== baseNow.size || recorded.mtimeMs !== baseNow.mtimeMs) {
+    return { ok: false, reason: "the base segment changed since this language's segment was made (size/mtime differ)" };
+  }
+  return { ok: true, reason: "" };
+}
+
+/**
  * Reuse decision for a language picture (render.mjs --no-captions --lang):
- * the language's own stored segment first; else the base language's stored
+ * the language's own stored segment first, while the base segment it was
+ * made from is unchanged (baseStampMatches); else the base language's stored
  * segment when its range, fps, size and probe hashes equal the current ones
  * (the shot draws no string that changes per language), which is copied
  * instead of rendered; else render.
- * @param {{storedLang: object|null, storedBase: object|null, current: object, langMp4Exists: boolean, baseMp4Exists: boolean}} args
+ * @param {{storedLang: object|null, storedBase: object|null, current: object, langMp4Exists: boolean, baseMp4Exists: boolean, baseNow?: {size:number, mtimeMs:number}|null}} args
  * @returns {{action: "REUSE"|"COPY"|"RENDER", reason: string}}
  */
-export function decideLangSegment({ storedLang, storedBase, current, langMp4Exists, baseMp4Exists }) {
+export function decideLangSegment({ storedLang, storedBase, current, langMp4Exists, baseMp4Exists, baseNow }) {
   const own = decideSegmentReuse({ stored: storedLang, current, mp4Exists: langMp4Exists });
-  if (own.reuse) return { action: "REUSE", reason: own.reason };
+  const stamp = own.reuse ? baseStampMatches(storedLang, baseNow) : null;
+  if (own.reuse && stamp.ok) return { action: "REUSE", reason: own.reason };
   const base = decideSegmentReuse({ stored: storedBase, current, mp4Exists: baseMp4Exists });
   if (base.reuse) return { action: "COPY", reason: "probe hashes equal the base language's segment (copied, not rendered)" };
-  return { action: "RENDER", reason: own.reason };
+  return { action: "RENDER", reason: stamp ? stamp.reason : own.reason };
 }
 
 /**
@@ -133,11 +163,13 @@ export function decideLangSegment({ storedLang, storedBase, current, langMp4Exis
  * never listed the keys, the language's frames are the base frames — take
  * the base segment as is. Returns null when the segment must be probed:
  * no record, a read that this language changes, or a base segment that does
- * not match the current frame range, fps or size, or has no mp4.
- * @param {{storedBase: object|null, storedLang: object|null, current: {frameStart:number,frameEnd:number,fps:number,width:number,height:number}, strings: Record<string,string>, baseMp4Exists: boolean, langMp4Exists: boolean}} args
+ * not match the current frame range, fps or size, or has no mp4. The
+ * language's own copy is reused only while the base segment it was made from
+ * is unchanged (baseStampMatches); else it is copied again.
+ * @param {{storedBase: object|null, storedLang: object|null, current: {frameStart:number,frameEnd:number,fps:number,width:number,height:number}, strings: Record<string,string>, baseMp4Exists: boolean, langMp4Exists: boolean, baseNow?: {size:number, mtimeMs:number}|null}} args
  * @returns {{action: "REUSE"|"COPY", reason: string}|null}
  */
-export function decideLangUnprobed({ storedBase, storedLang, current, strings, baseMp4Exists, langMp4Exists }) {
+export function decideLangUnprobed({ storedBase, storedLang, current, strings, baseMp4Exists, langMp4Exists, baseNow }) {
   if (!storedBase || storedBase.assembledCopy?.pageMismatch || storedLang?.assembledCopy?.pageMismatch || !baseMp4Exists || !sameShape(storedBase, current)) return null;
   const reads = storedBase.picture;
   if (!reads || !Array.isArray(reads.keys) || reads.lang || reads.all) return null;
@@ -145,7 +177,9 @@ export function decideLangUnprobed({ storedBase, storedLang, current, strings, b
   const changed = reads.keys.filter((k) => Object.prototype.hasOwnProperty.call(set, k) && typeof set[k] === "string" && set[k] !== "");
   if (changed.length) return null;
   if (storedLang && langMp4Exists && sameShape(storedLang, current) && sameProbes(storedLang, storedBase)) {
-    return { action: "REUSE", reason: "the base segment draws no string this language changes; the language's copy of it is current (not probed)" };
+    const stamp = baseStampMatches(storedLang, baseNow);
+    if (stamp.ok) return { action: "REUSE", reason: "the base segment draws no string this language changes; the language's copy of it is current (not probed)" };
+    return { action: "COPY", reason: `the base segment draws no string this language changes; ${stamp.reason} (copied, not probed)` };
   }
   return { action: "COPY", reason: "the base segment draws no string this language changes (copied, not probed)" };
 }
