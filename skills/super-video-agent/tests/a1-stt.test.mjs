@@ -93,19 +93,20 @@ test("N7: a model that is not downloaded skips the check with a pointer to setup
   assert.match(res.skipped, /setup\.mjs --stt-models/);
 });
 
-test("N7: faster-whisper is gone; an unknown engine is skipped; no python is skipped", async () => {
+test("N7: faster-whisper is gone; an unknown engine fails; no python with nothing configured is skipped", async () => {
   const faster = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: { SVA_STT_ENGINE: "faster-whisper" }, ...quiet });
-  assert.match(faster.skipped, /no longer supported/);
+  assert.match(faster.failed, /no longer supported/);
   const other = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: { SVA_STT_ENGINE: "nope" }, ...quiet });
-  assert.match(other.skipped, /unknown STT engine/);
+  assert.match(other.failed, /unknown STT engine/);
   const noPython = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: {}, ...quiet });
   assert.match(noPython.skipped, /SVA_STT_PYTHON/);
   assert.doesNotMatch(fs.readFileSync(STT_PY, "utf8"), /faster_whisper/);
 });
 
-test("N7: groq without a key is skipped with one line and no key text", async () => {
+test("N7: groq without a key fails with one line naming GROQ_API_KEY", async () => {
   const res = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: { SVA_STT_ENGINE: "groq" }, ...quiet });
-  assert.equal(res.skipped, "groq engine selected but GROQ_API_KEY is not set");
+  assert.equal(res.skipped, undefined);
+  assert.match(res.failed, /^groq engine selected .*GROQ_API_KEY is not set/);
 });
 
 test("N7: groq with a key sends the file, parses words, and never leaks the key in an error", async () => {

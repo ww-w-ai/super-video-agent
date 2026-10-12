@@ -194,7 +194,7 @@ clears them.
 STT engine (env): SVA_STT_PYTHON  python with mlx-whisper installed.
                   SVA_STT_ENGINE  mlx (default) or groq (hosted; audio is
                                   sent only when selected; key in GROQ_API_KEY,
-                                  never printed; no key = check skipped).
+                                  never printed; no key = check FAILED, exit 1).
                   SVA_STT_MODEL / SVA_STT_MODEL_RECHECK  first pass (small)
                                   and the second pass (turbo) run only on
                                   lines whose transcript is doubtful against
@@ -795,7 +795,9 @@ export async function synthesizeAll({
     const codeOf = (id) => sttLangCode(lineLang(linesById.get(id), lang));
     const entries = checkedIds.map((id) => sttEntry(linesById.get(id), `line-${id}.wav`, { langCode: codeOf(id), pronounce }));
     const stt = await sttTranscribe(paths.voiceDir, entries, langCode);
-    if (stt.skipped) {
+    if (stt.failed) {
+      reportSttFailed(stt.failed);
+    } else if (stt.skipped) {
       process.stdout.write(`STT check skipped: ${stt.skipped}\n`);
     } else {
       for (const lineOut of lineResults) {
@@ -1331,6 +1333,10 @@ async function runSttOnly(dir, paths, flags = {}) {
     pending.done(checked);
   };
   const stt = await sttTranscribe(paths.voiceDir, entries, langCode, { allowPartial: true, onProgress: save });
+  if (stt.failed) {
+    reportSttFailed(stt.failed);
+    return;
+  }
   if (stt.skipped) {
     process.stdout.write(`STT check skipped: ${stt.skipped}\n`);
     return;
@@ -1396,6 +1402,19 @@ function openSttPending(file, timingsLines, linesFlag) {
 function reportUnchecked(stt, dir) {
   process.stdout.write(`STT stopped early: ${stt.incomplete}\n`);
   process.stdout.write(`not checked: ${stt.missing.join(", ")} — rerun: voice.mjs ${dir} --stt-only --lines ${stt.missing.join(",")}\n`);
+}
+
+const sttFailuresReported = new Set();
+
+/**
+ * A configured STT check that cannot run (sttTranscribe `{failed}`): one stderr line per
+ * reason, and the voice step exits 1. Everything else the step makes is still written.
+ */
+function reportSttFailed(reason) {
+  process.exitCode = 1;
+  if (sttFailuresReported.has(reason)) return;
+  sttFailuresReported.add(reason);
+  process.stderr.write(`STT check FAILED: ${reason}\n`);
 }
 
 // A local voice at its own speed sounds slow in a Short. The same rate for every
@@ -1997,7 +2016,9 @@ export async function synthesizeTakes({ dir, paths, plan, lineIds, spec, provide
         // On the same leveling an installed clip gets: a take's raw loudness would reorder the ranking.
         const entry = sttEntry(line, `takes/${id}-${k}.wav`, { id: sttId, langCode: takeCode, pronounce });
         const sttRes = await sttTranscribeLeveled(paths.voiceDir, [entry], takeCode, { level: lv.voiceCfg.levelLines !== false });
-        if (sttRes.skipped) {
+        if (sttRes.failed) {
+          reportSttFailed(sttRes.failed);
+        } else if (sttRes.skipped) {
           cerSkipped = sttRes.skipped;
         } else {
           const heard = sttRes.results.get(sttId) || "";
@@ -2351,7 +2372,7 @@ async function takesCer(paths, line, ks, langCode, { level = true, pronounce = n
   const code = line.lang ? sttLangCode(line.lang) : langCode;
   const entries = ks.map((k) => sttEntry(line, `takes/${line.id}-${k}.wav`, { id: `${line.id}-${k}`, langCode: code, pronounce }));
   const stt = await sttTranscribeLeveled(paths.voiceDir, entries, code, { level });
-  if (stt.skipped) throw new Error(`--pick-by stt: ${stt.skipped}`);
+  if (stt.failed || stt.skipped) throw new Error(`--pick-by stt: ${stt.failed || stt.skipped}`);
   const { text, say, names } = entries[0];
   return new Map(ks.map((k) => [k, compareLine({ text, say, heard: stt.results.get(`${line.id}-${k}`) || "", lang: code, names }).cer]));
 }

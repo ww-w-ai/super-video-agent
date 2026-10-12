@@ -1,7 +1,9 @@
 // Speech-to-text engines for the voice step's "did the voice say the line" check
-// (references/voice.md). Tools report facts: an engine that is missing, not
-// downloaded or failing makes the check come back `{skipped: reason}`; it never
-// throws and never stops the run.
+// (references/voice.md). Tools report facts; it never throws. An engine that was asked
+// for (SVA_STT_PYTHON or SVA_STT_ENGINE set) but cannot run at all — no Python, a Python
+// without mlx_whisper, an unknown engine — comes back `{failed: reason}` and the caller
+// fails its step. With nothing configured, a missing engine, a model not downloaded or a
+// run that stops comes back `{skipped: reason}`.
 //
 // Engines (SVA_STT_ENGINE):
 //   mlx   (default) mlx-whisper through scripts/voice/py/stt_check.py. First pass with the
@@ -23,6 +25,7 @@ import { groupByLangCode } from "./line-lang.mjs";
 import { compareLine } from "./stt-compare.mjs";
 import { levelLineWav } from "./line-level.mjs";
 import { parseWav } from "./wav-read.mjs";
+import { isTransientDecodeError, withRetry } from "./retry.mjs";
 
 const STT_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "voice", "py", "stt_check.py");
 const GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
@@ -32,6 +35,10 @@ const DEFAULT_DOUBT_CER = 0.15;
 const MODEL_NOT_DOWNLOADED_EXIT = 3;
 const PROGRESS_POLL_MS = 500;
 const FRAME_SEC = 0.01;
+const DECODE_RETRIES = 2;
+const WAYS_OUT = "or use the hosted engine (SVA_STT_ENGINE=groq with GROQ_API_KEY), or turn the check off (voice.mjs --no-stt)";
+// Python could not start, or started without mlx_whisper: the engine is unusable, not a run that stopped.
+const NO_ENGINE_PATTERNS = [/failed to start/, /No module named ['"]?mlx_whisper/];
 
 /** mlx-whisper model aliases and the repos they stand for (stt_check.py MODELS is the same table). */
 export const MLX_MODEL_REPOS = {
@@ -127,17 +134,22 @@ async function mlxPass(ctx, python, entries, code, model, { tail = false } = {})
   const progress = path.join(jobDir, "progress.json");
   fs.writeFileSync(jobPath, JSON.stringify(entries.map(({ id, wav }) => ({ id, wav }))), "utf8");
   const stopTail = tail ? tailProgress(ctx, progress, code, model) : null;
+  const env = { HF_HUB_OFFLINE: "1", SVA_STT_LANG: code, SVA_STT_MODEL: model, SVA_STT_PROGRESS: progress };
   try {
-    const { stdout } = await ctx.run(python, [STT_SCRIPT, ctx.voiceDir, jobPath], {
-      HF_HUB_OFFLINE: "1",
-      SVA_STT_LANG: code,
-      SVA_STT_MODEL: model,
-      SVA_STT_PROGRESS: progress,
+    const { stdout } = await withRetry(() => ctx.run(python, [STT_SCRIPT, ctx.voiceDir, jobPath], env), {
+      isRetryable: isTransientDecodeError,
+      maxRetries: DECODE_RETRIES,
+      onRetry: (k) => ctx.log(`STT: transient decode error, retrying (${k}/${DECODE_RETRIES})`),
     });
     return fromArray(JSON.parse(stdout.trim() || "[]"));
   } catch (e) {
-    if (new RegExp(`exited ${MODEL_NOT_DOWNLOADED_EXIT}\\b`).test(String(e.message))) {
+    const message = String((e && e.message) || e);
+    if (new RegExp(`exited ${MODEL_NOT_DOWNLOADED_EXIT}\\b`).test(message)) {
       return { skipped: `STT model "${model}" is not downloaded (run: node scripts/setup.mjs --stt-models)` };
+    }
+    const why = message.split("\n").find((l) => NO_ENGINE_PATTERNS.some((re) => re.test(l)));
+    if (why) {
+      return { failed: `STT Python ${python} cannot run mlx-whisper (${why.trim()}): install mlx-whisper there, point SVA_STT_PYTHON at a Python that has it, ${WAYS_OUT}`, noEngine: true };
     }
     return { ...fromArray(readProgress(progress)), failed: `stt check failed to run (${safeMessage(e)})` };
   } finally {
@@ -180,6 +192,9 @@ async function recheckDoubtful(ctx, python, group, code, first) {
 
 async function runMlx(ctx, group, code) {
   const python = ctx.deps.pythonPath || ctx.env.SVA_STT_PYTHON || null;
+  if (!python && ctx.configured) {
+    return { failed: `STT was asked for (SVA_STT_ENGINE=${ctx.engine}) but no Python is set: set SVA_STT_PYTHON to a Python with mlx-whisper installed (node scripts/setup.mjs shows how), ${WAYS_OUT}`, noEngine: true };
+  }
   if (!python) return { skipped: "no python found (set SVA_STT_PYTHON to a Python with mlx-whisper installed)" };
   const firstModel = ctx.env.SVA_STT_MODEL || DEFAULT_FIRST_MODEL;
   const first = await mlxPass(ctx, python, group, code, firstModel, { tail: true });
@@ -249,7 +264,9 @@ async function groqOne(ctx, key, entry, code) {
 
 async function runGroq(ctx, group, code) {
   const key = ctx.env.GROQ_API_KEY;
-  if (!key) return { skipped: "groq engine selected but GROQ_API_KEY is not set" };
+  if (!key) {
+    return { failed: "groq engine selected (SVA_STT_ENGINE=groq) but GROQ_API_KEY is not set: set GROQ_API_KEY, or use the local engine (SVA_STT_ENGINE=mlx with SVA_STT_PYTHON pointing at a Python with mlx-whisper), or turn the check off (voice.mjs --no-stt)", noEngine: true };
+  }
   const results = new Map();
   const words = new Map();
   const models = new Map();
@@ -273,7 +290,9 @@ const ENGINES = { mlx: runMlx, groq: runGroq };
 /**
  * Transcribe `entries` ({id, wav, langCode?, text?, say?, names?}; wav relative to
  * voiceDir or absolute) and return `{results: Map(id -> heard), words: Map(id -> [{w,start,end}])}`,
- * or `{skipped: reason}` — it never throws, so the voice step never fails because of this check.
+ * `{failed: reason}` when STT was configured (SVA_STT_PYTHON or SVA_STT_ENGINE set) but the engine
+ * cannot run at all (no Python, a Python without mlx_whisper, an unknown engine) — the caller fails
+ * its step — or `{skipped: reason}` otherwise. It never throws.
  * An entry's own `langCode` wins over `langCode`; one run per language. `text`/`say`/`names`
  * (target text and pronounceFolds) let the second pass pick the doubtful lines.
  * `models` (Map id -> model name) says which model made each line's transcript.
@@ -288,13 +307,16 @@ export async function sttTranscribe(voiceDir, entries, langCode, deps = {}) {
   const engine = String(env.SVA_STT_ENGINE || "mlx").toLowerCase();
   const runner = ENGINES[engine];
   if (!runner) {
-    return { skipped: engine === "faster-whisper" ? "faster-whisper is no longer supported (SVA_STT_ENGINE: mlx or groq)" : `unknown STT engine "${engine}" (SVA_STT_ENGINE: mlx or groq)` };
+    const what = engine === "faster-whisper" ? "faster-whisper is no longer supported" : `unknown STT engine "${engine}"`;
+    return { failed: `${what} (SVA_STT_ENGINE: mlx or groq) — set SVA_STT_ENGINE=mlx with SVA_STT_PYTHON, ${WAYS_OUT}` };
   }
   if (!entries.length) return { results: new Map(), words: new Map() };
-  const ctx = { voiceDir, env, deps, run: deps.runPythonBatch || runPythonBatch, log: deps.log || ((m) => process.stdout.write(`${m}\n`)) };
+  const configured = Boolean(env.SVA_STT_PYTHON || env.SVA_STT_ENGINE || deps.pythonPath);
+  const ctx = { voiceDir, env, deps, engine, configured, run: deps.runPythonBatch || runPythonBatch, log: deps.log || ((m) => process.stdout.write(`${m}\n`)) };
   const merged = { results: new Map(), words: new Map(), models: new Map() };
   for (const [code, group] of groupByLangCode(entries, langCode)) {
     const one = await runner(ctx, group, code);
+    if (one.noEngine) return { failed: one.failed };
     if (one.skipped) return one;
     for (const [k, v] of one.results) merged.results.set(k, v);
     for (const [k, v] of one.words) merged.words.set(k, v);

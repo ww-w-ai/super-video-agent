@@ -144,7 +144,7 @@ async function heardWords(media, code) {
       }
     }
     const stt = await sttTranscribe(work, [{ id: "all", wav: extract ? wav : media }], code);
-    if (stt.skipped) fail(`speech-to-text could not run: ${stt.skipped}`);
+    if (stt.failed || stt.skipped) fail(`speech-to-text could not run: ${stt.failed || stt.skipped}`);
     return stt.words.get("all") || [];
   } finally {
     fs.rmSync(work, { recursive: true, force: true });

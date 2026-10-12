@@ -2,13 +2,35 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { isTransientDecodeError, withRetry } from "./retry.mjs";
+
+const DECODE_RETRIES = 2;
 
 /**
  * Run ffmpeg (or ffprobe) with `args`, resolving with {stdout, stderr}
  * on exit code 0, rejecting with an Error carrying the captured stderr
- * otherwise.
+ * otherwise. A decode-only run (isDecodeOnly) that fails with the transient
+ * EBADF signature (isTransientDecodeError) is run again, up to 2 more times;
+ * the last attempt's error is the one thrown. A run that writes a file or
+ * streams its own stdin is never re-run.
  */
 export function run(bin, args, opts = {}) {
+  if (!isDecodeOnly(args, opts)) return runOnce(bin, args, opts);
+  return withRetry(() => runOnce(bin, args, opts), {
+    isRetryable: isTransientDecodeError,
+    maxRetries: DECODE_RETRIES,
+    onRetry: (k) => process.stderr.write(`${bin}: transient decode error (Bad file descriptor), retrying (${k}/${DECODE_RETRIES})\n`),
+  });
+}
+
+/** Output to stdout (last arg `-` or `pipe:…`) and no caller-fed stdin stream: nothing on disk changes, so a rerun is safe. */
+function isDecodeOnly(args, opts) {
+  if (opts.pipeStdin) return false;
+  const last = String(args[args.length - 1] ?? "");
+  return last === "-" || last.startsWith("pipe:");
+}
+
+function runOnce(bin, args, opts) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], ...opts });
     // Collect chunks and join once on close: re-concatenating per chunk is
