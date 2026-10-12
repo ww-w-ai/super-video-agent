@@ -141,7 +141,7 @@ test("dub scaffold: ids and pauses kept, text and language copy left empty, spea
   assert.equal(dub.meta.lead, 3);
   assert.deepEqual(dub.meta.voice, { provider: "typecast", rate: 1.1 });
   assert.equal(dub.meta.pronounce, undefined);
-  assert.deepEqual(dub.meta.overlay, { title: "", picture: { place: "" } });
+  assert.equal(dub.meta.overlay, undefined);
   assert.deepEqual(dub.lines[0], { id: "k1", text: "", pauseBeforeMs: 200, pauseAfterMs: 1600 });
   assert.equal(dub.lines[1].text, "");
 });

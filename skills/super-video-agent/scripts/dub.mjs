@@ -81,9 +81,12 @@ const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-s
 --init-plan: writes <reel-dir>/dub/<code>/plan.json from the base plan.json and
 exits (no render, no voice). It keeps each line's id, pauseBeforeMs,
 pauseAfterMs, lead and rate, sets meta.lang to <code>, and leaves each line's
-text empty, meta.pronounce out, meta.overlay strings empty and the speaker
-fields of meta.voice (voiceId, refAudio, refText, refTokens) out: the
-language's own copy and voice are the user's to write. --copy keeps the base
+text empty, meta.pronounce out, meta.overlay strings left out (validate-plan
+on dub/<code> lists the keys the page reads; a film that reads them through
+Reel.overlayText gets its fallback and an overlay-text-missing issue until
+each is added) and the speaker fields of meta.voice (voiceId, refAudio,
+refText, refTokens) out: the language's own copy and voice are the user's
+to write. --copy keeps the base
 text, say, notes, pronounce, overlay and voice as they are (a dub in the base
 language, or a start to translate in place). An existing dub plan.json is
 never overwritten: the run stops.
@@ -943,7 +946,7 @@ function frameFileName(index) {
  * author's job, not dub.mjs's.
  * @returns {Promise<{ok:boolean, note?:string, fatal?:string, plan?:object}>} fatal stops the step; note is a fact to print
  */
-async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines, keepBasePictureText, contrast }) {
+export async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps, framesDir, planFor, lines, keepBasePictureText, contrast }) {
   const server = await serveDir(reelDir);
   let session;
   let declared = null; // stays null when the page's spans were never read
@@ -967,9 +970,10 @@ async function tryOwnCaptionLayer({ reelDir, lang, baseLang, pictureSource, fps,
     const records = contrast ? await captionRecordsAtSamples({ page: session.page, lines, fps }) : null;
     return { ok: true, plan, note: spanNote, records };
   } catch (e) {
-    const failed = `reel.html's own caption layer failed to load (${e.message.split("\n")[0]}) — fell back to the default look.`;
+    // A final drawn with the default look instead of the film's own layer is a different film: stop.
+    const failed = `reel.html's own caption layer failed (${e.message.split("\n")[0]}) — no final written. Fix the page error, then run dub.mjs --lang ${lang} again.`;
     const spanNote = sceneSpanNote({ spans: declared, lang, baseLang, pictureSource, keepBasePictureText });
-    return { ok: false, note: spanNote ? `${failed} ${spanNote}` : failed };
+    return { ok: false, fatal: spanNote ? `${failed} ${spanNote}` : failed };
   } finally {
     if (session) await session.close();
     await server.close();

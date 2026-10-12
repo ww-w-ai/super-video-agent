@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { ffmpeg } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
@@ -29,6 +29,9 @@ Only the shots the --at values fall in are warmed up (two throwaway seeks each);
 If the page logs a WebGL error (GL_INVALID_*, lost context) the frames are wrong:
 the files are still written, the error is printed and the exit code is 1. Other
 WebGL warnings are printed and do not change the exit code.
+If the page throws or logs any other error while loading or drawing (a scene may
+not have registered, a frame may be partial), the error is printed, no further
+still is written and the exit code is 1.
 
 --stub <sec>  for a reel with no voice/timings.json (a picture-only probe):
               the page is served one silent line of <sec> seconds with id
@@ -50,6 +53,8 @@ WebGL warnings are printed and do not change the exit code.
               --cell <px> sets each tile's width (default ${DEFAULT_SHEET_CELL}, enough to
               read captions on a 16:9 frame); the height follows the frames'
               aspect.
+              Never writes over one of its inputs, or over an existing file
+              that is not a sheet of the same size.
 `;
 
 export async function main(argv) {
@@ -120,8 +125,10 @@ export async function main(argv) {
     }
     const targets = ats.map((at) => ({ at, t: resolveAt(at, session.meta.shots) }));
     if (!flags["no-warm"]) await warmShotsOf(session, shotsAt(session.meta.shots, targets.map((x) => x.t)));
+    stopOnPageErrors(session);
     for (const { at, t } of targets) {
       const png = await captureFrame(session.page, t);
+      stopOnPageErrors(session);
       const outPath = flags.out ? abs(flags.out) : path.join(outDir, stillFileName(at, noCaptions, dubCode));
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, dubCode ? await compositeOverPicture({ layerPng: png, paths, dubCode, t, size: session.meta }) : png);
@@ -268,6 +275,9 @@ async function sheetMain(flags, positional) {
     args = parseSheetArgs(flags, positional);
     const missing = args.inputs.filter((p) => !fs.existsSync(p));
     if (missing.length) throw new Error(`input PNG not found: ${missing.join(", ")}`);
+    if (args.inputs.includes(args.outPath)) {
+      throw new Error(`--sheet output ${args.outPath} is also an input; the first path after --sheet is the output: --sheet <out.png> <a.png> <b.png> ...`);
+    }
   } catch (e) {
     fail(e.message);
     return;
@@ -275,12 +285,42 @@ async function sheetMain(flags, positional) {
   try {
     const frames = args.inputs.map((p) => ({ png: fs.readFileSync(p), label: path.basename(p) }));
     const sheet = await buildContactSheet(frames, { cols: args.cols, cellWidth: args.cellWidth });
+    await refuseForeignOutput(args.outPath, pngSize(sheet));
     fs.mkdirSync(path.dirname(args.outPath), { recursive: true });
     fs.writeFileSync(args.outPath, sheet);
     process.stdout.write(`wrote ${args.outPath} (${frames.length} PNGs)\n`);
   } catch (e) {
     fail(e.message);
   }
+}
+
+/**
+ * Throws when `outPath` exists and is not an earlier sheet of this layout
+ * (same width and height as `size`); a file that cannot be read as an image
+ * is refused too. A missing `outPath` passes.
+ * @param {string} outPath
+ * @param {{width: number, height: number}} size the new sheet's size
+ */
+async function refuseForeignOutput(outPath, size) {
+  if (!fs.existsSync(outPath)) return;
+  const nothing = `nothing written. The first path after --sheet is the output — name a new file, or delete ${outPath} to replace it`;
+  let existing;
+  try {
+    existing = await probeVideoInfo(outPath);
+    // ffprobe on a non-image prints nothing, which reads as 0x0.
+    if (!(existing.width > 0 && existing.height > 0)) throw new Error("no image size");
+  } catch {
+    throw new Error(`--sheet output ${outPath} already exists and cannot be read as an image; ${nothing}`);
+  }
+  if (existing.width === size.width && existing.height === size.height) return;
+  throw new Error(
+    `--sheet output ${outPath} already exists and is not a sheet of this layout (${existing.width}x${existing.height}; this sheet is ${size.width}x${size.height}); ${nothing}`
+  );
+}
+
+/** Width and height from a PNG buffer's IHDR chunk. */
+function pngSize(png) {
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
 /**
@@ -297,6 +337,30 @@ export function shotsAt(shots, ts) {
     if (i !== -1) ids.add(shots[i].id);
   }
   return [...ids];
+}
+
+/**
+ * The page's own errors (uncaught exceptions, console errors), leaving out the
+ * WebGL messages reportGl() handles. session.gl is keyed by glKey(text), so the
+ * raw text is normalized the same way before the lookup.
+ * @param {{errors: string[], gl: Map<string, object>}} session
+ */
+export function pageErrorsOf(session) {
+  return session.errors.filter((t) => !session.gl.has(glKey(t)));
+}
+
+// The key lib/browser.mjs noteGlMessage() files a WebGL message under: hex ids and long numbers vary per run.
+function glKey(text) {
+  return text.replace(/0x[0-9a-f]+/gi, "0x…").replace(/\d{3,}/g, "N");
+}
+
+// A page that threw while loading or drawing may have skipped scenes or drawn a
+// partial frame: no still is written from here on (files already written stay).
+function stopOnPageErrors(session) {
+  const errors = pageErrorsOf(session);
+  if (!errors.length) return;
+  reportGl(session);
+  throw new Error(`the page reported error(s) while loading or drawing; stills from here on are not written:\n  ${errors.join("\n  ")}`);
 }
 
 // WebGL messages the page logged: a GL error means the frames just written are wrong (exit 1);
