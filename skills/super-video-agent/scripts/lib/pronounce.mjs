@@ -34,19 +34,19 @@ function defaultPronounceFor(lang) {
 }
 
 /**
- * `text` with every standalone "|" forced-caption-break marker
- * (reel-engine.js captionChunks' `opts.breaks`, references/pipeline.md
- * "Forced caption breaks") removed — never spoken, never counted as a
- * word. validate-plan.mjs's captionBreakErrors requires "|" to appear as
- * its own whitespace-separated token, so removing whitespace-bounded "|"
- * tokens and rejoining with single spaces is exact.
+ * `text` with every "|" forced-caption-break marker (reel-engine.js
+ * captionChunks' `opts.breaks`, references/pipeline.md "Forced caption
+ * breaks") removed — never spoken, never counted as a word. A marker
+ * attached to a word ("X| Y", "X|Y") splits there, as the engine's
+ * normalizeCaptionBreaks does; words are rejoined with single spaces.
  * @param {string} text
  * @returns {string}
  */
 export function stripCaptionBreaks(text) {
   return String(text ?? "")
+    .replace(/\|/g, " ")
     .split(/\s+/)
-    .filter((t) => t && t !== "|")
+    .filter(Boolean)
     .join(" ");
 }
 

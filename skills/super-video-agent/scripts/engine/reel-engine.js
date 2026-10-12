@@ -645,7 +645,8 @@
   //     ("할 수 밖에 없다" is one piece)
   //   - nothing breaks inside a short parenthesis or quote span
   //   - CJK (ja, zh) wraps by characters, but a number+unit, a Latin word and
-  //     a closing/opening mark each stay whole (captionUnits)
+  //     a closing/opening mark each stay whole (captionUnits), and no break
+  //     falls inside an Intl.Segmenter word (glueSegmentWords)
   function wordSet(s) {
     const o = Object.create(null);
     s.split(/\s+/).forEach(function (w) { if (w) o[w] = true; });
@@ -710,13 +711,57 @@
     return "";
   }
 
+  // One Intl.Segmenter per language (null where the runtime has none).
+  const wordSegmenters = {};
+  function wordSegmenter(lg) {
+    if (!(lg in wordSegmenters)) {
+      wordSegmenters[lg] = typeof Intl !== "undefined" && Intl.Segmenter
+        ? new Intl.Segmenter(lg, { granularity: "word" })
+        : null;
+    }
+    return wordSegmenters[lg];
+  }
+
+  // ja/zh write words without spaces, so a character boundary is not a word
+  // boundary: glue every boundary that falls strictly inside a segmenter word
+  // of up to SPAN_CAP_UNITS characters (a longer one could not fit a row
+  // anyway). A katakana run is one word too, even where the segmenter splits
+  // a loanword (ICU: ネット|フリ|ッ|クス); "・" ends a run. sp[i] (optional): a
+  // writer's space precedes texts[i]; no glue crosses it. Without
+  // Intl.Segmenter nothing is glued here.
+  const KATAKANA_RUN_RE = /[゠-ヺー-ヿ]+/g;
+  function glueSegmentWords(texts, lg, glue, sp) {
+    const seg = wordSegmenter(lg);
+    if (!seg) return;
+    const boundaryAt = new Map();
+    let joined = "";
+    for (let i = 0; i < texts.length; i++) {
+      if (i > 0 && sp && sp[i]) joined += " ";
+      joined += String(texts[i]);
+      if (i + 1 < texts.length) boundaryAt.set(joined.length, i);
+    }
+    function glueInside(from, to) {
+      if (to - from > SPAN_CAP_UNITS) return;
+      for (let at = from + 1; at < to; at++) {
+        if (boundaryAt.has(at)) glue[boundaryAt.get(at)] = true;
+      }
+    }
+    for (const s of seg.segment(joined)) {
+      if (s.isWordLike) glueInside(s.index, s.index + s.segment.length);
+    }
+    for (const m of joined.matchAll(KATAKANA_RUN_RE)) glueInside(m.index, m.index + m[0].length);
+  }
+
   // captionGlue(texts, lang, opts) -> boolean[] — glue[i]: no break between
   // texts[i] and texts[i+1]. opts.spanCap sets the longest parenthesis/quote
-  // span kept whole (a longer one could never fit a row).
+  // span kept whole (a longer one could never fit a row). opts.sp[i]: a
+  // writer's space precedes texts[i] (captionUnits); ja/zh word glue never
+  // crosses it.
   function captionGlue(texts, lang, opts) {
     const n = texts.length;
     const glue = new Array(n).fill(false);
     const lg = captionLang(lang, texts);
+    if (lg === "ja" || lg === "zh") glueSegmentWords(texts, lg, glue, opts && opts.sp);
     const fw = CAPTION_FUNCTION_WORDS[lg];
     const lead = CAPTION_LEAD_WORDS[lg];
     const leadCounters = CAPTION_LEAD_COUNTERS[lg];
@@ -778,7 +823,7 @@
         if (CJK_NO_END.indexOf(p) >= 0) own[k] = true;
       });
     });
-    const glue = captionGlue(texts, lang, { spanCap: anyCjk ? SPAN_CAP_UNITS : SPAN_CAP_WORDS });
+    const glue = captionGlue(texts, lang, { spanCap: anyCjk ? SPAN_CAP_UNITS : SPAN_CAP_WORDS, sp: sp });
     for (let i = 0; i < glue.length - 1; i++) glue[i] = glue[i] || own[i];
     if (glue.length) glue[glue.length - 1] = false;
     return { texts: texts, sp: sp, glue: glue };
@@ -903,10 +948,19 @@
     return { rows: rows, widths: rowWidths };
   }
 
-  // The parts of a caption text: a "\n" or a standalone "|" (a writer's own
+  // A writer's "|" break marker, standalone or attached to a word on either
+  // side ("X| Y", "X |Y", "X|Y"), becomes a standalone " | " token, so every
+  // tokenizer below reads it as a marker and never as part of a word.
+  // lib/srt.mjs, lib/pronounce.mjs, lib/cue-check.mjs and lib/caption-breaks.mjs
+  // apply the same rule.
+  function normalizeCaptionBreaks(text) {
+    return String(text ?? "").replace(/\s*\|\s*/g, " | ").trim();
+  }
+
+  // The parts of a caption text: a "\n" or a "|" marker (a writer's own
   // break) starts a new part. Each part wraps on its own rows.
   function splitCaptionParts(text) {
-    return String(text || "").split(/\n|(?:^|\s)\|(?=\s|$)/);
+    return normalizeCaptionBreaks(text).split(/\n|(?:^|\s)\|(?=\s|$)/);
   }
 
   // captionRows(ctx, text, maxW, lang) -> {words, widths, gaps, spaceW, rows,
@@ -1149,16 +1203,15 @@
     return chunks;
   }
 
-  // A plan line's own "|" forces a caption-chunk break there (validate-plan.mjs
-  // rejects "||" and a leading/trailing "|" — it must appear as its own
-  // whitespace-separated token). "|" is never spoken (pronounce.mjs's
-  // stripCaptionBreaks removes it before TTS/STT and before a word-timing
-  // split) and never a word itself, so captionBreaksFromText(text) walks the
-  // same whitespace tokenization skipping "|" tokens, returning the index
-  // (into the real, marker-free words — the same indexing captionChunks'
+  // A plan line's own "|" forces a caption-chunk break there, standalone or
+  // attached to a word (normalizeCaptionBreaks). "|" is never spoken
+  // (pronounce.mjs's stripCaptionBreaks removes it before TTS/STT and before a
+  // word-timing split) and never a word itself, so captionBreaksFromText(text)
+  // walks the same whitespace tokenization skipping "|" tokens, returning the
+  // index (into the real, marker-free words — the same indexing captionChunks'
   // `words` and a word-timing split both use) after which the break falls.
   function captionBreaksFromText(text) {
-    const tokens = String(text || "").split(/\s+/).filter(function (t) { return t.length > 0; });
+    const tokens = normalizeCaptionBreaks(text).split(/\s+/).filter(function (t) { return t.length > 0; });
     const breaks = [];
     let idx = -1;
     for (let i = 0; i < tokens.length; i++) {
@@ -1176,7 +1229,7 @@
   // derived straight from text (cue matching, proportional word-timing) when
   // no measured per-word timing exists.
   function textWordsExcludingBreaks(text) {
-    return String(text || "").split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
+    return normalizeCaptionBreaks(text).split(/\s+/).filter(function (t) { return t.length > 0 && t !== "|"; });
   }
 
   // `text` for the engine's default Reel.caption() box: every "|" marker
@@ -2092,6 +2145,7 @@
     captionGlue,
     captionUnits,
     captionBreaksFromText,
+    normalizeCaptionBreaks,
     caption,
     captionsOn,
     setCaptionsOn,

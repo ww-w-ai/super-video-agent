@@ -5,9 +5,9 @@ import { checkedNothingNext } from "./checked-nothing.mjs";
 
 const letters = (s) => String(s).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 
-/** Caption words of a line the way the engine splits them: whitespace, break marks dropped. */
+/** Caption words of a line the way the engine splits them: whitespace, break marks (standalone or attached) dropped. */
 export function captionWords(text) {
-  return String(text || "").split(/\s+/).filter((w) => w && w !== "|");
+  return String(text || "").replace(/\|/g, " ").split(/\s+/).filter(Boolean);
 }
 
 /** Index of the first caption word containing `sub`, or -1 (the engine's firstWordIndexContaining). */

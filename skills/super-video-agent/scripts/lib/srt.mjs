@@ -16,6 +16,9 @@ export function defaultLineChars(lang) {
   return 42;
 }
 
+/** `text` with every "|" break marker, standalone or attached to a word, turned into a space (the engine's normalizeCaptionBreaks rule). */
+const stripBreaks = (s) => String(s ?? "").replace(/\|/g, " ");
+
 const isCjkLang = (lang) => ["ja", "zh"].includes(String(lang || "").split(/[-_]/)[0].toLowerCase());
 
 /** 83.4567 -> "00:01:23,457". */
@@ -57,7 +60,7 @@ export function parseSrt(text) {
  * @returns {{units:{w:string,start:number,end:number,sp:boolean}[], glue:boolean[], breaks:number[]}}
  */
 function partUnits(Reel, partText, timed, lang) {
-  const clean = partText.split(/\s+/).filter((t) => t && t !== "|").join(" ");
+  const clean = Reel.normalizeCaptionBreaks(partText).split(/\s+/).filter((t) => t && t !== "|").join(" ");
   const { texts, sp, glue } = Reel.captionUnits(clean, lang);
   const tokenOf = [];
   let token = -1;
@@ -102,7 +105,7 @@ function timedWords(line, tokens) {
 /** A line's caption parts as break units. */
 export function lineModel(Reel, line, lang) {
   const parts = String(line.text ?? "").split("\n").filter((p) => p.trim());
-  const tokenLists = parts.map((p) => p.split(/\s+/).filter((t) => t && t !== "|"));
+  const tokenLists = parts.map((p) => Reel.normalizeCaptionBreaks(p).split(/\s+/).filter((t) => t && t !== "|"));
   const { words, proportional } = timedWords(line, tokenLists.flat());
   let at = 0;
   const models = parts.map((p, i) => {
@@ -322,7 +325,7 @@ export function alignScript(script, heard, deps) {
   const lowMatch = [];
   let p = 0;
   for (const line of script) {
-    const text = String(line.text ?? "").split(/\s+/).filter((t) => t && t !== "|").join(" ");
+    const text = stripBreaks(line.text).split(/\s+/).filter(Boolean).join(" ");
     const lang = line.lang || deps.lang;
     const need = deps.letters(text, lang).length;
     const end = windowEnd(heard, p, Math.ceil(need * 1.15) + 4, deps.letters, lang);

@@ -27,7 +27,7 @@ async function loadReel() {
 export function captionPieces(Reel, text, maxChars = Infinity, lang = undefined) {
   const pieces = [];
   for (const part of String(text ?? "").split("\n")) {
-    const words = part.split(/\s+/).filter((t) => t && t !== "|").map((w) => ({ w }));
+    const words = part.replace(/\|/g, " ").split(/\s+/).filter(Boolean).map((w) => ({ w }));
     if (!words.length) continue;
     const chunks = Reel.captionChunks(words, maxChars, { breaks: Reel.captionBreaksFromText(part), lang });
     for (const c of chunks) pieces.push(c.map((i) => words[i].w));
