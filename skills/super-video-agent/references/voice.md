@@ -413,14 +413,16 @@ SKILL.md's flow asks whether to compare tones before building a film; if not cho
 unattended, one take.
 
 Compare → pick → restore. Each take is kept as `voice/takes/<id>-<k>.wav` with its STT CER and
-duration, printed as a table. `--takes` only makes candidates: it never changes an installed
+duration, printed as a table. A later `--takes` round numbers its takes after the highest one
+already on disk for that line, so earlier rounds are kept and `--pick <id>=<k>` counts across
+rounds. `--takes` only makes candidates: it never changes an installed
 `voice/line-<id>.wav`, timings.json or narration.wav. Install one with
 `--pick <id>=<k>[,<id>=<k>]` — no re-synthesis, just the copy + rebuild as `--lines` does. Picking
 a take from a tone comparison also writes that mark to `meta.voice.delivery`, so every later line
 is made in it. The clip a pick (or `--use`) replaces is kept first as
 `voice/takes/<id>/installed-<timestamp>.wav` and its path is printed; restore it with
 `--use <id>=<that file>`. A line with no installed clip yet (first synthesis through `--takes`)
-gets take 1 installed so the reel is complete.
+gets the first take of that run installed so the reel is complete.
 
 Hosted voices can read the same text at quite different lengths from take to take. When a line
 has to fit a slot (a dub line, a fixed picture beat), make a few takes and let the tool pick:
@@ -439,7 +441,10 @@ takes already in `voice/takes/` for the `--lines` ids (default: every line in
 
 A line made somewhere else — tone variants in a scratch reel, another provider, the other version
 of an A/B, a recording — goes in with `--use <id>=<wav>[,<id>=<wav>]` (add `--retime` when its
-length differs). The file is taken as finished: the film's speed is not applied again. Takes in
+length differs). The file is taken as finished: the film's speed is not applied again. The one
+exception is the line's own raw take (same bytes as the `voice/raw/<id>.wav` that timings.json
+records for the line, wherever the copy lives): it is trimmed, gets the film's speed, records its
+`rawTake`, and keeps its measured word times when no STT runs. Takes in
 `voice/takes/` are raw and get the speed on `--pick`; a finished `voice/line-<id>.wav` already has
 it, so copying one into `takes/` and picking it speeds it up twice.
 

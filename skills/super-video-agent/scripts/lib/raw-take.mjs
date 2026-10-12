@@ -56,6 +56,17 @@ export function rawTakeStatus(voiceDir, line) {
 }
 
 /**
+ * Whether `file` holds the same bytes as the raw take recorded for `line` (its `rawTake.sha256`),
+ * wherever the file lives: a copy of voice/raw/<id>.wav counts.
+ * @param {{rawTake?:{sha256:string}}|undefined} line a timings.json line
+ * @param {string} file
+ */
+export function isRecordedRawTake(line, file) {
+  if (!line || !line.rawTake || !line.rawTake.sha256) return false;
+  return fingerprintFile(file).sha256 === line.rawTake.sha256;
+}
+
+/**
  * The lines whose raw take must not be rebuilt from: every status but "current".
  * @returns {{id:string, status:string}[]}
  */
