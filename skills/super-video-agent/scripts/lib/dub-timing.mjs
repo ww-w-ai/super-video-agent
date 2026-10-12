@@ -371,10 +371,19 @@ function srtStamp(sec, sep) {
   return `${pad(Math.floor(total / 3600000), 2)}:${pad(Math.floor(total / 60000) % 60, 2)}:${pad(Math.floor(total / 1000) % 60, 2)}${sep}${pad(total % 1000, 3)}`;
 }
 
+/** Stored times carry float error and SRT has 1 ms resolution, so a time within 1 ms of the insertion point counts as on it. */
+const INSERT_TOL_SEC = 0.001;
+
+/** Where `[start, end]` falls for a time insert at `at`: "move" (starts on or after it), "straddle", or "stay" (ends on or before it). */
+function insertSide(start, end, at) {
+  if (start >= at - INSERT_TOL_SEC) return "move";
+  return end > at + INSERT_TOL_SEC ? "straddle" : "stay";
+}
+
 /**
- * Shifts every SRT cue that starts at or after `at` later by `seconds`.
- * A cue that straddles `at` is a definite error: it cannot be both shifted
- * and not shifted.
+ * Shifts every SRT cue that starts at or after `at` (within 1 ms) later by
+ * `seconds`. A cue that straddles `at` is a definite error: it cannot be both
+ * shifted and not shifted.
  * @returns {{text: string, shifted: number}}
  */
 export function shiftSrt(text, at, seconds) {
@@ -384,8 +393,9 @@ export function shiftSrt(text, at, seconds) {
     if (!m) return line;
     const start = srtSeconds(m[1], m[2], m[3], m[5]);
     const end = srtSeconds(m[6], m[7], m[8], m[10]);
-    if (start < at && end > at) throw new Error(`SRT line ${n + 1}: the cue straddles the insertion point ${at}s`);
-    if (start < at) return line;
+    const side = insertSide(start, end, at);
+    if (side === "straddle") throw new Error(`SRT line ${n + 1}: the cue straddles the insertion point ${at}s`);
+    if (side === "stay") return line;
     shifted++;
     return `${srtStamp(start + seconds, m[4])} --> ${srtStamp(end + seconds, m[9])}${m[11]}`;
   });
@@ -394,15 +404,16 @@ export function shiftSrt(text, at, seconds) {
 
 /**
  * Shifts a dub's placed timings for a time insert at `at` (film seconds):
- * lines (and their words) starting at or after `at` move later by
- * `seconds`; the film grows by `seconds`. A line that straddles `at` is a
+ * lines (and their words) starting at or after `at` (within 1 ms) move later
+ * by `seconds`; the film grows by `seconds`. A line that straddles `at` is a
  * definite error.
  */
 export function shiftPlacedTimings(placed, at, seconds) {
   const move = (x) => ({ ...x, start: x.start + seconds, end: x.end + seconds });
   const lines = placed.lines.map((l) => {
-    if (l.start < at && l.end > at) throw new Error(`line "${l.id}" (${l.start}s-${l.end}s) straddles the insertion point ${at}s`);
-    if (l.start < at) return l;
+    const side = insertSide(l.start, l.end, at);
+    if (side === "straddle") throw new Error(`line "${l.id}" (${l.start}s-${l.end}s) straddles the insertion point ${at}s`);
+    if (side === "stay") return l;
     return { ...move(l), ...(l.words ? { words: l.words.map(move) } : {}) };
   });
   return { ...placed, duration: placed.duration + seconds, lines };
