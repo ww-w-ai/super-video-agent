@@ -10,7 +10,7 @@ import { reelPaths, writeJson, loadTimings, loadPlan, readJson } from "./lib/ree
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, scanDeadAirBySeek, scanIssuesBySeek, splitEngineFacts, engineFactLines, readSafeAreaNote } from "./lib/browser.mjs";
 import { render } from "./render.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, videoEncodeArgs } from "./lib/ffmpeg.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { excludeEndHold, splitIntendedHolds } from "./lib/dead-air.mjs";
 import { groupIssueRuns } from "./lib/layout-scan.mjs";
@@ -353,7 +353,7 @@ function uniqueTemp(target) {
 export function voiceOnlyCopyArgs({ wav, durationSec, srt, out }) {
   const d = durationSec.toFixed(3);
   return ["-y", "-f", "lavfi", "-i", `color=c=black:s=640x360:r=2:d=${d}`, "-i", wav, "-i", srt,
-    "-map", "0:v", "-map", "1:a", "-map", "2:0", "-t", d, "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p",
+    "-map", "0:v", "-map", "1:a", "-map", "2:0", "-t", d, ...videoEncodeArgs({ preset: "veryfast", width: 640, height: 360 }),
     "-c:a", "aac", "-c:s", "mov_text", "-disposition:s:0", "default", "-movflags", "+faststart", out];
 }
 

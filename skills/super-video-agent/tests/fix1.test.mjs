@@ -175,7 +175,7 @@ const same = (a, b) => a.length === b.length && a.every((h, i) => h === b[i]);
 // A clip encoded by the encoder render.mjs uses for segments (default crf/preset), from a lavfi source.
 async function renderEncode(source, frames, outPath, fps = FPS) {
   await ffmpeg(["-y", "-f", "lavfi", "-i", `${source}=size=160x120:rate=${fps}`, "-frames:v", String(frames), "-f", "image2pipe", "-c:v", "png", `${outPath}.pngs`]);
-  const { proc, done } = spawnImagePipeEncoder({ fps, outPath });
+  const { proc, done } = spawnImagePipeEncoder({ fps, outPath, width: 160, height: 120 });
   done.catch(() => {});
   proc.stdin.end(fs.readFileSync(`${outPath}.pngs`));
   await done;

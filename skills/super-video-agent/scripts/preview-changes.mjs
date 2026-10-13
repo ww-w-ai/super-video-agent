@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, abs, fail } from "./lib/cli.mjs";
-import { ffmpeg, probeDuration } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, videoEncodeArgs } from "./lib/ffmpeg.mjs";
 
 /** Changed lines with adjacent speech boundaries as listening context. */
 export function previewWindows(timings, ids) {
@@ -32,22 +32,29 @@ export function previewWindows(timings, ids) {
   return windows;
 }
 
-/** Exact preview span with required picture and existing mixed audio. */
-export function previewArgs(media, window, output) {
+/** Video encoder args for a preview of `media` at its own size (SVA_VENC's encoder; libx264 crf 23, preset veryfast). */
+export async function previewVideoArgs(media) {
+  const { width, height } = await probeVideoInfo(media);
+  return videoEncodeArgs({ crf: 23, preset: "veryfast", width, height });
+}
+
+/** Exact preview span with required picture and existing mixed audio; `video` is previewVideoArgs(media). */
+export function previewArgs(media, window, output, video) {
   return ["-y", "-i", media, "-ss", String(window.from), "-t", String(window.to - window.from),
-    "-map", "0:v:0", "-map", "0:a:0", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+    "-map", "0:v:0", "-map", "0:a:0", ...video,
     "-c:a", "aac", "-movflags", "+faststart", output];
 }
 
 /** Overwrite this command's previews only. Keep unrelated preview files. */
 export async function previewChanges({ dir, media, timings, ids }, run = ffmpeg) {
   const windows = previewWindows(timings, ids);
+  const video = await previewVideoArgs(media);
   const out = path.join(dir, "out", "preview");
   fs.mkdirSync(out, { recursive: true });
   const files = [];
   for (const [i, window] of windows.entries()) {
     const file = path.join(out, `change-${i + 1}.mp4`);
-    await run(previewArgs(media, window, file));
+    await run(previewArgs(media, window, file, video));
     files.push({ ...window, file });
   }
   for (const name of fs.readdirSync(out)) {

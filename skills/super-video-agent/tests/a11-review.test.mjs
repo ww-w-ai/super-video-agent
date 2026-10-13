@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { ffmpeg, ffprobe } from "../scripts/lib/ffmpeg.mjs";
+import { ffmpeg, ffprobe, chooseVideoEncoder } from "../scripts/lib/ffmpeg.mjs";
 import { splitIntendedHolds } from "../scripts/lib/dead-air.mjs";
 import { analyzeMotion } from "../scripts/lib/frame-diff.mjs";
 import { regionCovers, checkedNothingReasons, fontForLang, captionChars, langGlyphPairs, langGlyphReport, formatStateChecks, regionScope, coverNothingReason } from "../scripts/lib/state-checks.mjs";
@@ -270,7 +270,8 @@ test("reviewCopy: with no encode the base layer is narration.wav under a black p
   const paths = reelPaths(dir);
   const [en] = await reviewCopy({ dir, paths, only: "en", outDir: path.join(dir, "out") });
   assert.ok(en.out && en.voiceOnly);
-  assert.deepEqual(await streams(en.out), ["aac,audio", "h264,video", "mov_text,subtitle"]);
+  const vcodec = chooseVideoEncoder().name.startsWith("hevc_") ? "hevc" : "h264";
+  assert.deepEqual(await streams(en.out), ["aac,audio", `${vcodec},video`, "mov_text,subtitle"]);
   const d = await ffprobe(["-v", "error", "-show_entries", "stream=codec_type,duration", "-of", "csv=p=0", en.out]);
   const secs = Object.fromEntries(d.stdout.toString().trim().split("\n").map((r) => r.split(",")));
   assert.ok(Math.abs(Number(secs.video) - 5) < 0.3, `video ${secs.video}`);

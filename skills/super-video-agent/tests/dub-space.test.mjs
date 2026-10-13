@@ -109,7 +109,7 @@ test("buildSpaceFilterGraph: setpts for picture, atempo only on stretched bed se
 });
 
 test("buildSpaceFfmpegArgs: one call maps both [v] and [a] to their own outputs", () => {
-  const args = buildSpaceFfmpegArgs({ pictureMp4: "p.mp4", bedWav: "b.wav", outMp4: "o.mp4", outWav: "o.wav", graph: "G", frameCount: 234 });
+  const args = buildSpaceFfmpegArgs({ pictureMp4: "p.mp4", bedWav: "b.wav", outMp4: "o.mp4", outWav: "o.wav", graph: "G", frameCount: 234, video: ["-c:v", "V"] });
   const vi = args.indexOf("[v]");
   const ai = args.indexOf("[a]");
   assert.ok(vi > 0 && ai > vi);

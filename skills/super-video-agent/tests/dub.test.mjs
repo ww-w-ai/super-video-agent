@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ffmpeg, probeDuration } from "../scripts/lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, videoEncodeArgs } from "../scripts/lib/ffmpeg.mjs";
 import { trimEdgeSilence } from "../scripts/lib/dub-timing.mjs";
 import { measureEdgeEnvelope } from "../scripts/dub.mjs";
 import { computeGapDeltas, buildTimeMap, segmentFactors, buildSpaceFilterGraph, buildSpaceFfmpegArgs } from "../scripts/lib/dub-space.mjs";
@@ -53,7 +53,7 @@ test("--min-gap ffmpeg step (T19): one call writes both outputs; length grows by
     const outMp4 = path.join(tmp, "spaced.mp4");
     const outWav = path.join(tmp, "spaced.wav");
     const graph = buildSpaceFilterGraph(segmentFactors(map), 30, map.newDuration);
-    await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4: src, bedWav: bed, outMp4, outWav, graph, frameCount }));
+    await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4: src, bedWav: bed, outMp4, outWav, graph, frameCount, video: videoEncodeArgs({ crf: 16, width: 160, height: 120 }) }));
 
     assert.equal(await frameCountOf(outMp4), 102);
     const bedDur = await probeDuration(outWav);

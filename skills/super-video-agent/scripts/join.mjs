@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
-import { ffmpeg, probeDuration, probeVideoInfo, streamSignature, concatMp4, uniqueTempPath, fpsRational, nominalFps } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeVideoInfo, streamSignature, concatMp4, uniqueTempPath, fpsRational, nominalFps, videoEncodeArgs } from "./lib/ffmpeg.mjs";
 import { decodeMonoPcm } from "./lib/audio-analysis.mjs";
 import { probeStreamDurations, measureSpansLoudness } from "./lib/join-report-media.mjs";
 import { buildJoinFilter, buildJoinAudioFilter, joinOffsets, joinTimes } from "./lib/join-ffmpeg.mjs";
@@ -159,14 +159,14 @@ async function joinCopyingVideo({ outPath, partPaths, durationsSec, fps }) {
   }
 }
 
-/** Parts that differ in codec, size, frame rate or headers: everything is scaled to the first part and re-encoded (H.264 CRF 18). */
+/** Parts that differ in codec, size, frame rate or headers: everything is scaled to the first part and re-encoded (SVA_VENC encoder; libx264 at CRF 18). */
 async function joinReencoding({ outPath, partPaths, durationsSec, width, height, fps }) {
   const filterComplex = buildJoinFilter({ count: partPaths.length, width, height, fps, durationsSec });
   await ffmpeg([
     "-y", ...partPaths.flatMap((p) => ["-i", p]),
     "-filter_complex", filterComplex,
     "-map", "[v]", "-map", "[a]",
-    "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p",
+    ...videoEncodeArgs({ crf: 18, preset: "medium", width, height }),
     ...AUDIO_ARGS, "-movflags", "+faststart", outPath,
   ]);
 }

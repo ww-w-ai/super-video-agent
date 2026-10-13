@@ -956,6 +956,25 @@ local cache with the Python in `SVA_STT_PYTHON` and is the only step that fetche
 hundred MB to a few GB); it is ignored with `--check`. Both modes list the speech-to-text engines and
 which models are present, and report an API key as set or not set, never printing it.
 
+Both modes also print the video encoder and why it was chosen. `SVA_VENC` (default `auto`) picks it
+for every video encode: segments, cuts and splices, span renders, dub caption burns and min-gap
+pictures, joins that re-encode, and review copies. `auto` tries HEVC hardware, then H.264 hardware,
+then uses libx264; `hw` tries the same hardware and stops with the reasons when none works; `hevc` and
+`h264` use only that hardware codec and stop when it does not work; `sw` is libx264 with the crf and
+preset each step has always used. Candidates: macOS `hevc_videotoolbox`, `h264_videotoolbox`;
+elsewhere `hevc_nvenc`, `hevc_qsv`, `h264_nvenc`, `h264_qsv`. One counts only when `ffmpeg -encoders`
+lists it and a 1-frame test encode succeeds; the answer is cached per process. The settings keep files
+near libx264's size: HEVC at 4 Mb/s for 1080p scaled by pixel count (2160p 16 Mb/s, 720p about
+1.8 Mb/s) and tagged `hvc1`; `h264_videotoolbox` at constant quality `-q:v 77`; other H.264 hardware at
+3.2 Mb/s for 1080p; VideoToolbox with `-allow_sw 0`; all yuv420p with libx264's keyframe interval. On a
+1080p M2 scene against a lossless render: libx264 crf 18 3.72 MB, 52.5 dB PSNR; HEVC 4 Mb/s 3.68 MB,
+51.7 dB; H.264 `-q:v 77` 4.03 MB, 49.5 dB. Render time stays about the same (frame capture is the
+limit); ffmpeg uses about a third of libx264's CPU. The render browser cannot play HEVC, which does not
+matter: SVA reads its own video only through ffmpeg. A film never mixes encoders: each segment's meta
+records its encoder, so a change of `SVA_VENC` re-renders cached segments; cuts and span edits
+re-encode with the encoder of the file they cut; and a stream-copy join of parts from two encoders
+stops with a message naming both.
+
 ## Asset library
 
 Recorded sound effects and reaction clips ("짤") live outside the skill, in one folder per user:

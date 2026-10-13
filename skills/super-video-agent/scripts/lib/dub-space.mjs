@@ -150,9 +150,10 @@ export function buildSpaceFilterGraph(segments, fps, newDuration) {
 /**
  * ffmpeg args writing both outputs in ONE call — two separate calls over
  * the same graph fail with "unconnected output", since a graph that
- * defines [v] and [a] must map both.
+ * defines [v] and [a] must map both. `video` is the video encoder args
+ * (lib/ffmpeg.mjs videoEncodeArgs, crf 16).
  */
-export function buildSpaceFfmpegArgs({ pictureMp4, bedWav, outMp4, outWav, graph, frameCount }) {
+export function buildSpaceFfmpegArgs({ pictureMp4, bedWav, outMp4, outWav, graph, frameCount, video }) {
   return [
     "-y",
     "-i",
@@ -165,12 +166,7 @@ export function buildSpaceFfmpegArgs({ pictureMp4, bedWav, outMp4, outWav, graph
     "[v]",
     "-frames:v",
     String(frameCount),
-    "-c:v",
-    "libx264",
-    "-crf",
-    "16",
-    "-pix_fmt",
-    "yuv420p",
+    ...video,
     "-an",
     outMp4,
     "-map",
@@ -183,24 +179,25 @@ export function buildSpaceFfmpegArgs({ pictureMp4, bedWav, outMp4, outWav, graph
 
 // One encoder setting for every picture span: spans are joined without
 // re-encoding, so a shared span and a language span must match exactly.
-const SPAN_ENCODE = ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p", "-an"];
+// `video` is that setting (lib/ffmpeg.mjs videoEncodeArgs, crf 18, preset
+// medium), computed once by the caller for all spans of a film.
 
 function trimFilter(startFrame, endFrame) {
   return `trim=start_frame=${startFrame}:end_frame=${endFrame},setpts=PTS-STARTPTS`;
 }
 
 /** ffmpeg args encoding frames [startFrame, endFrame) of the picture alone: a language-neutral span. */
-export function buildPlainSpanArgs({ pictureMp4, startFrame, endFrame, fps, outPath }) {
+export function buildPlainSpanArgs({ pictureMp4, startFrame, endFrame, fps, outPath, video }) {
   return ["-y", "-i", pictureMp4, "-vf", trimFilter(startFrame, endFrame), "-r", String(fps),
-    "-frames:v", String(endFrame - startFrame), ...SPAN_ENCODE, outPath];
+    "-frames:v", String(endFrame - startFrame), ...video, "-an", outPath];
 }
 
 /** Same span with the caption PNG sequence (numbered by film frame) composited over it: a language span. */
-export function buildCaptionSpanArgs({ pictureMp4, captionsDir, startFrame, endFrame, fps, outPath }) {
+export function buildCaptionSpanArgs({ pictureMp4, captionsDir, startFrame, endFrame, fps, outPath, video }) {
   const graph = `[0:v]${trimFilter(startFrame, endFrame)}[p];[1:v]format=rgba[cap];[p][cap]overlay=format=auto[v]`;
   return ["-y", "-i", pictureMp4, "-framerate", String(fps), "-start_number", String(startFrame),
     "-i", `${captionsDir}/frame-%05d.png`, "-filter_complex", graph, "-map", "[v]", "-r", String(fps),
-    "-frames:v", String(endFrame - startFrame), ...SPAN_ENCODE, outPath];
+    "-frames:v", String(endFrame - startFrame), ...video, "-an", outPath];
 }
 
 /**

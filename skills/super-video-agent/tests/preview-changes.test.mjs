@@ -17,7 +17,7 @@ test("unknown IDs and broken clocks never produce a plausible preview", () => {
   assert.throws(() => previewWindows({ ...timings, duration: 4 }, ["a"]), /invalid/);
 });
 test("mixed previews require both picture and existing audio", () => {
-  const args = previewArgs("/mixed.mp4", { from: 2, to: 5 }, "/preview.mp4");
+  const args = previewArgs("/mixed.mp4", { from: 2, to: 5 }, "/preview.mp4", ["-c:v", "V"]);
   assert.ok(args.includes("0:v:0"));
   assert.ok(args.includes("0:a:0"));
   assert.equal(args[args.indexOf("-t") + 1], "3");

@@ -20,7 +20,7 @@ import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, war
 import { createSessionPool } from "./lib/session-pool.mjs";
 import { createContrastCollector, measureDrawnFrame, reportRenderContrast } from "./lib/render-contrast.mjs";
 import {
-  run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo,
+  run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo, chooseVideoEncoder, probeVideoEncoder,
   uniqueTempPath, concatMp4, sameStream, cutFrames, frameHashRange, probePacketCount, videoStreamMd5, probeGops, keyframeInterval,
 } from "./lib/ffmpeg.mjs";
 import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
@@ -871,7 +871,7 @@ function decideWithoutPage({ segment, segDir, baseSegDir, fps, targetWidth, targ
   if (pendingSet.has(segment.id)) return { segment, action: "PENDING", reason: "--only: never rendered yet (skipped; the film is joined once no segment is pending)" };
   if (onlyIds && !onlyIds.includes(segment.id) && !neighbour) return { segment, action: "REUSE", reason: "--only fast path (not probed)" };
   if (!baseSegDir || !langStrings || (onlyIds && !neighbour)) return null;
-  const current = { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width: targetWidth, height: targetHeight };
+  const current = { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width: targetWidth, height: targetHeight, encoder: chooseVideoEncoder().name };
   const mp4Path = segMp4Path(segDir, segment.id);
   const storedBase = readStoredMeta(baseSegDir, segment.id);
   const d = decideLangUnprobed({
@@ -895,7 +895,7 @@ async function decideOne({ session, segment, segDir, baseSegDir = null, fps, tar
     const png = await captureFrame(session.page, f / fps);
     probes.push(sha256Hex(png));
   }
-  const current = { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width: targetWidth, height: targetHeight, probes };
+  const current = { frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width: targetWidth, height: targetHeight, encoder: chooseVideoEncoder().name, probes };
   const mp4Path = segMp4Path(segDir, segment.id);
   const jsonPath = segJsonPath(segDir, segment.id);
 
@@ -961,7 +961,7 @@ async function renderNeeded({ pool, decisions, baseSegDir = null, fps, crf, pres
         await withTransportRetry(
           async () => {
             if (!session) session = await pool.acquire();
-            await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter, contrast });
+            await encodeSegment({ session, segment: d.segment, outPath: d.mp4Path, fps, crf, preset, scaleFilter, width: d.current.width, height: d.current.height, contrast });
             reads = await sessionPictureReads(session);
           },
           {
@@ -992,9 +992,9 @@ export { mergePictureReads };
 
 // Encodes to a temp name and renames when done, so an interrupted encode never
 // leaves a truncated mp4 under the name a cached segment json points at.
-async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter, contrast = null }) {
+async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter, width, height, encoder, contrast = null }) {
   const tmpPath = uniqueTempPath(outPath);
-  const { proc, done } = spawnImagePipeEncoder({ fps, outPath: tmpPath, crf, preset, scaleFilter });
+  const { proc, done } = spawnImagePipeEncoder({ fps, outPath: tmpPath, crf, preset, scaleFilter, width, height, encoder });
   done.catch(() => {});
   try {
     for (let frame = segment.frameStart; frame < segment.frameEnd; frame++) {
@@ -1331,7 +1331,9 @@ async function rebuildSegmentSpan({ session, touched, segDir, baseSegDir = null,
   const workDir = uniqueTempPath(path.join(segDir, `_span-${id}`));
   fs.mkdirSync(workDir, { recursive: true });
   try {
-    const renderNew = (p, outPath) => encodeSegment({ session, segment: { frameStart: p.from, frameEnd: p.to }, outPath, fps, crf, preset, scaleFilter });
+    // A span edit keeps the film's encoder, so the rebuilt segment joins the cached ones.
+    const encoder = await filmEncoder([headerRef, target]);
+    const renderNew = (p, outPath) => encodeSegment({ session, segment: { frameStart: p.from, frameEnd: p.to }, outPath, fps, crf, preset, scaleFilter, width, height, encoder });
     const built = await spliceSpanPieces({ pieces: touched.pieces, oldPath: target, renderNew, fps, crf, preset, workDir });
     const frames = await probePacketCount(built);
     if (frames !== segment.frameEnd - segment.frameStart) throw new Error(`span splice of ${id} has ${frames} frames, expected ${segment.frameEnd - segment.frameStart}`);
@@ -1344,7 +1346,7 @@ async function rebuildSegmentSpan({ session, touched, segDir, baseSegDir = null,
     for (const f of probeFrameIndices(segment.frameStart, segment.frameEnd)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
     const picture = spanPictureReads({ stored, sessionReads: await sessionPictureReads(session), pieces: touched.pieces });
     const assembledCopy = stored?.assembledCopy && touched.pieces.some(p => p.kind === "old") ? { assembledCopy: stored.assembledCopy } : {};
-    writeJson(segJsonPath(segDir, id), withBaseStamp({ ...assembledCopy, frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, probes, ...(picture ? { picture } : {}) }, baseSegDir, id));
+    writeJson(segJsonPath(segDir, id), withBaseStamp({ ...assembledCopy, frameStart: segment.frameStart, frameEnd: segment.frameEnd, fps, width, height, encoder: await probeVideoEncoder(target), probes, ...(picture ? { picture } : {}) }, baseSegDir, id));
   } finally {
     fs.rmSync(workDir, { recursive: true, force: true });
   }
@@ -1484,7 +1486,7 @@ export function planCacheKey({ dir, paths, preview, noCaptions, lang, only, prob
     .digest("hex");
   // A --timings file outside the reel is not in treeStats: its path and mtime join the key.
   const timings = ownTimings(dir, paths) ? null : [paths.timingsJson, fs.statSync(paths.timingsJson).mtimeMs];
-  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, timings, fingerprint, skill: skillStamp() });
+  return JSON.stringify({ quality, noCaptions, lang, only: only || null, probeAll, stubSec, stubSegments, timings, fingerprint, encoder: chooseVideoEncoder().name, skill: skillStamp() });
 }
 
 /** Which render code made a cached plan: the skill's package.json version and render.mjs's mtime (an edited or updated skill plans again). */
@@ -1709,7 +1711,7 @@ async function refreshSegmentCache({ pool, segments, segDir, videoPath, fps, crf
         process.stderr.write(`note: segment ${segment.id}: keeping copied frames for explicit --span edits; a normal probed render will redraw this segment\n`);
       }
       const meta = assembledSegmentMeta({ segment, fps, width, height, items, bad, keepAssembledCopies });
-      if (meta) writeJson(segJsonPath(segDir, segment.id), meta);
+      if (meta) writeJson(segJsonPath(segDir, segment.id), { ...meta, encoder: await probeVideoEncoder(mp4Path) });
     }
   });
 }
@@ -1799,7 +1801,7 @@ async function renderDrafts({ pool, segments, onlyIds, handleSec, fps, quality, 
       while (idx < jobs.length) {
         const job = jobs[idx++];
         if (!session) session = await pool.acquire();
-        await encodeSegment({ session, segment: job.span, outPath: job.mp4Path, fps, crf, preset, scaleFilter });
+        await encodeSegment({ session, segment: job.span, outPath: job.mp4Path, fps, crf, preset, scaleFilter, width: targetWidth, height: targetHeight });
         const probes = [];
         for (const f of slotProbeFrames(job.segment)) probes.push(sha256Hex(await captureFrame(session.page, f / fps)));
         writeJson(job.jsonPath, draftSidecar({ segment: job.segment, span: job.span, fps, handleSec, quality, width: targetWidth, height: targetHeight, stamp, probes }));
@@ -2000,8 +2002,8 @@ export async function spliceTrack({ pieces, segmentPath, clipPath, fps, crf, pre
 
 /**
  * Size, sample aspect ratio and colour tags of `file`'s video stream, as
- * values the scale/setsar/setparams filters take. These end up in the
- * H.264 headers, so a re-encoded clip must carry the segments' values.
+ * values the scale/setsar/setparams filters take, and its SVA encoder. These end up in the
+ * encoder headers, so a re-encoded clip must carry the segments' values.
  */
 async function streamTags(file) {
   const { stdout } = await ffprobe([
@@ -2019,15 +2021,26 @@ async function streamTags(file) {
     colorspace: known(s.color_space),
     primaries: known(s.color_primaries),
     trc: known(s.color_transfer),
+    encoder: await probeVideoEncoder(file),
   };
 }
 
-// Decodes `src` to PNG frames piped into the same encoder render.mjs uses
-// for segments, with the segments' size, SAR and colour tags (`like`), so
+/** The SVA encoder of the first existing file in `files` (the film's cached segments), else SVA_VENC's choice. */
+async function filmEncoder(files) {
+  for (const f of files) {
+    if (!f || !fs.existsSync(f)) continue;
+    const name = await probeVideoEncoder(f);
+    if (name) return name;
+  }
+  return chooseVideoEncoder().name;
+}
+
+// Decodes `src` to PNG frames piped into the encoder that wrote the segments
+// (`like.encoder`), with their size, SAR and colour tags, so
 // the result carries the segments' encoder headers. A direct re-encode
 // keeps the source's tags, which change the headers.
 async function reencodeLikeSegments({ src, like, fps, crf, preset, outPath }) {
-  const { proc, done } = spawnImagePipeEncoder({ fps, outPath, crf, preset });
+  const { proc, done } = spawnImagePipeEncoder({ fps, outPath, crf, preset, width: like.width, height: like.height, encoder: like.encoder || undefined });
   const filter =
     `scale=${like.width}:${like.height},setsar=${like.sar},format=rgba,` +
     `setparams=range=${like.range}:color_primaries=${like.primaries}:color_trc=${like.trc}:colorspace=${like.colorspace}`;

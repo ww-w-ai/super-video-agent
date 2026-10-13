@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
 import { mlxModelCached, MLX_MODEL_REPOS } from "./lib/stt-engine.mjs";
 import { gpuReport } from "./lib/browser.mjs";
+import { chooseVideoEncoder } from "./lib/ffmpeg.mjs";
 
 const HELP = `usage: setup.mjs [--check] [--stt-models] [--dir <reel>]
 
@@ -26,6 +27,9 @@ They also report whether rendering uses a real GPU or a software renderer
 (SwiftShader), from a WebGL probe in the render browser. SVA_GPU=gpu asks Chromium
 for the real GPU (default = Playwright's flags; swiftshader forces software);
 SVA_CHROME_ARGS adds raw Chromium flags. Information only.
+They also print the video encoder SVA_VENC picks (auto = HEVC hardware, else
+H.264 hardware, else libx264, each hardware one only when a 1-frame test encode
+works; hw, hevc, h264 = that hardware or not ready; sw = libx264) and why.
 
 --check        report what is missing without installing anything.
 --dir <reel>   measure the free disk of <reel>/out (where renders write). Without
@@ -71,6 +75,11 @@ export async function main(argv) {
     else if (!install || !installChromium()) missing.push(chromiumMissingHint(cache, install ? "the install failed" : "not installed"));
   }
   for (const tool of ["ffmpeg", "ffprobe"]) if (!onPath(tool)) missing.push(`${tool} on PATH (macOS: brew install ffmpeg; Debian/Ubuntu: apt install ffmpeg)`);
+  if (onPath("ffmpeg")) {
+    const enc = encoderReport();
+    for (const line of enc.lines) console.log(line);
+    if (enc.error) missing.push(enc.error);
+  }
   if (hasPlaywright() && (await hasChromium())) for (const line of await renderingLines(process.env)) console.log(line);
 
   for (const line of sttReport(process.env)) console.log(line);
@@ -188,6 +197,22 @@ export async function renderingLines(env) {
   const lines = [`rendering: ${what}; SVA_GPU=${r.mode}${r.args.length ? `, flags ${r.args.join(" ")}` : ""}`];
   if (r.software) lines.push("  3D reels render slowly on a software renderer. For a real GPU set SVA_GPU=gpu (extra flags: SVA_CHROME_ARGS=\"...\") and run setup.mjs --check again; on a Linux server the NVIDIA driver must be installed and visible to Chromium.");
   return lines;
+}
+
+/**
+ * The video encoder SVA_VENC picks on this machine and why. `error` is set when
+ * SVA_VENC=hw, hevc or h264 (or a bad value) cannot be satisfied: setup is then not ready.
+ * @param {() => {name: string, hardware: boolean, reason: string}} choose
+ * @returns {{lines: string[], error: string|null}}
+ */
+export function encoderReport(choose = chooseVideoEncoder) {
+  try {
+    const e = choose();
+    return { lines: [`video encoder: ${e.name} (${e.hardware ? "hardware" : "software"}); ${e.reason}`], error: null };
+  } catch (e) {
+    const msg = String(e.message).split("\n")[0];
+    return { lines: [`video encoder: ${msg}`], error: msg };
+  }
 }
 
 const MLX_INSTALL_ROUTE = "on Apple silicon macOS, in a venv: `python3 -m venv <dir>` then `<dir>/bin/pip install mlx-whisper` (Python 3.11 is a verified version; use a Python version the mlx wheels list for your machine), then SVA_STT_PYTHON=<dir>/bin/python and `setup.mjs --stt-models`";

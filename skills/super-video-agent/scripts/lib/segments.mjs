@@ -73,7 +73,7 @@ export function probeFrameIndices(frameStart, frameEnd) {
 
 /**
  * Decide whether a segment can be reused: its stored metadata must match
- * the current frame range, fps and size, and all three probe hashes, and
+ * the current frame range, fps, size and video encoder, and all three probe hashes, and
  * its .mp4 must exist on disk (design point 3).
  * @param {{stored: object|null, current: {frameStart:number,frameEnd:number,fps:number,width:number,height:number,probes:string[]}, mp4Exists: boolean}} args
  * @returns {{reuse: boolean, reason: string}}
@@ -96,6 +96,9 @@ export function decideSegmentReuse({ stored, current, mp4Exists }) {
       reuse: false,
       reason: `size changed (${stored.width}x${stored.height} -> ${current.width}x${current.height})`,
     };
+  }
+  if (!sameEncoder(stored, current)) {
+    return { reuse: false, reason: `video encoder changed (${storedEncoder(stored)} -> ${current.encoder}); a film never joins segments from two encoders` };
   }
   if (!Array.isArray(stored.probes) || stored.probes.length !== current.probes.length) {
     return { reuse: false, reason: "probe count mismatch" };
@@ -190,8 +193,19 @@ function sameShape(stored, current) {
     stored.frameEnd === current.frameEnd &&
     stored.fps === current.fps &&
     stored.width === current.width &&
-    stored.height === current.height
+    stored.height === current.height &&
+    sameEncoder(stored, current)
   );
+}
+
+/** The encoder a stored segment was made with; meta written before SVA_VENC existed is libx264. */
+function storedEncoder(stored) {
+  return stored.encoder === undefined ? "libx264" : stored.encoder;
+}
+
+/** True when `current` names no encoder (the caller does not check it) or the stored one equals it. */
+function sameEncoder(stored, current) {
+  return current.encoder === undefined || storedEncoder(stored) === current.encoder;
 }
 
 function sameProbes(a, b) {

@@ -20,7 +20,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
-import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps } from "./lib/ffmpeg.mjs";
+import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps, videoEncodeArgs } from "./lib/ffmpeg.mjs";
 import { measureMasterGain, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr, measureDuckSwing, formatDuckSwingReport, DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import { measureNarrationCuts, formatCutReport } from "./lib/audio-analysis.mjs";
@@ -532,7 +532,8 @@ async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit,
   };
   const graph = buildSpaceFilterGraph(segmentFactors(map), fps, map.newDuration);
   const frameCount = Math.round(map.newDuration * fps);
-  await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4, bedWav: pictureBedWav, outMp4: out.pictureMp4, outWav: out.pictureBedWav, graph, frameCount }));
+  const video = await pictureEncodeArgs(pictureMp4, { crf: 16 });
+  await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4, bedWav: pictureBedWav, outMp4: out.pictureMp4, outWav: out.pictureBedWav, graph, frameCount, video }));
   writeJson(path.join(spacedDir, "picture.timings.json"), out.baseTimings);
   process.stdout.write(formatSpaceReport(deltas, map, baseTimings.lines));
   return out;
@@ -786,21 +787,27 @@ async function reportCaptionContrast({ dir, lang, captionsDir, gridPictureMp4, f
   }
 }
 
+/** Video encoder args for a re-encode of `pictureMp4` at its own size (SVA_VENC's encoder). */
+async function pictureEncodeArgs(pictureMp4, { crf, preset }) {
+  const { width, height } = await probeVideoInfo(pictureMp4);
+  return videoEncodeArgs({ crf, preset, width, height });
+}
+
 /** Identity of the picture plus the encoder settings: a shared span built from other input or settings is never reused. */
-function sharedSpanKey(pictureMp4, fps) {
+function sharedSpanKey(pictureMp4, fps, video) {
   const st = fs.statSync(pictureMp4);
-  const settings = buildPlainSpanArgs({ pictureMp4: "", startFrame: 0, endFrame: 0, fps, outPath: "" });
+  const settings = buildPlainSpanArgs({ pictureMp4: "", startFrame: 0, endFrame: 0, fps, outPath: "", video });
   return crypto.createHash("sha1").update(JSON.stringify([path.resolve(pictureMp4), st.size, st.mtimeMs, fps, settings])).digest("hex").slice(0, 16);
 }
 
 /** One language-neutral span, from out/shared-spans/ when an earlier language already built it. */
-async function sharedSpanFile({ span, key, pictureMp4, gridPictureMp4, fps, sharedDir }) {
+async function sharedSpanFile({ span, key, gridPictureMp4, fps, sharedDir, video }) {
   const frames = span.endFrame - span.startFrame;
   const cached = path.join(sharedDir, `${key}-${span.startFrame}-${span.endFrame}.mp4`);
   if (fs.existsSync(cached) && (await probeFrameCount(cached)) === frames) return { file: cached, reused: true };
   const tempPath = uniqueTempPath(sharedDir, `span-${key}`, ".mp4");
   try {
-    await ffmpeg(buildPlainSpanArgs({ pictureMp4: gridPictureMp4, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: tempPath }));
+    await ffmpeg(buildPlainSpanArgs({ pictureMp4: gridPictureMp4, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: tempPath, video }));
     if ((await probeFrameCount(tempPath)) !== frames) throw new Error(`shared span ${span.startFrame}-${span.endFrame} came out with the wrong frame count`);
     fs.renameSync(tempPath, cached);
   } finally {
@@ -813,16 +820,17 @@ async function sharedSpanFile({ span, key, pictureMp4, gridPictureMp4, fps, shar
 export async function assembleSpans({ plan, pictureMp4, gridPictureMp4, captionsDir, fps, workDir, outDir, outPath }) {
   const sharedDir = path.join(outDir, "shared-spans");
   ensureDir(sharedDir);
-  const key = sharedSpanKey(pictureMp4, fps);
+  const video = await pictureEncodeArgs(gridPictureMp4, { crf: 18, preset: "medium" });
+  const key = sharedSpanKey(pictureMp4, fps, video);
   const files = [];
   for (const [i, span] of plan.spans.entries()) {
     if (span.kind === "lang") {
       const file = path.join(workDir, `span-${i}.mp4`);
-      await ffmpeg(buildCaptionSpanArgs({ pictureMp4: gridPictureMp4, captionsDir, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: file }));
+      await ffmpeg(buildCaptionSpanArgs({ pictureMp4: gridPictureMp4, captionsDir, startFrame: span.startFrame, endFrame: span.endFrame, fps, outPath: file, video }));
       files.push(file);
       continue;
     }
-    const shared = await sharedSpanFile({ span, key, pictureMp4, gridPictureMp4, fps, sharedDir });
+    const shared = await sharedSpanFile({ span, key, gridPictureMp4, fps, sharedDir, video });
     process.stdout.write(`shared span ${span.startFrame}-${span.endFrame}: ${shared.reused ? "reused" : "built"}\n`);
     files.push(shared.file);
   }
@@ -1122,14 +1130,7 @@ async function overlayCaptions({ pictureMp4, captionsDir, fps, outPath }) {
     "[1:v]format=rgba[cap];[0:v][cap]overlay=format=auto[v]",
     "-map",
     "[v]",
-    "-c:v",
-    "libx264",
-    "-crf",
-    "18",
-    "-preset",
-    "medium",
-    "-pix_fmt",
-    "yuv420p",
+    ...(await pictureEncodeArgs(pictureMp4, { crf: 18, preset: "medium" })),
     "-an",
     outPath,
   ]);
