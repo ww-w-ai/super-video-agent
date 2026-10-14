@@ -6,6 +6,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadTimings, writeJson } from "./lib/reeldir.mjs";
 import { readWav } from "./lib/wav-read.mjs";
 import { measureWordOnsets, formatWordOnsets, OFFSET_REPORT_SEC, ONSET_WINDOW_SEC } from "./lib/word-onsets.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: word-times.mjs <reel-dir> [--threshold <ms>] [--window <ms>] [--lines <id,id,...>] [--out <json>]
 
@@ -49,6 +50,6 @@ export function main(argv) {
   process.stdout.write(`wrote ${outPath}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -5,8 +5,18 @@ import os from "node:os";
 import path from "node:path";
 import {
   ffmpeg, resolveVideoEncoder, videoEncodeArgs, hwBitrate, hardwareCandidates, chooseVideoEncoder,
-  probeVideoEncoder, concatMp4, cutFrames,
+  probeVideoEncoder, concatMp4, cutFrames, encodeFailureReason,
 } from "../scripts/lib/ffmpeg.mjs";
+
+test("a failed test encode reports the encoder's own complaint, not ffmpeg's last generic line", () => {
+  const stderr = [
+    "[h264_nvenc @ 0000018c] Driver does not support the required nvenc API version. Required: 13.1 Found: 12.2",
+    "[h264_nvenc @ 0000018c] The minimum required Nvidia driver for nvenc is 610.00 or newer",
+    "[out#0/null @ 0000018c] Nothing was written into output file, because at least one of its streams received no packets.",
+  ].join("\r\n");
+  assert.equal(encodeFailureReason(stderr), "Driver does not support the required nvenc API version. Required: 13.1 Found: 12.2");
+  assert.equal(encodeFailureReason("Unknown encoder 'h264_qsv'\n"), "Unknown encoder 'h264_qsv'");
+});
 import { decideSegmentReuse, decideLangUnprobed } from "../scripts/lib/segments.mjs";
 
 const never = () => {

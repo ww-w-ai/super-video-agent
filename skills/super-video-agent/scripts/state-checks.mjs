@@ -15,6 +15,7 @@ import { textOverlapSpans, glyphFallbacks, findFlicker, visibleKeys, formatState
   regionCovers, regionScope, coverNothingReason, reserveScope, reserveIntrusions, fontForLang, langGlyphPairs, langGlyphReport, glyphMaskCoverage, VISIBLE_ALPHA } from "./lib/state-checks.mjs";
 import { contrastFindings } from "./lib/text-contrast.mjs";
 import { gatherSources, visibilitySourceReview, formatSourceFindings } from "./lib/source-review.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,reserve,langglyphs,contrast] [--step <frames>] [--fps <n>]
                         [--range <t0>-<t1>] [--source-only] [--no-source] [--out <json>] [--stub <sec>] [--outline-em <n>]
@@ -261,6 +262,6 @@ export async function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

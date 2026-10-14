@@ -13,6 +13,7 @@ import {
   parseScript, alignScript, defaultLineChars, DEFAULT_MAX_LINES, sttExtractArgs,
 } from "./lib/srt.mjs";
 import { ffmpeg } from "./lib/ffmpeg.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage:
   srt.mjs build <reel-dir> [--base | --dub <code>] [--line-chars <n>] [--max-lines <n>] [--out-dir <dir>]
@@ -189,6 +190,6 @@ export async function main(argv) {
   return fail(`unknown mode "${mode}" (build, align, compare)`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

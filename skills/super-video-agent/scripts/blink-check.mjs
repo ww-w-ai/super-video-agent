@@ -12,6 +12,7 @@ import { openReel, seekTo, stubSeconds } from "./lib/browser.mjs";
 import { analyzeAll, formatBlinks, MIN_BLINK_SEC, MIN_INTERVAL_SEC, FLUTTER_COUNT, FLUTTER_WINDOW_SEC } from "./lib/blink.mjs";
 import { gatherSources, blinkSourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 import { readGltf, morphTracks, BLINK_MORPH } from "./lib/glb-clip-tracks.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: blink-check.mjs <reel-dir> [--glb <file>] [--morph <regex>] [--step <frames>] [--no-source] [--source-only] [--out <json>] [--stub <sec>]
 
@@ -127,6 +128,6 @@ async function sample(page, fps, duration, step) {
   return series;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -210,6 +210,7 @@ test("chromeLaunchOptions: default adds nothing; gpu asks for the real GPU per O
   assert.deepEqual(chromeLaunchOptions({}, "linux"), { headless: true, args: [] });
   const mac = chromeLaunchOptions({ SVA_GPU: "gpu" }, "darwin");
   assert.ok(mac.args.includes("--ignore-gpu-blocklist") && mac.args.includes("--use-angle=metal"));
+  assert.ok(chromeLaunchOptions({ SVA_GPU: "gpu" }, "win32").args.includes("--use-angle=d3d11"));
   const linux = chromeLaunchOptions({ SVA_GPU: "GPU", SVA_CHROME_ARGS: "--foo  --bar=1" }, "linux");
   assert.ok(linux.args.includes("--use-angle=gl-egl"));
   assert.deepEqual(linux.args.slice(-2), ["--foo", "--bar=1"]);

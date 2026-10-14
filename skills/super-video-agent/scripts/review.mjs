@@ -37,6 +37,7 @@ import { loudnessUnderTarget } from "./lib/audio-mix.mjs";
 import { findClipDefects, withEndCut, describeDefects, waveformFlag } from "./voice/take-check.mjs";
 import { rawTakeStatus, rawTakePath } from "./lib/raw-take.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: review.mjs <reel-dir> [--mp4 <path>]
        review.mjs <reel-dir> --scan [stepSec] [--layer captions [--dub <code>]]
@@ -762,6 +763,6 @@ function printSummary(report) {
   process.stdout.write(lines.join("\n") + "\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

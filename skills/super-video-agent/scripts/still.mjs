@@ -12,6 +12,7 @@ import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame, stubSeconds, warmShotsOf, glIssues, glReportLines } from "./lib/browser.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { pictureUrl } from "./render.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const DEFAULT_SHEET_CELL = 540;
 
@@ -398,6 +399,6 @@ function sanitize(s) {
   return String(s).replace(/[^a-zA-Z0-9_.-]/g, "_");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

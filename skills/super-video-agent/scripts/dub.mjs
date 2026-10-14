@@ -52,6 +52,7 @@ import { formatLeadReport } from "./lib/lead.mjs";
 import { measureCaptionContrast, formatContrastReport } from "./lib/caption-contrast.mjs";
 import { captionRecordsAtSamples } from "./lib/render-contrast.mjs";
 import { parseLangTag, sameLanguageTag } from "./lib/lang-tag.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 export { sameLanguageTag };
 
@@ -1218,6 +1219,6 @@ async function muxVideoAudio({ videoPath, audioPath, durationSec, outPath }) {
   ]);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

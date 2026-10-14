@@ -53,6 +53,7 @@ import { readWav } from "./lib/wav-read.mjs";
 import { measureEdgeEnvelope, voicedSpanWithPads } from "./lib/clip-trim.mjs";
 import { lineLang } from "./lib/line-lang.mjs";
 import { listVoicesReport } from "./lib/voice-list.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 export { sttTranscribe };
 // Providers whose output is deterministic (same input -> same audio every
@@ -2608,6 +2609,6 @@ export async function runInsertPause({ dir, paths, plan, spec }) {
   return result.timings;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -7,12 +7,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { frameHashes } from "../scripts/render.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const scripts = path.join(here, "..", "scripts");
-await import(path.join(scripts, "engine", "reel-engine.js"));
+await import(pathToFileURL(path.join(scripts, "engine", "reel-engine.js")).href);
 const Reel = globalThis.Reel;
 
 test("Reel.caption: an empty line (a stub line) draws nothing", () => {

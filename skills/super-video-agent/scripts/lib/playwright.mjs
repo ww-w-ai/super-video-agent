@@ -3,7 +3,7 @@
 // package ends the run with one line naming the setup command instead of a
 // module-resolution stack trace.
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { fail } from "./cli.mjs";
 
 const SKILL_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -21,7 +21,7 @@ export function playwrightMissingMessage(skillDir = SKILL_DIR) {
  */
 export async function importPlaywright(entry = PW_ENTRY, skillDir = SKILL_DIR) {
   try {
-    return await import(entry);
+    return await import(pathToFileURL(entry).href);
   } catch (e) {
     if (!e || e.code !== "ERR_MODULE_NOT_FOUND") throw e;
     const missing = new Error(playwrightMissingMessage(skillDir));

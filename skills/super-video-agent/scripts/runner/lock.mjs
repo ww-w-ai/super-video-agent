@@ -8,6 +8,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
 import { probeGpu, busyThreshold, idleSamples, describeProbe } from "./gpu-probe.mjs";
+import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage:
   lock.mjs run [options] -- <command> [args...]    wait for the slot, run the command, release
@@ -46,7 +47,14 @@ export function defaultLockDir(env = process.env) {
   return path.join(base, "render-lock");
 }
 
-const myUid = () => (process.getuid ? process.getuid() : null);
+const IS_WIN = process.platform === "win32";
+
+/**
+ * Who this process runs as: the numeric uid on POSIX; on Windows (no getuid) the account name, which is
+ * what owner records and tickets compare against there.
+ */
+export const currentUid = () => (process.getuid ? process.getuid() : os.userInfo().username);
+const myUid = currentUid;
 
 /**
  * The lock dir decides which pids this tool may signal, so it must be ours alone: a real directory
@@ -63,6 +71,7 @@ export function assertSafeLockDir(dir, { create = false } = {}) {
     throw e;
   }
   const why = !st.isDirectory() ? "not a real directory (a symlink or a file)"
+    : IS_WIN ? null // NTFS has no POSIX owner or mode bits here (lstat reports uid 0, mode 666); the profile folder is private by ACL
     : myUid() !== null && st.uid !== myUid() ? `owned by uid ${st.uid}, not ${myUid()}`
       : (st.mode & 0o077) !== 0 ? `mode ${(st.mode & 0o777).toString(8)} lets group or others in (use 700)` : null;
   if (why) throw new Error(`unsafe lock dir ${dir}: ${why}`);
@@ -93,6 +102,13 @@ const startCache = new Map(); // one poll asks about the same pid several times;
 const START_CACHE_MS = 1000;
 
 function readStartTime(pid) {
+  if (IS_WIN) {
+    // No ps or /proc: ask the process's creation time (FILETIME ticks), stable for the life of that pid.
+    const w = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+      `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToFileTimeUtc()`], { encoding: "utf8", timeout: 10000, windowsHide: true });
+    const t = w.status === 0 ? (w.stdout || "").trim() : "";
+    return /^d+$/.test(t) ? `win:${t}` : null;
+  }
   const r = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 5000 });
   const text = r.status === 0 ? (r.stdout || "").trim().replace(/\s+/g, " ") : "";
   if (text) return text;
@@ -107,6 +123,7 @@ function readStartTime(pid) {
 
 /** First letter of the process state (`ps -o stat=`, else /proc/<pid>/stat): "Z" is a zombie. null when unreadable. */
 export function procState(pid) {
+  if (IS_WIN) return null; // Windows has no zombie state: an exited process is gone from kill(pid, 0)
   const r = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, timeout: 5000 });
   const text = r.status === 0 ? (r.stdout || "").trim() : "";
   if (text) return text[0];
@@ -194,6 +211,14 @@ export function readSlot(dir) {
 
 export function killGroup(pgid, signal) {
   if (!safePgid(pgid)) return false; // 0, 1, negatives and non-integers would hit our own group, init or everything
+  if (IS_WIN) {
+    // No process groups: a detached child's pid roots its process tree. Signal 0 asks whether it is there;
+    // any other signal ends the whole tree (taskkill /T), which is what a group kill means here.
+    if (signal === 0) {
+      try { process.kill(pgid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+    }
+    return spawnSync("taskkill", ["/PID", String(pgid), "/T", "/F"], { stdio: "ignore", windowsHide: true }).status === 0;
+  }
   try {
     process.kill(-pgid, signal);
     return true;
@@ -402,7 +427,7 @@ const liveGroups = new Set();
 
 /** spawn() into its own process group, remembered so exit and signals can stop it. */
 export function spawnGroup(cmd, args, options = {}) {
-  const child = spawn(cmd, args, { ...options, detached: true });
+  const child = spawn(cmd, args, { windowsHide: true, ...options, detached: true });
   if (child.pid) {
     liveGroups.add(child.pid);
     child.once("close", () => liveGroups.delete(child.pid));
@@ -534,6 +559,6 @@ function printStatus(flags) {
   } else process.stdout.write(formatStatus(dir) + "\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

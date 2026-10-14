@@ -23,6 +23,7 @@ import { buildJudgeSheet, buildScoresTemplate } from "./lib/sfx-judge-sheet.mjs"
 import { buildDecideRequest, parseDecideResponse } from "./lib/jev-client.mjs";
 import { buildChatRequest, parseChatResponse } from "./lib/openrouter-jev-client.mjs";
 import { FIT_THRESHOLD, describeSpan } from "./lib/sfx-judge-rubric.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const SAMPLE_RATE = 48000;
 // A judge's score for one sound moves a few tenths between runs; within this
@@ -467,6 +468,6 @@ function formatTable(rows) {
   return lines.join("\n");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

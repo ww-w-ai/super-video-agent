@@ -9,6 +9,7 @@ import { reelPaths, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { openLibrary, locateLibraryDir, assetFilePath, assertInsideLibrary, getById, searchAssetsRanked, isModelAsset } from "./lib/library.mjs";
 import { collectPlanCues, defaultPlay, cueFadeFields } from "./lib/cues.mjs";
 import { ffmpeg, ffprobe } from "./lib/ffmpeg.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: assets.mjs search <query> [--role sfx|reaction|character|prop|set|character-ref] [--limit N]
        assets.mjs fetch <reel-dir> [--allow-personal-scope]
@@ -401,6 +402,6 @@ async function probeImageSize(framePath) {
   return { width, height };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

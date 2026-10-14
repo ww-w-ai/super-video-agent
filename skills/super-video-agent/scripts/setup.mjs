@@ -9,6 +9,7 @@ import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
 import { mlxModelCached, MLX_MODEL_REPOS } from "./lib/stt-engine.mjs";
 import { gpuReport } from "./lib/browser.mjs";
 import { chooseVideoEncoder } from "./lib/ffmpeg.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: setup.mjs [--check] [--stt-models] [--dir <reel>]
 
@@ -292,6 +293,6 @@ function run(cmd, args) {
   return spawnSync(cmd, args, { stdio: "inherit" }).status === 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

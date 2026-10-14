@@ -3,6 +3,7 @@
 // not only for our own lock. Facts only: when no probe works it says so and the caller uses the lock alone.
 import { spawnSync } from "node:child_process";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
+import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage: gpu-probe.mjs [--threshold <percent>] [--wait] [--max-wait <sec>] [--json]
 
@@ -138,6 +139,6 @@ function summarise(p, threshold) {
   return { status: p.utilization <= threshold ? "idle" : "busy", probe: p };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

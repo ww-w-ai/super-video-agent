@@ -7,6 +7,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, readJson, writeJson } from "./lib/reeldir.mjs";
 import { checkText } from "./lib/punct-rules.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: punct-check.mjs <reel-dir> [--lang <code>[,<code>...]] [--out <json>]
 
@@ -94,6 +95,6 @@ export function main(argv) {
   if (result.findings.some((f) => f.severity === "wrong")) process.exitCode = 1;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

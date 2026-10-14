@@ -9,6 +9,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, ensureDir, writeJson } from "./lib/reeldir.mjs";
 import { findPretendard, findHandwritingFont } from "./lib/fonts.mjs";
 import { ffmpeg } from "./lib/ffmpeg.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(here, "..");
@@ -344,6 +345,6 @@ function escapeHtml(s) {
     .replaceAll(">", "&gt;");
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

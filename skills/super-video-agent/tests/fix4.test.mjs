@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { writeWavPCM16 } from "../scripts/lib/wav.mjs";
 import { amplitudeSpans, steadySpans, rmsEnvelope, buildSchedule, scheduleLines } from "../scripts/lib/mouth.mjs";
 import { resolveOptions, main as mouthMain } from "../scripts/mouth.mjs";
@@ -15,8 +15,8 @@ import { driftReportLines } from "../scripts/lib/browser.mjs";
 import { ttsUsageFor, formatReport, reportFor } from "../scripts/runner/cost-report.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-await import(path.join(here, "..", "scripts", "engine", "reel-rig.js"));
-await import(path.join(here, "..", "scripts", "engine", "reel-drift.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-rig.js")).href);
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-drift.js")).href);
 const { ReelRig, ReelDrift } = globalThis;
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "fix4-"));

@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { writeJson } from "./lib/reeldir.mjs";
 import { diffTimelines, spanFlag, edlFromRuns } from "./lib/timeline-diff.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: changed-spans.mjs <old-timeline.json> <new-timeline.json> [--fps <n>] [--out <report.json>]
                          [--edl-out <edl.json> --old-film <mp4> --new-film <mp4>[,<mp4>...] [--reel <dir>]]
@@ -94,6 +95,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { readJson, writeJson } from "./lib/reeldir.mjs";
 import { fitTempo, tempoLines, fittedTimeline, stagesOfTimeline, TEMPO_RANGE } from "./lib/tempo.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: tempo.mjs --target <sec> (--timeline <timeline.json> | --timings <voice/timings.json>) [--floor <sec>] [--out <timeline.json>] [--report <json>]
 
@@ -60,6 +61,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

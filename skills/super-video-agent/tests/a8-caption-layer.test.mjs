@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createTerminationGuard, sceneSpanVerdict } from "../scripts/dub.mjs";
 import { previewDubTimings, stillFileName } from "../scripts/still.mjs";
 import { formatCaptionBreaks } from "../scripts/lib/caption-breaks.mjs";
@@ -27,7 +27,7 @@ import {
 } from "../scripts/lib/caption-contrast.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-await import(path.join(here, "..", "scripts", "engine", "reel-engine.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-engine.js")).href);
 const Reel = globalThis.Reel;
 
 const words = (text) => text.split(/\s+/).filter(Boolean).map((w, i) => ({ w, start: i, end: i + 1 }));

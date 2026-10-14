@@ -7,6 +7,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, stubSeconds } from "./lib/browser.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: rig-check.mjs <reel-dir> [--step <sec>] [--out <json>] [--stub <sec>]
 
@@ -67,6 +68,6 @@ export function sampleTimes(duration, step) {
   return times;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

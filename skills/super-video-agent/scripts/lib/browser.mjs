@@ -83,6 +83,7 @@ export function chromeLaunchOptions(env = process.env, platform = process.platfo
     args.push("--ignore-gpu-blocklist", "--enable-gpu-rasterization", "--enable-zero-copy");
     if (platform === "darwin") args.push("--use-angle=metal");
     else if (platform === "linux") args.push("--use-gl=angle", "--use-angle=gl-egl");
+    else if (platform === "win32") args.push("--use-angle=d3d11");
     opts.ignoreDefaultArgs = ["--disable-gpu"];
   } else if (mode === "swiftshader") {
     args.push("--use-angle=swiftshader", "--enable-unsafe-swiftshader");
