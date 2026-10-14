@@ -42,9 +42,12 @@ export async function synth({ text, outPath, reelDir, voiceCfg }) {
     throw new Error("fishspeech provider: not configured. Set SVA_FISH_DIR to a local Fish-Speech checkout (with a .venv-tts venv).");
   }
   const repo = path.join(fishDir, "fish-speech");
-  const python = path.join(fishDir, ".venv-tts", "bin", "python");
+  // A venv keeps python in Scripts\python.exe on Windows, bin/python elsewhere.
+  const python = process.platform === "win32"
+    ? path.join(fishDir, ".venv-tts", "Scripts", "python.exe")
+    : path.join(fishDir, ".venv-tts", "bin", "python");
   const ckpt = path.join(repo, "checkpoints", "openaudio-s1-mini");
-  const device = process.env.SVA_FISH_DEVICE || "mps";
+  const device = process.env.SVA_FISH_DEVICE || (process.platform === "darwin" ? "mps" : "cuda");
 
   const cfg = voiceCfg || {};
   const refTokens = resolveRefPath(cfg.refTokens, reelDir);

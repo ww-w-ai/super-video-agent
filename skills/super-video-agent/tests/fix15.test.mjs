@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cutSpans, cutLineSamples, decayEnd, withQuietTail, fadeIn } from "../scripts/lib/line-split.mjs";
 import { kWeight, levelLufs, lineLoudness, audibleFloorLufs, edgeAudibility } from "../scripts/lib/perceived-level.mjs";
 import { findClipDefects, describeDefects, waveformFlag } from "../scripts/voice/take-check.mjs";
@@ -426,7 +426,7 @@ test("17: concatMp4 keeps every copied packet byte for byte (no parameter sets a
 
 // --- 18: a changed effect keeps the others' sounds ---------------------------------------------
 
-await import(path.join(here, "..", "scripts", "engine", "reel-audio.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-audio.js")).href);
 const RA = globalThis.ReelAudio;
 
 test("18: a pinned cue takes the place of the variant it replaces: every other cue keeps its sound", () => {

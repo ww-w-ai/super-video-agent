@@ -16,6 +16,7 @@ import { HEAD_SILENCE_SEC, TAIL_SILENCE_SEC } from "./lib/timing.mjs";
 import { withShortsRate, lineSpeed } from "./voice.mjs";
 import { GAP_MAX_SHARE, GAP_MAX_FLOOR_SEC } from "./lib/dub-fill.mjs";
 import { minBreathSecOf } from "./lib/dub-timing.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: validate-plan.mjs <reel-dir> [--estimate [--rate <units/s>] [--rate-from <timings.json>] [--lead <sec>] [--starts]] [--listener]
 
@@ -732,6 +733,6 @@ export function staleSayWarnings(plan) {
   return out;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

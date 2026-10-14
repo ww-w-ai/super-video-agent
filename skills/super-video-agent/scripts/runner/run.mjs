@@ -10,6 +10,7 @@ import { busyThreshold } from "./gpu-probe.mjs";
 import { validatePlan } from "./plan.mjs";
 import { verifyDone, sha256File, openStateStore, openStatusLog, dependentsOf, invalidate, snapshotScript, uniqueStamp } from "./stage-state.mjs";
 import { reportFor, formatReport } from "./cost-report.mjs";
+import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage: run.mjs <plan.json> [--check] [--redo <stage,stage>]
 
@@ -274,6 +275,6 @@ export async function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -2,9 +2,21 @@
 // new-reel.mjs). Never hot-links fonts — everything found here gets copied
 // into the reel's assets/fonts/ so @font-face can use relative URLs.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
-const FONT_DIRS = ["/Library/Fonts", path.join(process.env.HOME || "", "Library", "Fonts")];
+/** System and per-user font folders on this OS. */
+export function fontDirs(platform = process.platform, home = os.homedir(), env = process.env) {
+  if (platform === "darwin") return ["/Library/Fonts", path.join(home, "Library", "Fonts")];
+  if (platform === "win32") {
+    const win = env.WINDIR || env.SystemRoot || "C:\\Windows";
+    const local = env.LOCALAPPDATA || path.join(home, "AppData", "Local");
+    return [path.join(win, "Fonts"), path.join(local, "Microsoft", "Windows", "Fonts")];
+  }
+  return ["/usr/share/fonts", "/usr/local/share/fonts", path.join(home, ".local", "share", "fonts"), path.join(home, ".fonts")];
+}
+
+const FONT_DIRS = fontDirs();
 
 function listFontFiles() {
   const files = [];

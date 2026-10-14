@@ -11,6 +11,7 @@ import { openReel, captureFrame, seekTo, pixelDiff, stubSeconds, warmShotsOf, gl
 import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from "./lib/determinism.mjs";
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check] [--range <t0>-<t1> | --only <shotIds> | --world <key>]
 
@@ -498,6 +499,6 @@ export function warnOnCueDrift(dir, paths, { skip = false } = {}) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

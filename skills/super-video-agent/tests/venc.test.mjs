@@ -5,8 +5,29 @@ import os from "node:os";
 import path from "node:path";
 import {
   ffmpeg, resolveVideoEncoder, videoEncodeArgs, hwBitrate, hardwareCandidates, chooseVideoEncoder,
-  probeVideoEncoder, concatMp4, cutFrames,
+  probeVideoEncoder, concatMp4, cutFrames, encodeFailureReason, belowHardwareMinimum,
 } from "../scripts/lib/ffmpeg.mjs";
+
+test("NVENC below its smallest frame encodes with libx264; other encoders and full-size frames keep theirs", () => {
+  assert.equal(belowHardwareMinimum("hevc_nvenc", 128, 128), true);
+  assert.equal(belowHardwareMinimum("hevc_nvenc", 129, 33), false);
+  assert.equal(belowHardwareMinimum("h264_nvenc", 144, 48), true);
+  assert.equal(belowHardwareMinimum("h264_nvenc", 145, 49), false);
+  assert.equal(belowHardwareMinimum("hevc_videotoolbox", 32, 32), false);
+  assert.equal(belowHardwareMinimum("hevc_nvenc", undefined, undefined), false);
+  assert.deepEqual(videoEncodeArgs({ crf: 18, width: 64, height: 64, encoder: "hevc_nvenc" }).slice(0, 2), ["-c:v", "libx264"]);
+  assert.deepEqual(videoEncodeArgs({ width: 1920, height: 1080, encoder: "hevc_nvenc" }).slice(0, 2), ["-c:v", "hevc_nvenc"]);
+});
+
+test("a failed test encode reports the encoder's own complaint, not ffmpeg's last generic line", () => {
+  const stderr = [
+    "[h264_nvenc @ 0000018c] Driver does not support the required nvenc API version. Required: 13.1 Found: 12.2",
+    "[h264_nvenc @ 0000018c] The minimum required Nvidia driver for nvenc is 610.00 or newer",
+    "[out#0/null @ 0000018c] Nothing was written into output file, because at least one of its streams received no packets.",
+  ].join("\r\n");
+  assert.equal(encodeFailureReason(stderr), "Driver does not support the required nvenc API version. Required: 13.1 Found: 12.2");
+  assert.equal(encodeFailureReason("Unknown encoder 'h264_qsv'\n"), "Unknown encoder 'h264_qsv'");
+});
 import { decideSegmentReuse, decideLangUnprobed } from "../scripts/lib/segments.mjs";
 
 const never = () => {

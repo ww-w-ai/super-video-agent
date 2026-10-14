@@ -8,6 +8,7 @@ import { reelPaths, readJson, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
 import { draftsDir, reelStamp, slotProbeFrames, compareDraft } from "./lib/drafts.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: draft-check.mjs <reel-dir> [--out <json>]
 
@@ -77,6 +78,6 @@ export async function main(argv) {
   process.stdout.write(`wrote ${outPath}\n`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -1,19 +1,22 @@
 // Speech-to-text engines for the voice step's "did the voice say the line" check
 // (references/voice.md). Tools report facts; it never throws. An engine that was asked
 // for (SVA_STT_PYTHON or SVA_STT_ENGINE set) but cannot run at all — no Python, a Python
-// without mlx_whisper, an unknown engine — comes back `{failed: reason}` and the caller
+// without the engine's package, an unknown engine — comes back `{failed: reason}` and the caller
 // fails its step. With nothing configured, a missing engine, a model not downloaded or a
 // run that stops comes back `{skipped: reason}`.
 //
 // Engines (SVA_STT_ENGINE):
-//   mlx   (default) mlx-whisper through scripts/voice/py/stt_check.py. First pass with the
-//         small model on every line; only lines whose transcript is doubtful against the
-//         line's target text get a second pass with the turbo model.
-//   groq  Groq's hosted Whisper. Sent only when selected; the key is read from GROQ_API_KEY
-//         and is never logged. No key = skipped with one line.
+//   mlx             (default on macOS) mlx-whisper through scripts/voice/py/stt_check.py. First
+//                   pass with the small model on every line; only lines whose transcript is
+//                   doubtful against the line's target text get a second pass with the turbo model.
+//   faster-whisper  (default elsewhere) the same script, the same small -> turbo passes and the
+//                   same weights and decoding, run by faster-whisper: float16 on a CUDA GPU, int8
+//                   on CPU. On CPU it is several times slower than mlx; use it with a GPU.
+//   groq            Groq's hosted Whisper. Sent only when selected; the key is read from GROQ_API_KEY
+//                   and is never logged. No key = skipped with one line.
 //
 // Env: SVA_STT_MODEL (first pass, default "small"), SVA_STT_MODEL_RECHECK (default "turbo"),
-// SVA_STT_DOUBT_CER (default 0.15), SVA_STT_PYTHON (python with mlx-whisper),
+// SVA_STT_DOUBT_CER (default 0.15), SVA_STT_PYTHON (python with mlx-whisper or faster-whisper),
 // SVA_STT_GROQ_MODEL (default "whisper-large-v3-turbo").
 
 import fs from "node:fs";
@@ -37,14 +40,35 @@ const PROGRESS_POLL_MS = 500;
 const FRAME_SEC = 0.01;
 const DECODE_RETRIES = 2;
 const WAYS_OUT = "or use the hosted engine (SVA_STT_ENGINE=groq with GROQ_API_KEY), or turn the check off (voice.mjs --no-stt)";
-// Python could not start, or started without mlx_whisper: the engine is unusable, not a run that stopped.
-const NO_ENGINE_PATTERNS = [/failed to start/, /No module named ['"]?mlx_whisper/];
+// Python could not start, or started without the engine's package: the engine is unusable, not a run that stopped.
+const NO_ENGINE_PATTERNS = [/failed to start/, /No module named ['"]?(mlx_whisper|faster_whisper|ctranslate2)/];
+/** The Python package each local engine imports. */
+const ENGINE_PACKAGE = { mlx: "mlx-whisper", "faster-whisper": "faster-whisper" };
 
 /** mlx-whisper model aliases and the repos they stand for (stt_check.py MODELS is the same table). */
 export const MLX_MODEL_REPOS = {
   small: "mlx-community/whisper-small-mlx",
   turbo: "mlx-community/whisper-large-v3-turbo",
 };
+
+/** The same Whisper weights converted for faster-whisper (stt_check.py FW_MODELS is the same table). */
+export const FW_MODEL_REPOS = {
+  small: "Systran/faster-whisper-small",
+  turbo: "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+};
+
+/** The model table of a local engine. */
+export function modelRepos(engine) {
+  return engine === "faster-whisper" ? FW_MODEL_REPOS : MLX_MODEL_REPOS;
+}
+
+/**
+ * The local engine when SVA_STT_ENGINE is not set: mlx-whisper on macOS (Apple silicon), faster-whisper
+ * elsewhere (CUDA when there is an NVIDIA GPU). Both run the same weights with the same decoding.
+ */
+export function defaultEngine(platform = process.platform) {
+  return platform === "darwin" ? "mlx" : "faster-whisper";
+}
 
 /** The Hugging Face hub cache folder: HF_HUB_CACHE, else HF_HOME/hub, else ~/.cache/huggingface/hub. */
 function hubCacheDir(env) {
@@ -53,9 +77,9 @@ function hubCacheDir(env) {
   return path.join(os.homedir(), ".cache", "huggingface", "hub");
 }
 
-/** Whether an mlx model (alias or repo) is already on disk. No network. */
-export function mlxModelCached(model, env = process.env) {
-  const repo = MLX_MODEL_REPOS[model] || model;
+/** Whether a local engine's model (alias or repo) is already on disk. No network. */
+export function mlxModelCached(model, env = process.env, engine = "mlx") {
+  const repo = modelRepos(engine)[model] || model;
   if (fs.existsSync(repo) && fs.statSync(repo).isDirectory()) return true;
   const snapshots = path.join(hubCacheDir(env), `models--${repo.replaceAll("/", "--")}`, "snapshots");
   try {
@@ -127,14 +151,14 @@ function tailProgress(ctx, file, code, model) {
   };
 }
 
-/** One mlx-whisper run: the model loads once for every entry, progress is kept per line. */
+/** One local Whisper run (mlx or faster-whisper): the model loads once for every entry, progress is kept per line. */
 async function mlxPass(ctx, python, entries, code, model, { tail = false } = {}) {
   const jobDir = fs.mkdtempSync(path.join(ctx.voiceDir, `.stt-${uniqueTag()}-`));
   const jobPath = path.join(jobDir, "lines.json");
   const progress = path.join(jobDir, "progress.json");
   fs.writeFileSync(jobPath, JSON.stringify(entries.map(({ id, wav }) => ({ id, wav }))), "utf8");
   const stopTail = tail ? tailProgress(ctx, progress, code, model) : null;
-  const env = { HF_HUB_OFFLINE: "1", SVA_STT_LANG: code, SVA_STT_MODEL: model, SVA_STT_PROGRESS: progress };
+  const env = { HF_HUB_OFFLINE: "1", SVA_STT_BACKEND: ctx.engine, SVA_STT_LANG: code, SVA_STT_MODEL: model, SVA_STT_PROGRESS: progress };
   try {
     const { stdout } = await withRetry(() => ctx.run(python, [STT_SCRIPT, ctx.voiceDir, jobPath], env), {
       isRetryable: isTransientDecodeError,
@@ -149,7 +173,8 @@ async function mlxPass(ctx, python, entries, code, model, { tail = false } = {})
     }
     const why = message.split("\n").find((l) => NO_ENGINE_PATTERNS.some((re) => re.test(l)));
     if (why) {
-      return { failed: `STT Python ${python} cannot run mlx-whisper (${why.trim()}): install mlx-whisper there, point SVA_STT_PYTHON at a Python that has it, ${WAYS_OUT}`, noEngine: true };
+      const pkg = ENGINE_PACKAGE[ctx.engine];
+      return { failed: `STT Python ${python} cannot run ${pkg} (${why.trim()}): install ${pkg} there, point SVA_STT_PYTHON at a Python that has it, ${WAYS_OUT}`, noEngine: true };
     }
     return { ...fromArray(readProgress(progress)), failed: `stt check failed to run (${safeMessage(e)})` };
   } finally {
@@ -193,9 +218,9 @@ async function recheckDoubtful(ctx, python, group, code, first) {
 async function runMlx(ctx, group, code) {
   const python = ctx.deps.pythonPath || ctx.env.SVA_STT_PYTHON || null;
   if (!python && ctx.configured) {
-    return { failed: `STT was asked for (SVA_STT_ENGINE=${ctx.engine}) but no Python is set: set SVA_STT_PYTHON to a Python with mlx-whisper installed (node scripts/setup.mjs shows how), ${WAYS_OUT}`, noEngine: true };
+    return { failed: `STT was asked for (SVA_STT_ENGINE=${ctx.engine}) but no Python is set: set SVA_STT_PYTHON to a Python with ${ENGINE_PACKAGE[ctx.engine]} installed (node scripts/setup.mjs shows how), ${WAYS_OUT}`, noEngine: true };
   }
-  if (!python) return { skipped: "no python found (set SVA_STT_PYTHON to a Python with mlx-whisper installed)" };
+  if (!python) return { skipped: `no python found (set SVA_STT_PYTHON to a Python with ${ENGINE_PACKAGE[ctx.engine]} installed)` };
   const firstModel = ctx.env.SVA_STT_MODEL || DEFAULT_FIRST_MODEL;
   const first = await mlxPass(ctx, python, group, code, firstModel, { tail: true });
   if (first.skipped || first.failed) return first;
@@ -285,7 +310,7 @@ async function runGroq(ctx, group, code) {
   return { results, words, models };
 }
 
-const ENGINES = { mlx: runMlx, groq: runGroq };
+const ENGINES = { mlx: runMlx, "faster-whisper": runMlx, groq: runGroq };
 
 /**
  * Transcribe `entries` ({id, wav, langCode?, text?, say?, names?}; wav relative to
@@ -304,11 +329,10 @@ const ENGINES = { mlx: runMlx, groq: runGroq };
  */
 export async function sttTranscribe(voiceDir, entries, langCode, deps = {}) {
   const env = deps.env || process.env;
-  const engine = String(env.SVA_STT_ENGINE || "mlx").toLowerCase();
+  const engine = String(env.SVA_STT_ENGINE || defaultEngine(deps.platform)).toLowerCase();
   const runner = ENGINES[engine];
   if (!runner) {
-    const what = engine === "faster-whisper" ? "faster-whisper is no longer supported" : `unknown STT engine "${engine}"`;
-    return { failed: `${what} (SVA_STT_ENGINE: mlx or groq) — set SVA_STT_ENGINE=mlx with SVA_STT_PYTHON, ${WAYS_OUT}` };
+    return { failed: `unknown STT engine "${engine}" (SVA_STT_ENGINE: mlx, faster-whisper or groq) — set SVA_STT_ENGINE=${defaultEngine(deps.platform)} with SVA_STT_PYTHON, ${WAYS_OUT}` };
   }
   if (!entries.length) return { results: new Map(), words: new Map() };
   const configured = Boolean(env.SVA_STT_PYTHON || env.SVA_STT_ENGINE || deps.pythonPath);

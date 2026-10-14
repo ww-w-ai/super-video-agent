@@ -14,6 +14,7 @@ import { reportLineFill, formatFillWarnings } from "./lib/dub-fill.mjs";
 import { MAX_SPEED_DEFAULT, trimVoiceClips, shiftForTrim, fitOrThrow, fitDraft, formatDraftOverflow, placeLineClips, buildNarrationTrack } from "./lib/fit-track.mjs";
 import { measureNarrationGaps, formatSilenceReport, pictureGapPlan } from "./lib/silence-gate.mjs";
 import { measureNarrationCuts, formatCutReport } from "./lib/audio-analysis.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: fit-track.mjs --timings <picture.timings.json> --voice <voice-dir> --out <track.wav> [--video <picture.mp4>] [--plan <plan.json>] [--max-speed <x>] [--draft]
 
@@ -108,6 +109,6 @@ export async function fitTrack({ timingsPath, voiceDir, outPath, videoPath = nul
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { ffmpeg, ffprobe, chooseVideoEncoder } from "../scripts/lib/ffmpeg.mjs";
 import { splitIntendedHolds } from "../scripts/lib/dead-air.mjs";
@@ -167,7 +168,7 @@ window.__reel = { width: 300, height: 200, fps: 10, duration: 1, ready: Promise.
   fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify({ meta: { lang: "en" }, lines: [{ id: "l1", text: "Hi" }] }));
   fs.mkdirSync(path.join(dir, "dub", "ko"), { recursive: true });
   fs.writeFileSync(path.join(dir, "dub", "ko", "plan.json"), JSON.stringify({ meta: { lang: "ko" }, lines: [{ id: "l1", text: "안녕" }] }));
-  const script = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "scripts", "state-checks.mjs");
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "state-checks.mjs");
   const r = spawnSync(process.execPath, [script, dir, "--no-source"], { encoding: "utf8" });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.stdout, /label or overlay over key content: 1\n  badge over chart: 0\.000–1\.000 s, 200 px²/);
@@ -177,7 +178,7 @@ window.__reel = { width: 300, height: 200, fps: 10, duration: 1, ready: Promise.
   assert.match(r.stdout, /glyph fallback: checked nothing/);
 });
 
-const STATE_SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "scripts", "state-checks.mjs");
+const STATE_SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "state-checks.mjs");
 const SERIF_TTF = ["/System/Library/Fonts/Supplemental/Times New Roman.ttf", "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf"].find((f) => fs.existsSync(f));
 
 /** A one-page reel whose captions use a webfont served from the reel dir, plus plans for en and ko. */

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { synthesizeAll, main } from "../scripts/voice.mjs";
 import { reelPaths, readJson } from "../scripts/lib/reeldir.mjs";
 import { ffmpeg } from "../scripts/lib/ffmpeg.mjs";
@@ -136,8 +136,8 @@ test("6: --pick installs the picked take while a new line has no audio yet, and 
 
 // --- 7, 8: layout gates ---------------------------------------------------------------------
 
-await import(path.join(here, "..", "scripts", "engine", "reel-engine.js"));
-await import(path.join(here, "..", "scripts", "engine", "reel-layout.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-engine.js")).href);
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-layout.js")).href);
 const Reel = globalThis.Reel;
 const RL = globalThis.ReelLayout;
 const measure = (s) => s.length * 10;
@@ -235,7 +235,7 @@ test("8: drawLog reports a highlight drawn before its target, and one whose targ
 
 // --- 9: kit effects ---------------------------------------------------------------------------
 
-await import(path.join(here, "..", "scripts", "engine", "reel-audio.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-audio.js")).href);
 const RA = globalThis.ReelAudio;
 const SR = 48000;
 const sameBuf = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);

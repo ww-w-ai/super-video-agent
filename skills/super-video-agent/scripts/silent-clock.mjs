@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson, readJson } from "./lib/reeldir.mjs";
 import { buildClock, realVoiceIn, writeSilentWav } from "./lib/silent-clock.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: silent-clock.mjs <reel-dir> --timeline <timeline.json> [--fps <n>] [--force]
 
@@ -45,6 +46,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

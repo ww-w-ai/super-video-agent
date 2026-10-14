@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { scaffold, findThree, installThreeVendor, threeInstallSteps } from "../scripts/new-reel.mjs";
 import { serveDir } from "../scripts/lib/server.mjs";
 import { openReel } from "../scripts/lib/browser.mjs";
@@ -15,7 +15,7 @@ import { scanReelHtml } from "../scripts/lib/static-scan.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.join(here, "..");
-await import(path.join(SKILL, "scripts", "engine", "reel-engine.js"));
+await import(pathToFileURL(path.join(SKILL, "scripts", "engine", "reel-engine.js")).href);
 const Reel = globalThis.Reel;
 
 const hasBrowser = fs.existsSync(path.join(SKILL, "node_modules", "playwright-core", "index.mjs"));

@@ -10,6 +10,7 @@ import { measureWordOnsets, OFFSET_REPORT_SEC } from "./lib/word-onsets.mjs";
 import { checkWordCues, formatCueWarnings, checkPageMarks, formatPageCues } from "./lib/cue-check.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel } from "./lib/browser.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: cue-check.mjs <reel-dir> [--threshold <ms>] [--out <json>] [--page | --marks <json>]
 
@@ -93,6 +94,6 @@ async function readMarks(flags, root) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

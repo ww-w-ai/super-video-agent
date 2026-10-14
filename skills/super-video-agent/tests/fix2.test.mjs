@@ -10,6 +10,7 @@ import { sceneSpanVerdict, sceneSpanNote, sameLanguageTag } from "../scripts/dub
 import { analyzeCaptionFrame, formatContrastReport } from "../scripts/lib/caption-contrast.mjs";
 import {
   acquireSlot, readSlot, readTickets, releaseDeadSlot, pidAlive, procStartTime, stopLeftoverGroup,
+  currentUid,
 } from "../scripts/runner/lock.mjs";
 import { idleSamples } from "../scripts/runner/gpu-probe.mjs";
 import { ttsUsageFor, reportFor, formatReport } from "../scripts/runner/cost-report.mjs";
@@ -115,7 +116,7 @@ test("a frame with only a caption is one region and keeps the old fields", () =>
 
 function slotWith(dir, owner) {
   fs.mkdirSync(path.join(dir, "slot"), { recursive: true });
-  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ uid: process.getuid(), since: Date.now(), ...owner }));
+  fs.writeFileSync(path.join(dir, "slot", "owner.json"), JSON.stringify({ uid: currentUid(), since: Date.now(), ...owner }));
 }
 
 test("a live pid with another start time is dead: owner, ticket and pidAlive agree", () => {
@@ -151,14 +152,14 @@ test("the leftover group is killed only when its leader's start time matches the
   await until(() => procStartTime(child.pid));
   const events = [];
   const emit = (type, text) => events.push([type, text]);
-  const wrong = { uid: process.getuid(), childPgid: child.pid, childStart: "Thu Jan 1 00:00:00 1970" };
+  const wrong = { uid: currentUid(), childPgid: child.pid, childStart: "Thu Jan 1 00:00:00 1970" };
   assert.equal(stopLeftoverGroup(wrong, emit), false);
   assert.equal(events[0][0], "skip-group-kill");
   assert.match(events[0][1], /reused/);
-  assert.equal(stopLeftoverGroup({ uid: process.getuid(), childPgid: child.pid }, emit), false);
+  assert.equal(stopLeftoverGroup({ uid: currentUid(), childPgid: child.pid }, emit), false);
   assert.match(events[1][1], /no start time/);
   assert.equal(pidAlive(child.pid), true, "both refusals left the process alone");
-  assert.equal(stopLeftoverGroup({ uid: process.getuid(), childPgid: child.pid, childStart: procStartTime(child.pid) }, emit), true);
+  assert.equal(stopLeftoverGroup({ uid: currentUid(), childPgid: child.pid, childStart: procStartTime(child.pid) }, emit), true);
   await until(() => !pidAlive(child.pid));
 });
 

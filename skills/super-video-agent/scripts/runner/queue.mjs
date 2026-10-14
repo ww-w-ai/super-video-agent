@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
 import { defaultLockDir, assertSafeLockDir, readTickets, readSlot, stopLeftoverGroup } from "./lock.mjs";
+import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage:
   queue.mjs list [--dir <lock-dir>] [--older-than <hours>] [--json]
@@ -114,6 +115,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

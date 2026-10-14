@@ -6,6 +6,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson } from "./lib/reeldir.mjs";
 import { measureLoudness } from "./lib/audio-analysis.mjs";
 import { mixOffset, medianLufs, formatMixLevel } from "./lib/mix-level.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: mix-level.mjs <reel-dir> [--under <dB>] [--bed <wav>] [--line <id> | --voice-lufs <n>] [--out <json>]
 
@@ -67,6 +68,6 @@ export async function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

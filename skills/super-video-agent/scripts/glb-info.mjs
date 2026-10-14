@@ -6,6 +6,7 @@
 // never loads three.js.
 import fs from "node:fs";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: glb-info.mjs <file.glb|file.gltf> [--json]
 
@@ -174,6 +175,6 @@ export function formatGlbInfo(info) {
   return out.join("\n") + "\n";
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

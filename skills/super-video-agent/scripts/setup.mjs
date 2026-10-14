@@ -6,9 +6,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
-import { mlxModelCached, MLX_MODEL_REPOS } from "./lib/stt-engine.mjs";
+import { mlxModelCached, modelRepos, defaultEngine } from "./lib/stt-engine.mjs";
 import { gpuReport } from "./lib/browser.mjs";
 import { chooseVideoEncoder } from "./lib/ffmpeg.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: setup.mjs [--check] [--stt-models] [--dir <reel>]
 
@@ -34,13 +35,13 @@ works; hw, hevc, h264 = that hardware or not ready; sw = libx264) and why.
 --check        report what is missing without installing anything.
 --dir <reel>   measure the free disk of <reel>/out (where renders write). Without
                it the current folder is measured and the output says so.
---stt-models   download the mlx-whisper models (small, turbo) into the Hugging
+--stt-models   download the speech-to-text models (small, turbo) into the Hugging
                Face cache with the Python in SVA_STT_PYTHON. The only step
                that fetches models; several hundred MB to a few GB.
                Ignored with --check.
 Exits 0 when everything is ready, 1 otherwise.
 
-Both modes also list the speech-to-text engines (mlx-whisper, groq) and which
+Both modes also list the speech-to-text engines (mlx-whisper on macOS, faster-whisper elsewhere; groq) and which
 models are already downloaded. That list is information only: it never
 changes the exit code and nothing is downloaded to produce it. An API key is
 reported as set or not set, never printed.
@@ -216,9 +217,22 @@ export function encoderReport(choose = chooseVideoEncoder) {
 }
 
 const MLX_INSTALL_ROUTE = "on Apple silicon macOS, in a venv: `python3 -m venv <dir>` then `<dir>/bin/pip install mlx-whisper` (Python 3.11 is a verified version; use a Python version the mlx wheels list for your machine), then SVA_STT_PYTHON=<dir>/bin/python and `setup.mjs --stt-models`";
+const FW_INSTALL_ROUTE = "in a venv: `python -m venv <dir>` then `<dir>/Scripts/pip install faster-whisper nvidia-cublas-cu12 nvidia-cudnn-cu12==9.*` (`<dir>/bin/pip` on Linux; the two nvidia packages give it the CUDA GPU, Python 3.11 is a verified version), then SVA_STT_PYTHON=<dir>/Scripts/python.exe (`<dir>/bin/python` on Linux) and `setup.mjs --stt-models`";
 
-function importsMlxWhisper(python) {
-  return spawnSync(python, ["-c", "import mlx_whisper"], { stdio: "ignore" }).status === 0;
+/** Per local engine: its package, the module that proves it is installed, its install route. */
+const LOCAL_ENGINES = {
+  mlx: { label: "mlx-whisper", module: "mlx_whisper", route: MLX_INSTALL_ROUTE },
+  "faster-whisper": { label: "faster-whisper", module: "faster_whisper", route: FW_INSTALL_ROUTE },
+};
+
+function importsModule(python, module) {
+  return spawnSync(python, ["-c", `import ${module}`], { stdio: "ignore" }).status === 0;
+}
+
+/** The local engine `setup` reports and downloads models for: SVA_STT_ENGINE when it names one, else the platform's default. */
+function localEngine(env, platform) {
+  const asked = String(env.SVA_STT_ENGINE || "").toLowerCase();
+  return LOCAL_ENGINES[asked] ? asked : defaultEngine(platform);
 }
 
 /**
@@ -226,32 +240,39 @@ function importsMlxWhisper(python) {
  * models are on disk. Information only — nothing is installed or downloaded, and
  * an API key is reported as set or not, never printed.
  * @param {Record<string,string|undefined>} env
- * @param {(python:string)=>boolean} [probe] whether `python` imports mlx_whisper (tests replace it)
+ * @param {(python:string, module:string)=>boolean} [probe] whether `python` imports the module (tests replace it)
+ * @param {string} [platform]
  * @returns {string[]}
  */
-export function sttReport(env, probe = importsMlxWhisper) {
+export function sttReport(env, probe = importsModule, platform = process.platform) {
+  const engine = localEngine(env, platform);
+  const { label, module, route } = LOCAL_ENGINES[engine];
   const python = env.SVA_STT_PYTHON;
-  const mlx = !python
-    ? "not ready: SVA_STT_PYTHON is not set (a Python with mlx-whisper installed)"
-    : probe(python) ? "ready (SVA_STT_PYTHON imports mlx_whisper)" : "not ready: SVA_STT_PYTHON cannot import mlx_whisper";
-  const models = Object.keys(MLX_MODEL_REPOS).map((m) => `${m} ${mlxModelCached(m, env) ? "downloaded" : "not downloaded"}`);
+  const state = !python
+    ? `not ready: SVA_STT_PYTHON is not set (a Python with ${label} installed)`
+    : probe(python, module) ? `ready (SVA_STT_PYTHON imports ${module})` : `not ready: SVA_STT_PYTHON cannot import ${module}`;
+  const models = Object.keys(modelRepos(engine)).map((m) => `${m} ${mlxModelCached(m, env, engine) ? "downloaded" : "not downloaded"}`);
   return [
     "speech-to-text engines (optional; the voice check is skipped when none is ready):",
-    `  mlx-whisper: ${mlx}`,
-    ...(mlx.startsWith("ready") ? [] : [`  mlx-whisper install route: ${MLX_INSTALL_ROUTE}`]),
-    `  mlx-whisper models: ${models.join(", ")}`,
+    `  ${label}: ${state}`,
+    ...(state.startsWith("ready") ? [] : [`  ${label} install route: ${route}`]),
+    `  ${label} models: ${models.join(", ")}`,
     `  groq: ${env.GROQ_API_KEY ? "key set (used only with SVA_STT_ENGINE=groq)" : "no key (GROQ_API_KEY is not set)"}`,
   ];
 }
 
-/** Downloads the mlx-whisper models with SVA_STT_PYTHON. True when every model arrived. */
-function installSttModels(env) {
+/** Downloads the local engine's models with SVA_STT_PYTHON. True when every model arrived. */
+function installSttModels(env, platform = process.platform) {
   if (!env.SVA_STT_PYTHON) return false;
-  console.log("downloading mlx-whisper models (several hundred MB to a few GB) …");
-  const code = "import sys; from huggingface_hub import snapshot_download as d; [d(r) for r in sys.argv[1:]]";
+  const engine = localEngine(env, platform);
+  console.log(`downloading ${LOCAL_ENGINES[engine].label} models (several hundred MB to a few GB) …`);
+  // faster-whisper fetches only the files it loads; its own downloader keeps the cache the way it reads it.
+  const code = engine === "faster-whisper"
+    ? "import sys; from faster_whisper.utils import download_model as d; [d(r) for r in sys.argv[1:]]"
+    : "import sys; from huggingface_hub import snapshot_download as d; [d(r) for r in sys.argv[1:]]";
   const childEnv = { ...env };
   delete childEnv.HF_HUB_OFFLINE;
-  return spawnSync(env.SVA_STT_PYTHON, ["-c", code, ...Object.values(MLX_MODEL_REPOS)], { stdio: "inherit", env: childEnv }).status === 0;
+  return spawnSync(env.SVA_STT_PYTHON, ["-c", code, ...Object.values(modelRepos(engine))], { stdio: "inherit", env: childEnv }).status === 0;
 }
 
 function nodeIsRecent() {
@@ -292,6 +313,6 @@ function run(cmd, args) {
   return spawnSync(cmd, args, { stdio: "inherit" }).status === 0;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

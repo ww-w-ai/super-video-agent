@@ -8,6 +8,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { readJson, writeJson } from "./lib/reeldir.mjs";
 import { buildSchedule, scheduleLines, STEP_SEC_DEFAULT, THRESHOLD_DEFAULT, RATE_HZ_DEFAULT } from "./lib/mouth.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: mouth.mjs <reel-dir> [--dub <code>] [--timings <file>] [--voice <dir>] [--mode amplitude|steady]
                  [--step <sec>] [--threshold <0-1>] [--rate <hz>] [--out <json>]
@@ -67,6 +68,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

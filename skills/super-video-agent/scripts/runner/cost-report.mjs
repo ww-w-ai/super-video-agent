@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
+import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage: cost-report.mjs <film-dir> [--results <dir>] [--json]
 
@@ -196,6 +197,6 @@ export function main(argv) {
   process.stdout.write(flags.json ? JSON.stringify(agg) + "\n" : formatReport(agg));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

@@ -42,6 +42,7 @@ import {
 } from "./lib/segments.mjs";
 import { clipVersusPage } from "./lib/segment-verify.mjs";
 import { draftsDir, draftSpan, draftSidecar, slotCut, reelStamp, slotProbeFrames, compareDraft } from "./lib/drafts.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
                  [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
@@ -2419,6 +2420,6 @@ function sfxDuckDbFor(dir) {
   return sfxDuckDbFromPlan(loadPlan(dir));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

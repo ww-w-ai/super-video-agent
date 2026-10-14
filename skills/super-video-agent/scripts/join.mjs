@@ -21,6 +21,7 @@ import {
   meanAbsDiff,
   formatReport,
 } from "./lib/join-report.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: join.mjs <out.mp4> <part1> <part2> [...] [--json]
 
@@ -237,6 +238,6 @@ async function seamFrames(outPath, joinFrame, fps) {
   return stdout.length >= 2 * size ? { before: stdout.subarray(0, size), after: stdout.subarray(size, 2 * size) } : null;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

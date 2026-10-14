@@ -44,7 +44,7 @@ test("T1: an unknown or retired engine is a failure (it can only come from SVA_S
   assert.match(other.failed, /unknown STT engine "nope"/);
   assert.match(other.failed, /--no-stt/);
   const faster = await sttTranscribe(NOWHERE, ENTRY, "ko", { env: { SVA_STT_ENGINE: "faster-whisper" }, ...quiet });
-  assert.match(faster.failed, /no longer supported/);
+  assert.match(faster.failed, /no Python is set/);
 });
 
 test("T1: SVA_STT_ENGINE=groq without GROQ_API_KEY fails and names the key, SVA_STT_PYTHON and --no-stt", async () => {
@@ -68,7 +68,7 @@ test("T2: SVA_STT_PYTHON without mlx_whisper fails, with and without allowPartia
   const run = async () => {
     throw new Error("/py stt_check.py exited 1\nTraceback (most recent call last):\nModuleNotFoundError: No module named 'mlx_whisper'");
   };
-  const env = { SVA_STT_PYTHON: "/py" };
+  const env = { SVA_STT_ENGINE: "mlx", SVA_STT_PYTHON: "/py" };
   const plain = await sttTranscribe(NOWHERE, ENTRY, "ko", { env, runPythonBatch: run, ...quiet });
   assert.equal(plain.skipped, undefined);
   assert.match(plain.failed, /cannot run mlx-whisper/);
@@ -81,7 +81,7 @@ test("T2: SVA_STT_PYTHON without mlx_whisper fails, with and without allowPartia
 });
 
 test("T2: SVA_STT_PYTHON that does not start (ENOENT) fails", async () => {
-  const res = await sttTranscribe(NOWHERE, ENTRY, "ko", { env: { SVA_STT_PYTHON: path.join(NOWHERE, "no-such-python") }, ...quiet });
+  const res = await sttTranscribe(NOWHERE, ENTRY, "ko", { env: { SVA_STT_ENGINE: "mlx", SVA_STT_PYTHON: path.join(NOWHERE, "no-such-python") }, ...quiet });
   assert.match(res.failed, /cannot run mlx-whisper/);
   assert.match(res.failed, /failed to start/);
 });

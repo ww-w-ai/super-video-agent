@@ -4,10 +4,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-await import(path.join(here, "..", "scripts", "engine", "reel-audio.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-audio.js")).href);
 const ReelAudio = globalThis.ReelAudio;
 const SR = 48000;
 

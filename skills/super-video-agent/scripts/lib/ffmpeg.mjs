@@ -333,11 +333,22 @@ function hardwareArgs(name, width, height) {
  * @param {{crf?: number, preset?: string, width?: number, height?: number, encoder?: string}} opts encoder defaults to chooseVideoEncoder().name
  */
 export function videoEncodeArgs({ crf, preset, width, height, encoder = chooseVideoEncoder().name }) {
-  if (encoder === SW_ENCODER) {
+  if (encoder === SW_ENCODER || belowHardwareMinimum(encoder, width, height)) {
     return ["-c:v", SW_ENCODER, ...(crf === undefined ? [] : ["-crf", String(crf)]), ...(preset ? ["-preset", preset] : []), "-pix_fmt", "yuv420p"];
   }
   if (!KNOWN_ENCODERS.has(encoder)) throw new Error(`unknown video encoder ${encoder}`);
   return hardwareArgs(encoder, width, height);
+}
+
+// Smallest frame NVENC opens (measured on an RTX 3050, driver 617): below it the encoder refuses
+// with "Frame dimensions are less than the minimum supported value".
+const NVENC_MIN = { hevc: [129, 33], h264: [145, 49] };
+
+/** Whether width x height is too small for this hardware encoder, so the encode goes to libx264. */
+export function belowHardwareMinimum(encoder, width, height) {
+  if (!encoder.endsWith("_nvenc") || !width || !height) return false;
+  const [w, h] = NVENC_MIN[codecOf(encoder)] || [0, 0];
+  return width < w || height < h;
 }
 
 /**
@@ -387,8 +398,18 @@ function ffmpegTestEncode(name) {
     { encoding: "utf8", timeout: PROBE_TIMEOUT_MS }
   );
   if (r.status === 0) return null;
-  const lines = String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split("\n");
-  return lines[lines.length - 1];
+  return encodeFailureReason(String(r.stderr || r.error?.message || `exit ${r.status}`));
+}
+
+/**
+ * The line of a failed encode that says why. ffmpeg's last line is usually the generic
+ * "Nothing was written into output file"; the encoder's own first complaint (an old driver,
+ * a missing device) comes earlier, so prefer the first line the encoder itself printed.
+ */
+export function encodeFailureReason(stderr) {
+  const lines = stderr.trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const own = lines.find((l) => /^\[(h264|hevc)_\w+ @/.test(l));
+  return (own || lines[lines.length - 1] || "").replace(/^\[[^\]]*\]\s*/, "");
 }
 
 let chosenEncoder = null;

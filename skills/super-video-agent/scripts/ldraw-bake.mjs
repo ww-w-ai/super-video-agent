@@ -5,6 +5,7 @@ import path from "node:path";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { writeJson } from "./lib/reeldir.mjs";
 import { bakeModel } from "./lib/ldraw-bake.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: ldraw-bake.mjs <model.mpd|model.ldr> --lib <parts-folder> --out <dir> [--until <n>] [--classes <json>] [--detail]
 
@@ -73,6 +74,6 @@ export function main(argv) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }

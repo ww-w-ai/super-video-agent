@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const enginePath = path.join(here, "..", "scripts", "engine", "reel-engine.js");
-await import(enginePath);
+await import(pathToFileURL(enginePath).href);
 const Reel = globalThis.Reel;
 
 test("hash: deterministic for the same string", () => {

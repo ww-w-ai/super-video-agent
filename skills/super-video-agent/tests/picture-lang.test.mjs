@@ -5,14 +5,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "../scripts/lib/cli.mjs";
 import { decideLangSegment, neighbourIds } from "../scripts/lib/segments.mjs";
 import { pictureUrl, segmentDirFor, pictureStem, picturePayload, isLangCode } from "../scripts/render.mjs";
 import { pickPictureFiles } from "../scripts/dub.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-await import(path.join(here, "..", "scripts", "engine", "reel-engine.js"));
+await import(pathToFileURL(path.join(here, "..", "scripts", "engine", "reel-engine.js")).href);
 const Reel = globalThis.Reel;
 
 // ---- Reel.pictureText / Reel.lang ----------------------------------------

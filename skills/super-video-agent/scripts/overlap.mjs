@@ -8,6 +8,7 @@ import { reelPaths, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, seekTo, stubSeconds } from "./lib/browser.mjs";
 import { checkHookResult, overlapSpans, formatSpans } from "./lib/overlap.mjs";
+import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: overlap.mjs <reel-dir> [--step <frames>] [--out <json>] [--stub <sec>]
 
@@ -78,6 +79,6 @@ async function sample(page, fps, duration, step) {
   return samples;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain(import.meta.url)) {
   main(process.argv.slice(2));
 }
