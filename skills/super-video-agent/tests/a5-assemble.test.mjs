@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { render, frameHashes, staleTempNames, removeStaleTemps, spliceSpanPieces, checkPicturePair, verifyInsertedSpan, summaryLine, reportGl } from "../scripts/render.mjs";
 import { noteGlMessage } from "../scripts/lib/browser.mjs";
@@ -17,7 +18,7 @@ import { reelPaths } from "../scripts/lib/reeldir.mjs";
 import { main as joinMain } from "../scripts/join.mjs";
 
 const FPS = 30;
-const SCRIPT = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "scripts", "render.mjs");
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "render.mjs");
 const tmp = (p = "sva-a5-") => fs.mkdtempSync(path.join(os.tmpdir(), p));
 
 // ---- pure logic ---------------------------------------------------------

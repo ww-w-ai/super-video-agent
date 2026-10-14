@@ -5,8 +5,19 @@ import os from "node:os";
 import path from "node:path";
 import {
   ffmpeg, resolveVideoEncoder, videoEncodeArgs, hwBitrate, hardwareCandidates, chooseVideoEncoder,
-  probeVideoEncoder, concatMp4, cutFrames, encodeFailureReason,
+  probeVideoEncoder, concatMp4, cutFrames, encodeFailureReason, belowHardwareMinimum,
 } from "../scripts/lib/ffmpeg.mjs";
+
+test("NVENC below its smallest frame encodes with libx264; other encoders and full-size frames keep theirs", () => {
+  assert.equal(belowHardwareMinimum("hevc_nvenc", 128, 128), true);
+  assert.equal(belowHardwareMinimum("hevc_nvenc", 129, 33), false);
+  assert.equal(belowHardwareMinimum("h264_nvenc", 144, 48), true);
+  assert.equal(belowHardwareMinimum("h264_nvenc", 145, 49), false);
+  assert.equal(belowHardwareMinimum("hevc_videotoolbox", 32, 32), false);
+  assert.equal(belowHardwareMinimum("hevc_nvenc", undefined, undefined), false);
+  assert.deepEqual(videoEncodeArgs({ crf: 18, width: 64, height: 64, encoder: "hevc_nvenc" }).slice(0, 2), ["-c:v", "libx264"]);
+  assert.deepEqual(videoEncodeArgs({ width: 1920, height: 1080, encoder: "hevc_nvenc" }).slice(0, 2), ["-c:v", "hevc_nvenc"]);
+});
 
 test("a failed test encode reports the encoder's own complaint, not ffmpeg's last generic line", () => {
   const stderr = [
