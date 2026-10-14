@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { sttTranscribe, sttTranscribeLeveled, isDoubtful, mlxModelCached } from "../scripts/lib/stt-engine.mjs";
+import { sttTranscribe, sttTranscribeLeveled, isDoubtful, mlxModelCached, defaultEngine } from "../scripts/lib/stt-engine.mjs";
 import { cer, compareLine, normalize, pronounceFolds } from "../scripts/lib/stt-compare.mjs";
 import { normalizeNumbers } from "../scripts/lib/stt-numbers.mjs";
 import { ZH_HANT_TO_HANS, hantToHans, kataToHira } from "../scripts/lib/stt-script-fold.mjs";
@@ -93,14 +93,48 @@ test("N7: a model that is not downloaded skips the check with a pointer to setup
   assert.match(res.skipped, /setup\.mjs --stt-models/);
 });
 
-test("N7: faster-whisper is gone; an unknown engine fails; no python with nothing configured is skipped", async () => {
+test("N7: an unknown engine fails; faster-whisper asked for without a Python fails naming it; no python with nothing configured is skipped", async () => {
   const faster = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: { SVA_STT_ENGINE: "faster-whisper" }, ...quiet });
-  assert.match(faster.failed, /no longer supported/);
+  assert.match(faster.failed, /SVA_STT_PYTHON to a Python with faster-whisper/);
   const other = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: { SVA_STT_ENGINE: "nope" }, ...quiet });
   assert.match(other.failed, /unknown STT engine/);
   const noPython = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "ko", { env: {}, ...quiet });
   assert.match(noPython.skipped, /SVA_STT_PYTHON/);
-  assert.doesNotMatch(fs.readFileSync(STT_PY, "utf8"), /faster_whisper/);
+});
+
+test("faster-whisper: default off macOS, mlx on macOS; the run passes the backend and the same small -> turbo passes", async () => {
+  assert.equal(defaultEngine("darwin"), "mlx");
+  assert.equal(defaultEngine("win32"), "faster-whisper");
+  assert.equal(defaultEngine("linux"), "faster-whisper");
+  const backends = [];
+  const models = [];
+  const run = async (_py, _args, env) => {
+    backends.push(env.SVA_STT_BACKEND);
+    models.push(env.SVA_STT_MODEL);
+    const heard = env.SVA_STT_MODEL === "small" ? "yellow bird" : "hello world";
+    return { stdout: JSON.stringify([{ id: "l1", heard, words: [] }]) };
+  };
+  const res = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav", text: "hello world" }], "en", { pythonPath: "/fake", runPythonBatch: run, env: {}, platform: "win32", ...quiet });
+  assert.deepEqual(backends, ["faster-whisper", "faster-whisper"]);
+  assert.deepEqual(models, ["small", "turbo"]);
+  assert.equal(res.results.get("l1"), "hello world");
+  assert.equal(res.models.get("l1"), "turbo");
+  const mac = [];
+  await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "en", { pythonPath: "/fake", runPythonBatch: async (_p, _a, env) => (mac.push(env.SVA_STT_BACKEND), { stdout: "[]" }), env: {}, platform: "darwin", ...quiet });
+  assert.deepEqual(mac, ["mlx"]);
+});
+
+test("faster-whisper: a Python without the package fails naming faster-whisper", async () => {
+  const run = async () => { throw new Error("python exited 1: ModuleNotFoundError: No module named 'faster_whisper'"); };
+  const res = await sttTranscribe(NOWHERE, [{ id: "l1", wav: "a.wav" }], "en", { pythonPath: "/fake", runPythonBatch: run, env: { SVA_STT_ENGINE: "faster-whisper" }, ...quiet });
+  assert.match(res.failed, /cannot run faster-whisper/);
+});
+
+test("faster-whisper: stt_check.py mirrors mlx decoding (greedy, temperature fallback, no previous-text conditioning)", () => {
+  const py = fs.readFileSync(STT_PY, "utf8");
+  for (const re of [/"beam_size": 1/, /"best_of": 1/, /"condition_on_previous_text": False/, /"word_timestamps": True/, /"temperature": \[0\.0, 0\.2, 0\.4, 0\.6, 0\.8, 1\.0\]/, /Systran\/faster-whisper-small/, /faster-whisper-large-v3-turbo/]) {
+    assert.match(py, re);
+  }
 });
 
 test("N7: groq without a key fails with one line naming GROQ_API_KEY", async () => {
@@ -448,14 +482,19 @@ test("setup: sttReport lists engines and cached models; the key is never printed
   const cache = tmp("sva-a1-hub-");
   fs.mkdirSync(path.join(cache, "models--mlx-community--whisper-small-mlx", "snapshots", "abc"), { recursive: true });
   const env = { SVA_STT_PYTHON: "/fake/python", GROQ_API_KEY: "gsk_SECRET", HF_HUB_CACHE: cache };
-  const lines = sttReport(env, () => true);
+  const lines = sttReport(env, () => true, "darwin");
   const text = lines.join("\n");
   assert.match(text, /mlx-whisper: ready/);
   assert.match(text, /small downloaded, turbo not downloaded/);
   assert.match(text, /groq: key set/);
   assert.ok(!text.includes("gsk_SECRET"));
-  assert.match(sttReport({ HF_HUB_CACHE: cache }, () => true).join("\n"), /SVA_STT_PYTHON is not set/);
-  assert.match(sttReport({ SVA_STT_PYTHON: "/x", HF_HUB_CACHE: cache }, () => false).join("\n"), /cannot import mlx_whisper/);
+  assert.match(sttReport({ HF_HUB_CACHE: cache }, () => true, "darwin").join("\n"), /SVA_STT_PYTHON is not set/);
+  assert.match(sttReport({ SVA_STT_PYTHON: "/x", HF_HUB_CACHE: cache }, () => false, "darwin").join("\n"), /cannot import mlx_whisper/);
+  fs.mkdirSync(path.join(cache, "models--Systran--faster-whisper-small", "snapshots", "abc"), { recursive: true });
+  const win = sttReport({ SVA_STT_PYTHON: "/x", HF_HUB_CACHE: cache }, (_py, mod) => mod === "faster_whisper", "win32").join("\n");
+  assert.match(win, /faster-whisper: ready \(SVA_STT_PYTHON imports faster_whisper\)/);
+  assert.match(win, /faster-whisper models: small downloaded, turbo not downloaded/);
+  assert.match(sttReport({ SVA_STT_ENGINE: "faster-whisper" }, () => true, "darwin").join("\n"), /faster-whisper:/);
   fs.rmSync(cache, { recursive: true, force: true });
 });
 
@@ -463,7 +502,7 @@ test("setup --check prints the STT engines without a key and without downloading
   const cache = tmp("sva-a1-hub-");
   const res = spawnSync(process.execPath, [SETUP_MJS, "--check"], {
     encoding: "utf8",
-    env: { ...process.env, GROQ_API_KEY: "gsk_SECRET", SVA_STT_PYTHON: "", HF_HUB_CACHE: cache, HF_HUB_OFFLINE: "1" },
+    env: { ...process.env, GROQ_API_KEY: "gsk_SECRET", SVA_STT_ENGINE: "mlx", SVA_STT_PYTHON: "", HF_HUB_CACHE: cache, HF_HUB_OFFLINE: "1" },
   });
   const out = res.stdout + res.stderr;
   assert.match(out, /speech-to-text engines/);

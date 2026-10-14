@@ -46,11 +46,12 @@ async function capture(fn) {
 // ---- W1/G1: the install route for the local STT engine -----------------------------------
 
 test("setup: sttReport gives the install route while mlx-whisper is not ready, and not once it is", () => {
-  const notReady = sttReport({ SVA_STT_PYTHON: "/x" }, () => false).join("\n");
+  const notReady = sttReport({ SVA_STT_PYTHON: "/x" }, () => false, "darwin").join("\n");
   assert.match(notReady, /install route: .*venv.*pip install mlx-whisper/);
   assert.match(notReady, /SVA_STT_PYTHON=<dir>\/bin\/python/);
-  assert.match(sttReport({}, () => false).join("\n"), /pip install mlx-whisper/);
-  assert.doesNotMatch(sttReport({ SVA_STT_PYTHON: "/x" }, () => true).join("\n"), /install route/);
+  assert.match(sttReport({}, () => false, "darwin").join("\n"), /pip install mlx-whisper/);
+  assert.doesNotMatch(sttReport({ SVA_STT_PYTHON: "/x" }, () => true, "darwin").join("\n"), /install route/);
+  assert.match(sttReport({}, () => false, "win32").join("\n"), /install route: .*pip install faster-whisper nvidia-cublas-cu12/);
 });
 
 // ---- W2/D1: sound the page makes counts as the lead's sound ------------------------------
