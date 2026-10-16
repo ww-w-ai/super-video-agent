@@ -88,6 +88,10 @@ export async function loadReel3D(reelDir, { captions = false } = {}) {
   try { Object.defineProperty(globalThis.navigator, "gpu", { value: gpu, configurable: true }); } catch (e) {}
   const adapter = await gpu.requestAdapter({ powerPreference: "high-performance" });
   globalThis.__svaGpuDevice = await adapter.requestDevice();
+  // Image/CanvasTexture sources are skia canvases; Dawn's copyExternalImageToTexture
+  // can't consume them (uploads silent black). Route those through writeTexture.
+  const { patchCanvasTextureUpload } = await import("./3d/gpu-texture-upload-fix.mjs");
+  patchCanvasTextureUpload(globalThis.__svaGpuDevice);
 
   // --- dimensions + stage canvas ---
   const dims = sceneDims([{ source: scene }]);
