@@ -141,3 +141,46 @@ Core POC proven + measured. To get an actual-reel native 3D render, port the 3D 
 render/composite to WebGPURenderer+async readback (authoring-model change) and re-render one
 standard-material reel, then SSIM vs its browser picture.mp4. This is a scoped sprint and changes
 3D reel authoring — awaiting direction before building it.
+
+# 3D native render — day04 rendered end-to-end on WebGPU (measured)
+
+Sprint done: the unmodified day04 reel (`day04-foldable-iphone`, 1080x1920@30, 133.4s) now renders
+headless on WebGPU/Dawn in Node — no browser — through `reel-host-3d.mjs`.
+
+## How it works
+- `three-webgpu-shim.mjs` — a "three" module that re-exports three/webgpu and adds a `WebGLRenderer`
+  backed by WebGPURenderer (a delegating Proxy). The reel's `new THREE.WebGLRenderer` +
+  `render()` + `getContext().readPixels` idiom runs unchanged. Adapter SSIM vs direct WebGPU = 1.0.
+- `loader-hooks.mjs` (module.register) — forces one three instance for the reel, its scene modules,
+  and three's addons (GLTFLoader etc.); maps WebGL-only addons to WebGPU shims.
+- GLTF-in-Node: rigged presenter GLB + dubby + textures load (skia decode; blob:/Request shims).
+- `copyToStage` patched sync->async read-back; adapter **de-pads** three.webgpu's 256-byte-aligned
+  read-back rows (the fix for horizontal-shear corruption) and flips to match the reel's composite.
+
+## Measured (M2, Dawn/Metal)
+- Fidelity vs browser `picture.mp4`: SSIM **0.733 / 0.734 / 0.737** at t=0.5/1.5/2.467s (desk scene).
+  Consistent across frames -> the gap is structural (missing materials), not timing.
+- Throughput: **62.7 fps** (render+composite+png-encode, 1080x1920) vs browser SwiftShader 3D ~31-48.
+
+## What renders / what's missing (the 0.733 gap)
+Renders correctly: scene geometry, rigged GLB models, lighting, PCF shadows, main GLB textures,
+and the full 2D overlay (labels, ON AIR, etc.).
+Missing (reel-specific WebGL-only techniques, no WebGPU drop-in — as the POC predicted):
+- Foldable-phone inner-display `ShaderMaterial`s — rejected by three.webgpu
+  ("Material ShaderMaterial is not compatible"). Confirmed.
+- Bear (Dubby) face features (eyes/cheeks/mouth) + apron — absent (decal/texture technique; TBD).
+- Window skyline — black (likely a render-to-texture wall, `MeshBasicMaterial{map: rt.texture}`).
+- Bloom (pass-through stub), Reflector (metallic-plane stub), RectAreaLight (native, no LTC).
+
+## Conclusion
+The TEMPLATE render/composite layer ports to WebGPU cleanly and a real reel renders end-to-end and
+fast. The residual fidelity gap is entirely reel-authored WebGL shaders/techniques (GLSL
+ShaderMaterials, render-to-texture, bloom) that have no drop-in and need per-reel re-authoring to
+TSL/WebGPU — a scope expansion, not a host fix. Decision for owner/team: invest in per-reel shader
+re-authoring (to close SSIM) vs keep 3D reels on the browser/WebGL path and ship native for 2D.
+
+## 3D files (added this sprint)
+`reel-host-3d.mjs` (orchestrator), `3d/three-webgpu-shim.mjs` (adapter), `3d/loader-hooks.mjs`
+(module hooks), `3d/webgpu-post-shim.mjs` (bloom/composer stub), `3d/reflector-stub.mjs`,
+`3d/rectarea-stub.mjs`, `3d/adapter-test.mjs` (SSIM 1.0 probe), `3d/gltf-test.mjs`,
+`3d/smoke-3d.mjs`, `3d/bench-3d.mjs`.
