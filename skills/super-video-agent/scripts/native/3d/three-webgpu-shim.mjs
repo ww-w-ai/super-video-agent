@@ -34,6 +34,31 @@ function makeGpuCanvas(device, w, h) {
 // WebGL2 enum values the reel's copyToStage reads off the "gl" context.
 const GL = { RGBA: 0x1908, UNSIGNED_BYTE: 0x1401 };
 
+// Delegate anything the adapter does not override to the real WebGPURenderer, so
+// three internals (PMREMGenerator, nodes, etc.) that call renderer methods we did
+// not anticipate still work. Our explicit methods/getters win over delegation.
+const DELEGATE = {
+  get(target, prop) {
+    if (prop in target || typeof prop === "symbol") {
+      const v = target[prop];
+      return typeof v === "function" ? v.bind(target) : v;
+    }
+    const w = target._wgpu;
+    if (w && prop in w) {
+      const v = w[prop];
+      return typeof v === "function" ? v.bind(w) : v;
+    }
+    return undefined;
+  },
+  set(target, prop, value) {
+    if (prop in target) target[prop] = value;
+    else if (target._wgpu) target._wgpu[prop] = value;
+    else target[prop] = value;
+    return true;
+  },
+  has(target, prop) { return prop in target || (target._wgpu && prop in target._wgpu); },
+};
+
 /**
  * Drop-in for THREE.WebGLRenderer, backed by WebGPURenderer. Renders to an
  * internal RenderTarget; pixels are read back asynchronously.
@@ -51,6 +76,7 @@ export class WebGLRenderer {
     this._initP = this._wgpu.init();
     this.shadowMap = { _enabled: false, _type: null, get enabled() { return this._enabled; }, set enabled(v) { this._enabled = v; }, get type() { return this._type; }, set type(v) { this._type = v; } };
     this.domElement = params.canvas || makeGpuCanvas(device, 1, 1);
+    return new Proxy(this, DELEGATE);
   }
   async init() { await this._initP; }
   setPixelRatio() {}
@@ -98,11 +124,29 @@ export class WebGLRenderer {
       this._readbackP = this._wgpu.readRenderTargetPixelsAsync(this._rt, 0, 0, this._w, this._h).then((px) => { this._lastPixels = px; return px; });
     }
   }
+  // WebGPU read-back is top-down. The reel's copyToStage flips (it assumes
+  // WebGL's bottom-up gl.readPixels), so set `__flipReadback = true` to hand it
+  // bottom-up pixels and keep the reel's flip correct. Default off (natural).
   async __readPixelsAsync(dest) {
     await this._initP;
     if (this._readbackP) await this._readbackP;
-    if (this._lastPixels && dest) dest.set(this._lastPixels.subarray(0, dest.length));
-    return this._lastPixels;
+    if (!this._lastPixels) return null;
+    // three.webgpu's readRenderTargetPixelsAsync returns rows padded to a 256-byte
+    // stride (WebGPU copyTextureToBuffer alignment) and does NOT de-pad. Repack to
+    // tight rows; optionally flip to bottom-up so the reel's copyToStage flip is
+    // restored. For 256-aligned widths (aligned === row) this is a plain copy.
+    const src = this._lastPixels;
+    const row = this._w * 4;
+    const aligned = Math.ceil(row / 256) * 256;
+    const packed = new Uint8Array(row * this._h);
+    const flip = this.__flipReadback || globalThis.__svaFlipReadback;
+    for (let y = 0; y < this._h; y++) {
+      const srcY = flip ? this._h - 1 - y : y;
+      const start = srcY * aligned;
+      packed.set(src.subarray(start, start + row), y * row);
+    }
+    if (dest) dest.set(packed.subarray(0, dest.length));
+    return packed;
   }
   getContext() {
     return {

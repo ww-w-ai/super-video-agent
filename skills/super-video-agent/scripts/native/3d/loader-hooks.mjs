@@ -21,7 +21,12 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === "three/webgpu") return { url: CFG.threeWebgpuUrl, shortCircuit: true };
   if (specifier === "three/tsl") return { url: CFG.threeTslUrl, shortCircuit: true };
   if (specifier.startsWith("three/addons/")) {
-    return { url: CFG.addonsBaseUrl + specifier.slice("three/addons/".length), shortCircuit: true };
+    const suffix = specifier.slice("three/addons/".length);
+    // Some WebGL-only addons (postprocessing, Reflector's GLSL ShaderMaterial,
+    // RectAreaLight LTC lib) have no WebGPU drop-in; the host overrides them
+    // with WebGPU-compatible shims/stubs. Everything else uses the real file.
+    if (CFG.addonOverrides && CFG.addonOverrides[suffix]) return { url: CFG.addonOverrides[suffix], shortCircuit: true };
+    return { url: CFG.addonsBaseUrl + suffix, shortCircuit: true };
   }
   if (specifier.startsWith("sva-scene:")) {
     return { url: CFG.sceneUrls[specifier], shortCircuit: true };
