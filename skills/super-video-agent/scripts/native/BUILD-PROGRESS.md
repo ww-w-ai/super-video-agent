@@ -113,6 +113,16 @@ context and reads pixels synchronously — neither a WebGPU adapter can provide.
 already async in current reels, so the async readback would fit; it is getContext()+sync
 readPixels that does not.) This is an authoring-model constraint, not a missing binding.
 
+## DEEPER FINDING: all 3 shipped 3D reels use WebGL-only features (no drop-in WebGPU)
+- day04, day05: EffectComposer + UnrealBloomPass (WebGL postprocessing addons). WebGPU post is
+  a separate TSL PostProcessing system -> must be reimplemented, won't pixel-match the WebGL bloom.
+- day06-chess: onBeforeCompile GLSL injection (mograph.js glowMaterial, per-instance `aGlow`).
+  onBeforeCompile is a no-op under WebGPURenderer (materials are TSL).
+=> Porting any existing reel to WebGPU = re-authoring its effect/shader code, not a thin adapter.
+   day05 (assigned target) uses UnrealBloomPass -> hard blocker for a matching WebGPU render.
+   day06 is the closest to portable (no post; one minor glow material) but still needs GLTF-in-node
+   + loses the glow + async composite.
+
 ## Recommended follow-up (scoped)
 Port the 3D reel TEMPLATE's render/composite layer (render3D + copyToStage + renderer creation)
 to WebGPURenderer + async readRenderTargetPixelsAsync, keeping scene/world code unchanged

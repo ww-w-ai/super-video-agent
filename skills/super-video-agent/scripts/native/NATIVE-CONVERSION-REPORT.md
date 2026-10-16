@@ -199,6 +199,23 @@ pixels synchronously, neither of which a WebGPU adapter can provide. (`seek()` i
 This is an authoring-model constraint, not a missing binding. The reels are written against
 WebGL's synchronous model, not merely against `WebGLRenderer`.
 
+### Deeper: every shipped 3D reel uses WebGL-only rendering features
+
+Reading all three shipped 3D reels, each depends on three.js features that `WebGPURenderer`
+does NOT support as a drop-in (WebGPU uses a different shader/post system, TSL/WGSL):
+
+| Reel | WebGL-only feature | WebGPU status |
+|---|---|---|
+| day04-foldable-iphone | `EffectComposer` + `UnrealBloomPass` (postprocessing addons) | WebGL-only addons; WebGPU post is a separate TSL `PostProcessing` system |
+| day05-iphone-duo-longform | `EffectComposer` + `UnrealBloomPass` | same |
+| day06-chess-ai | `onBeforeCompile` GLSL injection (per-instance glow via an `aGlow` attribute) | `onBeforeCompile` is GLSL; WebGPU materials are TSL — the hook is a no-op there |
+
+So porting ANY existing reel to WebGPU is not a thin render-context swap — it requires
+re-authoring that reel's effect/shader code (reimplement UnrealBloom in WebGPU TSL, or the
+glow material as a TSL node), and the result would not pixel-match the WebGL bloom/shader.
+day05 (the assigned target) uses `UnrealBloomPass` specifically — a hard blocker for a WebGPU
+render that matches its browser `picture.mp4`.
+
 ## Recommended path (scoped follow-up)
 
 Port the 3D reel TEMPLATE's render/composite layer (`render3D` + `copyToStage` + the renderer
