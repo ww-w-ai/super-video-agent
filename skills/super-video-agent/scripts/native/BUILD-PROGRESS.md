@@ -193,3 +193,31 @@ owner/team: (a) add WebGPU bloom + port the phone ShaderMaterials to push toward
 (module hooks), `3d/webgpu-post-shim.mjs` (bloom/composer stub), `3d/reflector-stub.mjs`,
 `3d/rectarea-stub.mjs`, `3d/adapter-test.mjs` (SSIM 1.0 probe), `3d/gltf-test.mjs`,
 `3d/smoke-3d.mjs`, `3d/bench-3d.mjs`.
+
+# 2D GPU/NVENC bench (L40S pod, measured 2026-10-17)
+
+Owner-approved measurement: does the 2D native path get faster on GPU / NVENC? Run on an
+astrago pod (2x NVIDIA L40S, driver 550.90.12, 32 vCPU, node 22). 300 frames, 1080x1920,
+ffmpeg 4.4 (`/usr/bin/ffmpeg`). Full log: pod `/root/kadap/MyDisk/BENCH-SUMMARY.md` + `encbench2.log`.
+
+| encoder | PNG-pipe fps (real) | RAW-YUV fps (encoder-isolated) |
+|---|--:|--:|
+| CPU h264 (libx264 medium crf18) | 127.5 | 258.2 |
+| NVENC h264 (p5 cq18) | 171.2 | 209.5 |
+| CPU hevc (libx265 medium crf20) | 58.6 | 62.0 |
+| NVENC hevc (p5 cq20) | 148.5 | 250.2 |
+
+Findings:
+1. NVENC wins on HEVC: 2.5x (real pipeline) to 4.0x (isolated) vs libx265. Reels encode as HEVC,
+   so this is the relevant path — NVENC HEVC is the GPU win for 2D output.
+2. H264: libx264 on 32 cores already beats nvenc_h264 for this content — no GPU benefit.
+3. PNG decode is a big bottleneck (raw 258 vs png 127 for cpu_h264, ~2x). The native renderer pipes
+   PNG; a RAW RGBA pipe would ~2x the encode side regardless of GPU. Actionable.
+4. skia-canvas (npm) is CPU-only — no Graphite/Vulkan raster backend. "GPU-backed skia" is not a
+   drop-in; the GPU lever for 2D is NVENC (encode), not rasterization. The 2D bottleneck is skia CPU
+   raster (faster on the 32-core pod than M2, but still CPU).
+
+Gotcha: the pod's `/usr/local/bin/ffmpeg` (and MyDisk/ffbin) is a 2026 master build requiring nvenc
+API 13.1 / driver >=610 — nvenc fails on the 550 driver. Fix = `apt-get install -y ffmpeg` (4.4).
+Not measured: skia CPU-raster fps on the pod — the sample reel (MyDisk/rea-render) was deleted by
+another process mid-run; no reel remained. Bring-up notes for the next pod are in BENCH-SUMMARY.md.
