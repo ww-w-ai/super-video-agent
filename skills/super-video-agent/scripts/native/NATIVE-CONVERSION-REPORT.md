@@ -239,17 +239,19 @@ SSIM is expected to land high (per the 0.9981 parity) once a reel runs under a W
 
 Every number here was produced by the scripts in `scripts/native/` and is reproducible.
 
-## UPDATE — actual-reel native 3D render achieved; SSIM lands at 0.733, not high
+## UPDATE — actual-reel native 3D render achieved; SSIM 0.87 after a host texture fix
 
 The "one thing NOT achieved" above is now done: the unmodified day04 reel renders end-to-end on
 WebGPU in Node via `reel-host-3d.mjs` (WebGLRenderer->WebGPU adapter, one-three-instance module
 hooks, GLTF-in-Node, async de-padded read-back). Measured vs browser `picture.mp4`: SSIM
-**0.733-0.737** across the desk scene (consistent), at **62.7 fps** (1080x1920, render+composite+png).
+**0.857-0.876** across the desk scene, at **36 fps** (1080x1920, render+composite+png).
 
-The earlier prediction ("expected to land high per the 0.9981 parity") was wrong. The 0.9981 was
-renderer parity on an IDENTICAL scene; real reels layer WebGL-only materials/effects that three.webgpu
-has no drop-in for — confirmed: foldable-phone inner-display `ShaderMaterial`s are rejected, and the
-character face/apron and the render-to-texture window skyline are absent. Geometry, rigged GLB,
-textures, lighting, PCF shadows, and the 2D overlay all render correctly. Closing the remaining gap
-is per-reel re-authoring of those shaders/techniques to TSL/WebGPU (scope expansion), not a host fix.
-Detail + file list: `BUILD-PROGRESS.md` section "3D native render — day04 rendered end-to-end".
+Finding: a first pass measured 0.733 and looked like it needed per-reel shader re-authoring. It did
+not — the dominant cause was a HOST bug: three.webgpu uploads image/Canvas textures via
+`copyExternalImageToTexture`, which Dawn rejects for a skia-canvas source and three silently swallows,
+so every image texture uploaded BLACK (skyline, character face/apron, screens). Fixed by wrapping the
+queue to read skia pixels and `writeTexture` (`3d/gpu-texture-upload-fix.mjs`) -> SSIM 0.733 -> 0.87.
+The small residual is bloom + the foldable-phone inner-display `ShaderMaterial`s (genuinely need TSL)
++ sub-pixel AA + the HEVC-vs-PNG compression ceiling. Geometry, rigged GLB, textures, lighting, PCF
+shadows, and the 2D overlay all render correctly. Detail + file list: `BUILD-PROGRESS.md` section
+"3D native render — day04 rendered end-to-end".

@@ -157,27 +157,36 @@ headless on WebGPU/Dawn in Node — no browser — through `reel-host-3d.mjs`.
 - `copyToStage` patched sync->async read-back; adapter **de-pads** three.webgpu's 256-byte-aligned
   read-back rows (the fix for horizontal-shear corruption) and flips to match the reel's composite.
 
-## Measured (M2, Dawn/Metal)
-- Fidelity vs browser `picture.mp4`: SSIM **0.733 / 0.734 / 0.737** at t=0.5/1.5/2.467s (desk scene).
-  Consistent across frames -> the gap is structural (missing materials), not timing.
-- Throughput: **62.7 fps** (render+composite+png-encode, 1080x1920) vs browser SwiftShader 3D ~31-48.
+## Measured (M2, Dawn/Metal) — after the image-texture upload fix
+- Fidelity vs browser `picture.mp4`: SSIM **0.876 / 0.862 / 0.857** at t=0.5/1.5/2.467s (desk scene).
+  (Before the texture fix: 0.733. PNG-vs-HEVC comparison has a ~0.98 ceiling, so this is close.)
+- Throughput: **36.0 fps** (render+composite+png-encode, 1080x1920) vs browser SwiftShader 3D ~31-48.
+  (62.7 fps before the fix, when image textures were silently skipped; textures now upload per frame.)
 
-## What renders / what's missing (the 0.733 gap)
-Renders correctly: scene geometry, rigged GLB models, lighting, PCF shadows, main GLB textures,
-and the full 2D overlay (labels, ON AIR, etc.).
-Missing (reel-specific WebGL-only techniques, no WebGPU drop-in — as the POC predicted):
-- Foldable-phone inner-display `ShaderMaterial`s — rejected by three.webgpu
-  ("Material ShaderMaterial is not compatible"). Confirmed.
-- Bear (Dubby) face features (eyes/cheeks/mouth) + apron — absent (decal/texture technique; TBD).
-- Window skyline — black (likely a render-to-texture wall, `MeshBasicMaterial{map: rt.texture}`).
+## The key host bug found + fixed: silent-black image textures
+three.webgpu uploads a non-data texture with `device.queue.copyExternalImageToTexture({source})`,
+which Dawn accepts only for ImageBitmap/HTMLCanvasElement/OffscreenCanvas — NOT a skia-canvas source
+— and three swallows the throw in a try/catch. So every image/CanvasTexture uploaded as BLACK. Fixed
+in `3d/gpu-texture-upload-fix.mjs`: wrap the queue to read skia pixels and `writeTexture` instead.
+This restored the character face/apron, the window skyline, and the monitors, and moved SSIM
+0.733 -> 0.87. It was a HOST fix, not the per-reel re-authoring the first measurement implied.
+
+## What renders / what remains (the ~0.13 residual)
+Renders correctly now: geometry, rigged GLB models, lighting, PCF shadows, GLB + Canvas image
+textures (skyline, face, apron, screens), and the full 2D overlay.
+Remaining gap is diffuse (a difference image shows no strong localized hotspot) — i.e. global
+tone/AA + the few genuinely WebGL-only bits:
+- Foldable-phone inner-display `ShaderMaterial`s — rejected by three.webgpu (needs TSL). Confirmed,
+  but small screen area.
 - Bloom (pass-through stub), Reflector (metallic-plane stub), RectAreaLight (native, no LTC).
+- Sub-pixel AA + HEVC-vs-PNG compression ceiling (unrecoverable without a fair HEVC-vs-HEVC compare).
 
 ## Conclusion
-The TEMPLATE render/composite layer ports to WebGPU cleanly and a real reel renders end-to-end and
-fast. The residual fidelity gap is entirely reel-authored WebGL shaders/techniques (GLSL
-ShaderMaterials, render-to-texture, bloom) that have no drop-in and need per-reel re-authoring to
-TSL/WebGPU — a scope expansion, not a host fix. Decision for owner/team: invest in per-reel shader
-re-authoring (to close SSIM) vs keep 3D reels on the browser/WebGL path and ship native for 2D.
+The TEMPLATE render/composite layer ports to WebGPU cleanly and a real reel renders end-to-end at
+SSIM ~0.87. The large part of the earlier gap was a host texture-upload bug (now fixed), NOT per-reel
+re-authoring. The small residual is bloom + phone-display ShaderMaterials + AA. Decision for
+owner/team: (a) add WebGPU bloom + port the phone ShaderMaterials to push toward ~0.95, or (b) accept
+~0.87 native 3D, or (c) keep 3D on the browser/WebGL path and ship native for 2D (SSIM 0.99+).
 
 ## 3D files (added this sprint)
 `reel-host-3d.mjs` (orchestrator), `3d/three-webgpu-shim.mjs` (adapter), `3d/loader-hooks.mjs`
