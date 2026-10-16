@@ -255,3 +255,14 @@ The small residual is bloom + the foldable-phone inner-display `ShaderMaterial`s
 + sub-pixel AA + the HEVC-vs-PNG compression ceiling. Geometry, rigged GLB, textures, lighting, PCF
 shadows, and the 2D overlay all render correctly. Detail + file list: `BUILD-PROGRESS.md` section
 "3D native render — day04 rendered end-to-end".
+
+## FINAL STATE (decided)
+- 2D native: production-ready, SSIM 0.99+. Use it for new 2D reels.
+- 3D native: viable. day04 end-to-end SSIM 0.87 after the host texture-upload fix (kept as reusable
+  infra). Residual = bloom + phone-display ShaderMaterials (TSL) + AA + codec ceiling.
+- Decision: do NOT polish old reels. Existing 3D reels (day04/05/06) stay on the browser/WebGL path.
+  WebGPU bloom + ShaderMaterial->TSL are built WHEN authoring the next NEW 3D reel (fixed as they
+  surface in real production), not retrofitted now.
+- 2D GPU/NVENC bench (L40S pod): GPU win = NVENC-HEVC 2.5-4x on encode; H264 no benefit; raw-pipe
+  ~2x free; skia raster stays CPU (no GPU backend). See `BUILD-PROGRESS.md` "2D GPU/NVENC bench" and
+  `bench/POD-2D-GPU-NVENC-BENCH.md`.

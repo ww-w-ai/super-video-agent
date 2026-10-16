@@ -184,9 +184,13 @@ tone/AA + the few genuinely WebGL-only bits:
 ## Conclusion
 The TEMPLATE render/composite layer ports to WebGPU cleanly and a real reel renders end-to-end at
 SSIM ~0.87. The large part of the earlier gap was a host texture-upload bug (now fixed), NOT per-reel
-re-authoring. The small residual is bloom + phone-display ShaderMaterials + AA. Decision for
-owner/team: (a) add WebGPU bloom + port the phone ShaderMaterials to push toward ~0.95, or (b) accept
-~0.87 native 3D, or (c) keep 3D on the browser/WebGL path and ship native for 2D (SSIM 0.99+).
+re-authoring. The small residual is bloom + phone-display ShaderMaterials + AA + codec ceiling.
+
+DECIDED (owner): accept ~0.87 and STOP here on day04. Do not polish old reels. WebGPU bloom and the
+phone-display ShaderMaterials (TSL) are template capabilities to build WHEN authoring the NEXT NEW 3D
+reel (fixing as they surface in real production) — not retrofitted onto day04 now. Existing reels
+(day04/05/06) stay on the browser/WebGL path; new 3D reels get authored WebGPU-native from the start.
+2D native is production-ready (SSIM 0.99+). The host texture-upload fix is kept (reusable infra).
 
 ## 3D files (added this sprint)
 `reel-host-3d.mjs` (orchestrator), `3d/three-webgpu-shim.mjs` (adapter), `3d/loader-hooks.mjs`
