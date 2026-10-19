@@ -9,8 +9,9 @@ import { isMain } from "../lib/is-main.mjs";
 
 const HELP = `usage: cost-report.mjs <film-dir> [--results <dir>] [--json]
 
-Reads every <results>/<stage>.<attempt>.json (default <film-dir>/results; the older
-result-<stage>.json name also works), one file per session or resume, and prints per stage:
+Reads every <results>/<stage>.<run id>.<attempt>.json (default <film-dir>/results; the older
+<stage>.<attempt>.json and result-<stage>.json names also work), one file per session or resume of every run,
+and prints per stage, summed over all runs:
   sessions (1 + resumes), cost in USD, session time, turns, input/output tokens, error flags
 then the totals. Flags: is_error true, a subtype other than "success" (for example error_max_turns),
 a file that is empty or not JSON, a result with no cost field.
@@ -33,11 +34,12 @@ export function parseResult(text) {
   return v && typeof v === "object" ? v : null;
 }
 
+/** <stage>.<run id>.<attempt> (run.mjs), <stage>.<attempt> and result-<stage> (older names). Run ids look like "r1k2j3". */
 export function stageOfFile(file) {
   const base = path.basename(file, ".json");
-  const m = /^(.+)\.(\d+)$/.exec(base);
-  if (m) return { stage: m[1], attempt: Number(m[2]) };
-  return { stage: base.replace(/^result-/, ""), attempt: 0 };
+  const m = /^(.+?)(?:\.(r[0-9a-z]+))?\.(\d+)$/.exec(base);
+  if (m) return { stage: m[1], run: m[2] || "", attempt: Number(m[3]) };
+  return { stage: base.replace(/^result-/, ""), run: "", attempt: 0 };
 }
 
 function numberOr(v, fallback = 0) {
@@ -46,9 +48,9 @@ function numberOr(v, fallback = 0) {
 
 /** One row per file. */
 export function rowOfFile(file, text) {
-  const { stage, attempt } = stageOfFile(file);
+  const { stage, run, attempt } = stageOfFile(file);
   const r = parseResult(text);
-  if (!r) return { stage, attempt, flags: ["unreadable"], cost: 0, durationMs: 0, turns: 0, inTokens: 0, outTokens: 0 };
+  if (!r) return { stage, run, attempt, flags: ["unreadable"], cost: 0, durationMs: 0, turns: 0, inTokens: 0, outTokens: 0 };
   const flags = [];
   if (r.is_error) flags.push("is_error");
   if (r.subtype && r.subtype !== "success") flags.push(r.subtype);
@@ -56,17 +58,19 @@ export function rowOfFile(file, text) {
   if (typeof cost !== "number") flags.push("no-cost-field");
   const u = r.usage || {};
   return {
-    stage, attempt, flags, sessionId: r.session_id || null,
+    stage, run, attempt, flags, sessionId: r.session_id || null,
     cost: numberOr(cost), durationMs: numberOr(r.duration_ms), turns: numberOr(r.num_turns),
     inTokens: numberOr(u.input_tokens) + numberOr(u.cache_creation_input_tokens) + numberOr(u.cache_read_input_tokens),
     outTokens: numberOr(u.output_tokens),
   };
 }
 
-/** Per-stage totals, stages sorted by name. */
+const compareText = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** Per-stage totals over every run, stages sorted by name. */
 export function aggregate(rows, wallMsByStage = {}) {
   const by = new Map();
-  for (const r of [...rows].sort((a, b) => (a.stage < b.stage ? -1 : a.stage > b.stage ? 1 : a.attempt - b.attempt))) {
+  for (const r of [...rows].sort((a, b) => compareText(a.stage, b.stage) || compareText(a.run || "", b.run || "") || a.attempt - b.attempt)) {
     const s = by.get(r.stage) || { stage: r.stage, sessions: 0, cost: 0, durationMs: 0, turns: 0, inTokens: 0, outTokens: 0, flags: [], wallMs: wallMsByStage[r.stage] ?? null };
     s.sessions += 1;
     for (const k of ["cost", "durationMs", "turns", "inTokens", "outTokens"]) s[k] += r[k];

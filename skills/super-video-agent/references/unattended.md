@@ -76,7 +76,9 @@ Shape both to the film.
 | `cost-report.mjs <film-dir> [--results <dir>]` (results default `<film-dir>/results`) | per stage: sessions, cost, session time, wall time, turns, tokens, flags; TTS usage when the synthesis tools logged it |
 
 **The plan file** (`run.mjs`) is JSON, every path absolute: `dir` (state, logs, results, `status.txt`),
-`claude` and `claudeArgs` (the command for session stages), `maxParallel`, `lock`
+`claude` and `claudeArgs` (the command for session stages), optional `model` and `effort`
+(`low|medium|high|xhigh|max`; a stage's own `model` / `effort` override them and become `--model` / `--effort`
+on every call of that stage), `maxParallel`, `lock`
 (`gpu`, `threshold`, `gpuWaitMaxSec`, `gpuIdleSamples`) and `stages`. A stage has a `name`, a `kind`
 (`session` or `job`), a `done` file, optional `needs` (stage names), `owns` (files or folders it writes)
 and `verify` (`json`, `contains`, `matches`, `minBytes`), and either a `prompt` file (session) or a
@@ -112,7 +114,8 @@ alive is refused unless `--force`.
 
 When a film's stages finish, print the report to the user in the final message: per stage the
 sessions, cost, session time, wall time, turns and tokens, and the TTS usage. `run.mjs` prints it
-at the end and writes `<dir>/cost-report.txt`; `cost-report.mjs <film-dir>` prints it again.
+at the end and writes `<dir>/cost-report.txt`; `cost-report.mjs <film-dir>` prints it again. Each run writes
+`results/<stage>.<run id>.<n>.json`, so the report sums the sessions of every run.
 Whatever a tool could not measure (a session result with no cost field, no TTS usage log) is listed as
 not logged, never estimated.
 

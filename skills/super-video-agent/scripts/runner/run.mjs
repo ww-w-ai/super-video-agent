@@ -18,18 +18,21 @@ Runs the stages of a film in dependency order, unattended. Plan file (all paths 
   {
     "dir": "/abs/film",                       state, logs, results and status.txt live here
     "claude": "claude", "claudeArgs": [],     the command for session stages and its extra flags
+    "model": "<id>", "effort": "<level>",     optional defaults for every session's --model / --effort
     "maxParallel": 3,
     "lock": { "dir": null, "gpu": true, "threshold": 50, "gpuWaitMaxSec": 5400, "gpuIdleSamples": 3, "pollMs": 5000 },
     "stages": [
       { "name": "voice-xx", "kind": "session", "prompt": "/abs/prompts/voice-xx.txt",
         "done": "/abs/film/reel/dub/xx/voice/timings.json", "owns": ["/abs/film/reel/dub/xx"],
-        "verify": { "json": true }, "maxResumes": 3 },
+        "verify": { "json": true }, "maxResumes": 3, "model": "<id>", "effort": "low" },
       { "name": "dub-xx", "kind": "job", "cmd": ["node", "/abs/skill/scripts/dub.mjs", "/abs/film/reel", "--lang", "xx"],
         "needs": ["voice-xx"], "done": "/abs/film/reel/out/final-xx.mp4", "heavy": true, "maxAttempts": 2 }
     ]
   }
   kind session   one \`claude -p --output-format json\` run per stage, resumed by its session id (up to maxResumes)
                  while the done-file is missing. The prompt file is sent with the done-file's ABSOLUTE path appended.
+                 A stage's "model" and "effort" (low|medium|high|xhigh|max) override the plan's and become
+                 --model / --effort on every call of that stage, resumes included.
   kind job       a command (or "script": "/abs/x.sh", run from a snapshot copy so editing the original is safe).
                  "heavy" (default for jobs) runs under the render slot: one at a time, in fair order, and only while
                  the machine's GPU is not busy with other work (see lock.mjs). Retried up to maxAttempts.
@@ -39,7 +42,8 @@ Runs the stages of a film in dependency order, unattended. Plan file (all paths 
                  same file or folder (the done-file counts as owned); the plan is refused otherwise.
 A failed stage stops after its cap; stages that need it are skipped, the others go on. Finishing a stage again
 (rerun or --redo) forgets the stages after it and renames their done-files to <name>.invalid-<stamp>.
-At the end the cost and time of every session is printed (cost-report.mjs) and saved to <dir>/cost-report.txt.
+At the end the cost and time of every session of every run in <dir>/results is printed (cost-report.mjs) and saved to
+<dir>/cost-report.txt. Each run writes its own results/<stage>.<run id>.<n>.json, so a rerun keeps the earlier cost.
 
 --check          validate the plan (names, absolute paths, order, file ownership) and exit
 --redo a,b       forget those stages and everything after them, then run
@@ -48,12 +52,19 @@ Exit 0 when every stage is done, 1 otherwise.
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+let runCounter = 0;
+
+/** Names this invocation's result and log files: "r" + time + pid + counter, no dots, so a rerun never reuses a name. */
+function newRunId() {
+  return `r${Date.now().toString(36)}${process.pid.toString(36)}${(runCounter++).toString(36)}`;
+}
+
 function makeContext(plan) {
   const byName = new Map(plan.stages.map((s) => [s.name, s]));
   for (const d of ["logs", "results"]) fs.mkdirSync(path.join(plan.dir, d), { recursive: true });
   const lockDir = plan.lock.dir || defaultLockDir();
   assertSafeLockDir(lockDir, { create: true });
-  return { plan, byName, store: openStateStore(plan.dir), log: openStatusLog(plan.dir), lockDir };
+  return { plan, byName, store: openStateStore(plan.dir), log: openStatusLog(plan.dir), lockDir, runId: newRunId() };
 }
 
 /** Fresh-run bookkeeping: what comes after this stage is out of date from now on. */
@@ -88,13 +99,23 @@ function sessionFooter(stage) {
   return `\n\nDone-file (absolute path): ${stage.done}\nWrite it last, only when this job is finished. Run every job in the foreground.\n`;
 }
 
-/** One `claude -p` call; its stdout (the JSON result) goes to results/<stage>.<n>.json. Resolves the exit code. */
+const resultName = (ctx, stage, n) => `${stage.name}.${ctx.runId}.${n}.json`;
+
+/** `--model` / `--effort` for a session stage: the stage's value, else the plan's, else none. */
+export function modelArgs(plan, stage) {
+  const model = stage.model ?? plan.model;
+  const effort = stage.effort ?? plan.effort;
+  return [...(model ? ["--model", model] : []), ...(effort ? ["--effort", effort] : [])];
+}
+
+/** One `claude -p` call; its stdout (the JSON result) goes to results/<stage>.<run id>.<n>.json. Resolves the exit code. */
 function claudeCall(ctx, stage, n, extraArgs, input) {
   const { plan } = ctx;
-  const out = fs.openSync(path.join(plan.dir, "results", `${stage.name}.${n}.json`), "w");
-  const err = fs.openSync(path.join(plan.dir, "logs", `${stage.name}.${n}.err`), "w");
+  const out = fs.openSync(path.join(plan.dir, "results", resultName(ctx, stage, n)), "w");
+  const err = fs.openSync(path.join(plan.dir, "logs", `${stage.name}.${ctx.runId}.${n}.err`), "w");
   return new Promise((resolve) => {
-    const child = spawnGroup(plan.claude, ["-p", ...extraArgs, "--output-format", "json", ...plan.claudeArgs], { cwd: plan.dir, stdio: ["pipe", out, err] });
+    const args = ["-p", ...extraArgs, "--output-format", "json", ...plan.claudeArgs, ...modelArgs(plan, stage)];
+    const child = spawnGroup(plan.claude, args, { cwd: plan.dir, stdio: ["pipe", out, err] });
     child.once("error", () => resolve(127));
     child.once("close", (code) => resolve(code ?? 1));
     child.stdin.on("error", () => {});
@@ -107,7 +128,7 @@ function claudeCall(ctx, stage, n, extraArgs, input) {
 
 function sessionIdOf(ctx, stage, n) {
   try {
-    const r = JSON.parse(fs.readFileSync(path.join(ctx.plan.dir, "results", `${stage.name}.${n}.json`), "utf8"));
+    const r = JSON.parse(fs.readFileSync(path.join(ctx.plan.dir, "results", resultName(ctx, stage, n)), "utf8"));
     return r.session_id || null;
   } catch {
     return null;
@@ -134,7 +155,7 @@ async function runSession(ctx, stage, startedAtMs) {
     if (v.ok) return { ok: true, attempts: n + 1 };
     if (n >= stage.maxResumes) return { ok: false, attempts: n + 1, reason: `${v.reason}; gave up after ${n} resume(s)` };
     const sid = sessionIdOf(ctx, stage, n);
-    if (!sid) return { ok: false, attempts: n + 1, reason: `${v.reason}; no session_id in results/${stage.name}.${n}.json to resume` };
+    if (!sid) return { ok: false, attempts: n + 1, reason: `${v.reason}; no session_id in results/${resultName(ctx, stage, n)} to resume` };
     await waitSlotFree(ctx, stage);
     ctx.log(`${stage.name}: ${v.reason}, resume ${n + 1}`);
     const note = `Continue the job. The done-file ${stage.done} is still missing or invalid (${v.reason}). Run every job in the foreground and write the done-file last.`;
