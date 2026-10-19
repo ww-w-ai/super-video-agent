@@ -339,12 +339,24 @@ the existing Three.js path. A version check alone is not a successful probe.
 An explicit renderer request takes precedence. Existing-film edits keep their current renderer.
 Ordinary 2D films keep the browser path. This selection guides scene authoring; it does not
 convert existing Three.js code into Blender or change `render.mjs` into a Blender renderer.
+**Estimate the render before you commit to a renderer or a quality setting.** Render one
+representative frame (the heaviest shot) at final settings, multiply its time by the film's frame
+count, and write the estimate in `FILM.md`. A film a few minutes long should render in minutes,
+not hours. Path tracing (Blender Cycles) and high sample counts are for when the user asks for that
+quality or accepts the time. When the estimate runs long, cut the cost first (EEVEE, fewer samples
+with denoising, the Three.js path), and tell the user the estimate if it is still long.
 A short request is enough; fill in the camera move, the places and the look yourself. A "one take",
 "no cuts" or "camera that never cuts" request is a continuous camera path (`references/3d.md` "Craft
 that worked"). A photo or screenshot can go on a surface in the scene as a texture, an object
 "at its official size" is modelled to published dimensions recorded with their date in `FILM.md`,
 and "take it apart in layers" is an exploded view, one layer per spoken beat (all in `references/3d.md`).
 Characters and sets built for an earlier film are reused, not rebuilt (`references/3d.md` "The cast stage").
+
+When the user asks for pen line art in any words ("pen line", "ink drawing", "line drawing",
+"hand-drawn illustration", "sketch animation", "펜선", "선화"), or the film suits that look (a book,
+manual or leaflet whose figures are line drawings; steps the viewer copies), read
+`references/pen-line.md`: a generated model sheet, every drawing drawn in code, reveal effects to
+choose from.
 
 When the user names an existing game, film, show or brand as the look ("like <title>"), take the
 style from it — shapes, proportions, palette, mood, how things move — and describe it in your own
@@ -381,6 +393,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | Step | Script | Gives you |
 |---|---|---|
 | setup | `scripts/setup.mjs [--check] [--dir <reel>] [--stt-models]` — run once before the first script; `--check` only reports | Node dependency and Chromium installed in this folder; FFmpeg checked; browser cache and render-folder disk, real GPU or software renderer (`SVA_GPU`), video encoder (`SVA_VENC`), speech-to-text engines and models listed; `--dir` measures the reel's `out/`; `--stt-models` downloads the speech-to-text models. A browser script run before setup stops with one line naming this command |
+| page renderer | environment `SVA_RENDERER=browser\|native` (default `browser`) | what draws the reel page for every script that opens it (render, still, verify, state-checks and the rest); `native` draws 2D canvas reels in Node with skia-canvas, no browser; a 3D/WebGL reel, or a page with elements beside the canvas, stops with a message to use `browser`. Each script prints one `renderer:` line. `SVA_NATIVE_RASTER=cpu|gpu` (default `cpu`) picks where native draws; `gpu` frees the CPU for the encoder (`references/pipeline.md`) |
 | 3D renderer | `scripts/probe-blender.mjs` | JSON decision after an isolated EEVEE render; Blender if usable, otherwise Three.js; no installation |
 | scaffold | `scripts/new-reel.mjs <dir> --ratio 9:16\|16:9 [--title "..."] [--fps 30] [--3d\|--testbed]` | page with contract + optional helpers; `--title` sets the page title (default: the folder name) and `--fps` the frame rate (default 30); `--3d` scaffolds a WebGL/three.js reel, `--testbed` a page that shows the GLBs in `assets/models/` one view per second for the cast stage (`references/3d.md`) |
 | model facts | `scripts/glb-info.mjs <file.glb>` | roots, clips with lengths, node names as three.js's GLTFLoader sees them, morph targets, triangle counts — for the cast contract (`references/3d.md`) |
@@ -440,6 +453,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/brief.md` | The seven-slot Brief of Flow step 0: the slots, how they are marked and filled, a worked example |
 | `references/characters.md` | A film with characters (a presenter, a host, a cast that moves or talks): rigs, mouth shapes, a person from a photo, photo animation, collage — read only when characters appear |
 | `references/parallax.md` | A still turned into depth layers under a camera move (2.5D, parallax, living photo): depth convention, camera moves, edge coverage, cutting layers from one photo |
+| `references/pen-line.md` | Pen line art drawn in code from a model sheet: reveal effects, limited animation, getting a figure right, finished covers |
 | `references/sources.md` | Getting material out of each source type; a data film: search for figures with date and URL, chart drawn from that table |
 | `references/craft.md` | Observations from earlier films and the failures viewers called out |
 | `references/sound.md` | Effects on visible events, music bed, mix |
