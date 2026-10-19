@@ -9,6 +9,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, seekTo, stubSeconds } from "./lib/browser.mjs";
+import { lastFilmFrame } from "./lib/frame-count.mjs";
 import { analyzeAll, formatBlinks, MIN_BLINK_SEC, MIN_INTERVAL_SEC, FLUTTER_COUNT, FLUTTER_WINDOW_SEC } from "./lib/blink.mjs";
 import { gatherSources, blinkSourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 import { readGltf, morphTracks, BLINK_MORPH } from "./lib/glb-clip-tracks.mjs";
@@ -106,7 +107,7 @@ export async function main(argv) {
 }
 
 async function sample(page, fps, duration, step) {
-  const last = Math.max(0, Math.ceil(duration * fps - 1e-9) - 1);
+  const last = lastFilmFrame(duration, fps);
   const series = {};
   for (let frame = 0; frame <= last; frame += step) {
     const t = frame / fps;

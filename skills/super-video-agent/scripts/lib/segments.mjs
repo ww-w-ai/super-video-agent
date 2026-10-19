@@ -2,11 +2,12 @@
 // "Re-rendering part of a film"): turning window.__reel.shots into frame
 // ranges that tile the film, deciding whether a stored segment can be
 // reused, and validating --only against the current timeline. No I/O.
+import { filmFrameCount } from "./frame-count.mjs";
 
 /**
  * Convert shots [{id, start, end}] into contiguous frame-range segments.
  * The first segment always starts at frame 0 and the last always ends at
- * round(duration*fps), regardless of what the outer shots report (design
+ * filmFrameCount(duration, fps), regardless of what the outer shots report (design
  * point 1). Interior boundaries must tile exactly (this shot's end frame
  * equals the next shot's start frame); when they don't (silence gaps,
  * overlaps, rounding drift), the non-tiling shots are merged into one
@@ -15,7 +16,7 @@
  * @returns {{segments: {id:string, frameStart:number, frameEnd:number, shotIds:string[]}[], warnings:string[]}}
  */
 export function computeSegments({ shots, fps, duration }) {
-  const lastFrame = Math.round(duration * fps);
+  const lastFrame = filmFrameCount(duration, fps);
   if (!shots || shots.length === 0) {
     return {
       segments: [{ id: "full", frameStart: 0, frameEnd: lastFrame, shotIds: [] }],

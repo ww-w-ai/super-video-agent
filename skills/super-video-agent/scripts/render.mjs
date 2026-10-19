@@ -16,8 +16,9 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { createTerminationGuard } from "./lib/termination.mjs";
 import { reelPaths, writeJson, readJson, loadPlan } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
-import { openReel, captureFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
+import { openReel, captureFrame, captureRgbaFrame, stubSeconds, stubSegmentCount, stubTimings, warmShotsOf, sessionPictureReads, mergePictureReads, glIssues, glReportLines, driftReportLines, parallaxReportLines } from "./lib/browser.mjs";
 import { createSessionPool } from "./lib/session-pool.mjs";
+import { filmFrameCount } from "./lib/frame-count.mjs";
 import { createContrastCollector, measureDrawnFrame, reportRenderContrast } from "./lib/render-contrast.mjs";
 import {
   run, ffmpeg, ffprobe, spawnImagePipeEncoder, probeDuration, probeVideoInfo, chooseVideoEncoder, probeVideoEncoder,
@@ -993,17 +994,20 @@ export { mergePictureReads };
 
 // Encodes to a temp name and renames when done, so an interrupted encode never
 // leaves a truncated mp4 under the name a cached segment json points at.
+// A native page hands the encoder raw RGBA (no PNG encode and decode).
 async function encodeSegment({ session, segment, outPath, fps, crf, preset, scaleFilter, width, height, encoder, contrast = null }) {
   const tmpPath = uniqueTempPath(outPath);
-  const { proc, done } = spawnImagePipeEncoder({ fps, outPath: tmpPath, crf, preset, scaleFilter, width, height, encoder });
+  const rgbaSize = session.page.native ? session.page.stageSize() : null;
+  const grab = rgbaSize ? captureRgbaFrame : captureFrame;
+  const { proc, done } = spawnImagePipeEncoder({ fps, outPath: tmpPath, crf, preset, scaleFilter, width, height, encoder, rgbaSize });
   done.catch(() => {});
   try {
     for (let frame = segment.frameStart; frame < segment.frameEnd; frame++) {
       const t = frame / fps;
-      const png = await captureFrame(session.page, t);
-      const ok = proc.stdin.write(png);
+      const img = await grab(session.page, t);
+      const ok = proc.stdin.write(img);
       if (!ok) await once(proc.stdin, "drain");
-      if (contrast) await measureDrawnFrame(contrast, { page: session.page, frame, withPng: png, capture: (page) => captureFrame(page, t) });
+      if (contrast) await measureDrawnFrame(contrast, { page: session.page, frame, withPng: rgbaSize ? null : img, capture: (page) => captureFrame(page, t) });
     }
     reportGl(session, `frames [${segment.frameStart},${segment.frameEnd})`);
     proc.stdin.end();
@@ -1554,7 +1558,7 @@ async function rebuildPictureBed({ paths, pool, meta, lang }) {
   if (!fs.existsSync(link) || !fs.existsSync(timingsPath)) throw new Error(`no out/${stem}.mp4 and out/${stem}.timings.json to keep — render the picture first (${again})`);
   const oldVideo = fs.realpathSync(link);
   const frames = await probePacketCount(oldVideo);
-  const pageFrames = Math.round(meta.duration * meta.fps);
+  const pageFrames = filmFrameCount(meta.duration, meta.fps);
   if (frames !== pageFrames) {
     throw new Error(`--bed-only keeps the picture, but ${path.basename(oldVideo)} has ${frames} frames and the page's timeline is ${pageFrames}: the picture is out of date — render it (${again}; --span for a few seconds)`);
   }

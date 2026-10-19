@@ -1,12 +1,45 @@
-// Playwright-core browser session: opens a reel page, waits for
-// window.__reel.ready, seeks to a time, and captures the single <canvas>
-// as a PNG buffer via toDataURL (no screenshot compositing, so we get
-// exactly the pixels the engine drew).
+// Reel session: opens a reel page, waits for window.__reel.ready, seeks to a
+// time, and captures the single <canvas> as a PNG buffer via toDataURL (no
+// screenshot compositing, so we get exactly the pixels the engine drew).
+// SVA_RENDERER picks what draws the page: headless Chromium through
+// playwright-core (browser, the default) or the in-process skia-canvas host
+// (native, 2D canvas reels only). Both give the same page API here, so every
+// tool that opens a reel through this file works with either.
 import fs from "node:fs";
 import { scanFreezes, scanSize } from "./freeze-scan.mjs";
 import { getChromium } from "./playwright.mjs";
+import { nativeRaster } from "../native/raster.mjs";
+import { filmFrameCount } from "./frame-count.mjs";
 
 const DEFAULT_READY_TIMEOUT_MS = 120000;
+const RENDERERS = ["browser", "native"];
+
+/**
+ * What draws the reel page: SVA_RENDERER=browser (default) | native.
+ * @param {Record<string, string|undefined>} env
+ * @returns {"browser"|"native"}
+ */
+export function rendererBackend(env = process.env) {
+  const mode = (env.SVA_RENDERER || "browser").trim().toLowerCase();
+  if (!RENDERERS.includes(mode)) throw new Error(`SVA_RENDERER takes ${RENDERERS.join(" | ")} (got "${env.SVA_RENDERER}")`);
+  return mode;
+}
+
+/** The one line a tool prints about the backend that draws its reel. */
+export function rendererLine(backend) {
+  return backend === "native"
+    ? `renderer: native (SVA_RENDERER=native; skia-canvas in this process, ${nativeRaster().toUpperCase()} raster (SVA_NATIVE_RASTER), 2D canvas reels only, sessions share one thread)`
+    : "renderer: browser (SVA_RENDERER=browser; headless Chromium)";
+}
+
+let announced = null;
+
+/** Writes rendererLine() to stderr the first time a reel opens in this process. */
+function announceRenderer(backend, write = (l) => process.stderr.write(l)) {
+  if (announced === backend) return;
+  announced = backend;
+  write(`${rendererLine(backend)}\n`);
+}
 
 /**
  * How long each page-load step may take before openReel gives up:
@@ -235,10 +268,10 @@ export function stubSeconds(value, timingsPath, exists) {
 }
 
 /**
- * Open `url` in a fresh headless Chromium page and wait for the reel
- * contract to be ready. Each step (load, window.__reel assigned, ready
- * settled) may take readyTimeoutMs(); the error names the step and lists
- * the page's own errors.
+ * Open `url` in a fresh page (headless Chromium, or the native host under
+ * SVA_RENDERER=native) and wait for the reel contract to be ready. Each step
+ * (load, window.__reel assigned, ready settled) may take readyTimeoutMs();
+ * the error names the step and lists the page's own errors.
  * @param {string} url
  * @param {{width?: number, height?: number, stubSec?: number|null, stubSegments?: number, timingsFile?: string|null, warm?: boolean, warmShots?: string[]|null, readyTimeoutMs?: number, picture?: {lang: string|null, strings: object}}} [opts]
  *   stubSec: serve stubTimings(stubSec, stubSegments) as voice/timings.json.
@@ -251,14 +284,9 @@ export function stubSeconds(value, timingsPath, exists) {
  *     runs; every key and lang read is recorded (pictureReads()).
  */
 export async function openReel(url, opts = {}) {
-  const chromium = await getChromium();
-  const browser = await chromium.launch(chromeLaunchOptions(process.env));
-  const page = await browser.newPage({
-    viewport: {
-      width: opts.width || 1080,
-      height: opts.height || 1920,
-    },
-  });
+  const backend = rendererBackend();
+  announceRenderer(backend);
+  const { page, close } = backend === "native" ? await openNativePage() : await openBrowserPage(opts);
   const errors = [];
   const gl = new Map(); // WebGL console messages: text -> {text, definite, count}
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -284,7 +312,7 @@ export async function openReel(url, opts = {}) {
     // Before any page script: Reel.lang / Reel.pictureText() read this (reel-engine.js "picture strings").
     await page.addInitScript(installPictureState, opts.picture);
   }
-  await waitUntilReady({ page, browser, url, errors, ms: opts.readyTimeoutMs || readyTimeoutMs() });
+  await waitUntilReady({ page, close, url, errors, ms: opts.readyTimeoutMs || readyTimeoutMs() });
   // Every picture-string read this page makes, from load on, is kept for the
   // whole session (sessionPictureReads): a page may read a string once and
   // cache it, so a read during load, warm-up, a probe or an earlier segment
@@ -315,20 +343,40 @@ export async function openReel(url, opts = {}) {
   // `warmUp` lists these seeks in order, so a determinism diagnosis can
   // count them as seek history.
   const session = {
-    browser,
     page,
     meta,
     errors,
     gl,
+    renderer: backend,
     warmUp: [],
     warmed: new Set(),
     pictureReads,
-    close: () => browser.close(),
+    close,
   };
   if (opts.warm !== false) {
     await warmShotsOf(session, opts.warmShots ? opts.warmShots : meta.shots.map((s) => s.id));
   }
   return session;
+}
+
+/** A headless Chromium page at the reel's viewport, and how to close its browser. */
+async function openBrowserPage(opts) {
+  const chromium = await getChromium();
+  const browser = await chromium.launch(chromeLaunchOptions(process.env));
+  const page = await browser.newPage({
+    viewport: {
+      width: opts.width || 1080,
+      height: opts.height || 1920,
+    },
+  });
+  return { page, close: () => browser.close() };
+}
+
+/** A native-host page (scripts/native/native-page.mjs), loaded only when SVA_RENDERER=native. */
+async function openNativePage() {
+  const { createNativePage } = await import("../native/native-page.mjs");
+  const page = createNativePage();
+  return { page, close: () => page.close() };
 }
 
 /**
@@ -431,7 +479,7 @@ export async function takePictureReads(page) {
 // A page that throws before assigning window.__reel, whose `ready` rejects,
 // or whose `ready` never settles fails here with the step and the page's
 // own errors, instead of hanging or timing out without a cause.
-async function waitUntilReady({ page, browser, url, errors, ms }) {
+async function waitUntilReady({ page, close, url, errors, ms }) {
   let step = "load reel.html";
   try {
     await withTimeout(page.goto(url, { waitUntil: "load", timeout: ms }), ms, step);
@@ -446,7 +494,7 @@ async function waitUntilReady({ page, browser, url, errors, ms }) {
     step = "await window.__reel.preload";
     await withTimeout(page.evaluate(awaitPreload), ms, step);
   } catch (e) {
-    await browser.close();
+    await close();
     const pageErrors = errors.length ? `\npage error(s):\n  ${errors.join("\n  ")}` : "\n(no page error was reported)";
     const cause = e.readyTimeout ? e.message : `step "${step}": ${e.message.split("\n")[0]}`;
     throw new Error(`reel page did not become ready: ${cause}${pageErrors}`);
@@ -517,6 +565,7 @@ export async function pixelDiff(page, refPng) {
  */
 export async function captureFrame(page, t) {
   await seekTo(page, t);
+  if (page.native) return page.capturePng();
   const dataUrl = await page.evaluate(() => {
     const canvas = document.querySelector("canvas");
     if (!canvas) throw new Error("no <canvas> found in reel.html");
@@ -524,6 +573,17 @@ export async function captureFrame(page, t) {
   });
   const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
   return Buffer.from(base64, "base64");
+}
+
+/**
+ * Seek, then return the frame as raw RGBA bytes (native pages only). The
+ * encoder takes them without a PNG round trip, which was most of a native
+ * frame's time (about 30 ms of 38 ms at 1080×1920).
+ */
+export async function captureRgbaFrame(page, t) {
+  if (!page.native) throw new Error("captureRgbaFrame needs a native page (SVA_RENDERER=native)");
+  await seekTo(page, t);
+  return page.captureRgba();
 }
 
 /** Read window.__reel.issues() from the live page. */
@@ -654,7 +714,7 @@ export async function scanDeadAirBySeek(page, { duration, fps, stepSec = 0.1, ru
   });
   if (!dims) throw new Error("no <canvas> found in reel.html");
   const { w, h } = scanSize(dims.width, dims.height);
-  const frameCount = Math.round(duration * fps);
+  const frameCount = filmFrameCount(duration, fps);
   const getFrame = async (i) => {
     await seekTo(page, i / fps);
     return grabGrey(page, w, h);

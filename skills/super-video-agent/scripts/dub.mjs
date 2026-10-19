@@ -20,6 +20,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, loadPlan, readJson, writeJson, ensureDir } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, captureFrame } from "./lib/browser.mjs";
+import { filmFrameCount } from "./lib/frame-count.mjs";
 import { ffmpeg, probeDuration, probeFrameCount, probeVideoInfo, snapToFrameGrid, nominalFps, videoEncodeArgs } from "./lib/ffmpeg.mjs";
 import { measureMasterGain, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
 import { buildDuckVolumeExpr, measureDuckSwing, formatDuckSwingReport, DUCK_DB_DEFAULT } from "./lib/duck.mjs";
@@ -494,7 +495,7 @@ export async function dub({ dir, lang, minGap = null, maxSpeed = MAX_SPEED_DEFAU
       pictureSource: picked.source, contrast, keepBasePictureText,
     });
 
-    const expectedFrames = Math.round(baseTimings.duration * fps);
+    const expectedFrames = filmFrameCount(baseTimings.duration, fps);
     await gateAvSync({ videoOnlyPath: videoNoAudioPath, narrationPath: audioPath, expectedFrames });
 
     const tempPath = uniqueTempPath(paths.outDir, `final-${lang}`, ".mp4");
@@ -532,7 +533,7 @@ async function spaceSlots({ dubDir, pictureMp4, pictureBedWav, baseTimings, fit,
     baseTimings: remapTimings(baseTimings, map),
   };
   const graph = buildSpaceFilterGraph(segmentFactors(map), fps, map.newDuration);
-  const frameCount = Math.round(map.newDuration * fps);
+  const frameCount = filmFrameCount(map.newDuration, fps);
   const video = await pictureEncodeArgs(pictureMp4, { crf: 16 });
   await ffmpeg(buildSpaceFfmpegArgs({ pictureMp4, bedWav: pictureBedWav, outMp4: out.pictureMp4, outWav: out.pictureBedWav, graph, frameCount, video }));
   writeJson(path.join(spacedDir, "picture.timings.json"), out.baseTimings);

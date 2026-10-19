@@ -35,7 +35,9 @@ Secondary: `2026-10-13-artex-korean-edition` (2D, handwriting font).
 ## Status — DONE (2D native render validated, high confidence)
 - [x] Mapped engine + reel + capture contract.
 - [x] Built native host (`reel-host.mjs`) — globals shim + font registration + runs ENGINE+AUDIO+film helper src/*.js+SCENE unmodified.
-- [x] `render-native.mjs` — native -> mp4 via the project's own encoder (drop-in for out/picture.mp4).
+- [x] Native backend behind `scripts/lib/browser.mjs` (`native-page.mjs`): `SVA_RENDERER=native node SKILL/scripts/render.mjs <reel>`
+      renders natively with the full render.mjs pipeline (segments, spans, sound bed, cues, mix); still.mjs, verify.mjs
+      and state-checks.mjs run natively the same way.
 - [x] `validate.mjs` — per-frame SSIM vs out/picture.mp4; `bench-browser.mjs` — browser baseline on the same frames.
 - [x] Validated on TWO real 2D reels with NO reel changes: muse-wonder-argon, artex-korean-edition.
 
@@ -60,16 +62,19 @@ fps (same reel, same frames, single process, draw+capture):
 ## Ports cleanly / needed shims / can't port
 - Ports unchanged: all Canvas2D drawing, the engine (globalThis.Reel), ReelAudio, the film's own src/*.js helpers (K/scenes),
   deterministic textures, plan.json/timings.json, scene timing (seek(t) pure fn of t).
-- Shims (small, in reel-host.mjs): document.getElementById/createElement/fonts(FontFaceSet-like); window=globalThis;
-  location.search="?captions=0"; Image (skia Image + relative-src resolve); createImageBitmap; fetch (local JSON only);
-  fonts via skia FontLibrary parsed from the reel's @font-face. OffscreenCanvas left undefined -> createElement path.
-  One global tweak: ctx.textRendering="optimizeLegibility" (measured closer to Chromium than the default).
+- Shims (small, in reel-host.mjs): document.getElementById/querySelector/createElement/fonts(FontFaceSet-like);
+  location from the page URL (its query: ?captions=0, ?layer=..., ?lang=...); Image (skia Image + relative-src resolve);
+  createImageBitmap; fetch (the served files, routes and overrides); timers; console. Each reel runs in its own vm
+  realm with its own CanvasRenderingContext2D prototype. fonts via skia FontLibrary parsed from the reel's @font-face.
+  OffscreenCanvas left undefined -> createElement path. Raster is CPU on every host (skia's GPU engine was not
+  deterministic across seek history). One global tweak: ctx.textRendering="optimizeLegibility" (measured closer to
+  Chromium than the default).
 - Can't port (out of scope here): 3D reels (WebGL). headless-gl is WebGL1 only; modern three needs WebGL2.
 
 ## Known gaps / not done
-- Not wired into render.mjs as a capture backend; not parallelized (render.mjs runs a worker pool — native could too, per-segment).
-- Caption-layer / dub (?layer=captions) and picture --lang paths not exercised (only base picture ?captions=0).
-- Only 2 reels validated; full-film native render not run to completion (slow single-thread; spans measured instead).
+- Not parallelized: native sessions share one thread, so `--workers` adds no drawing throughput.
+- Caption-layer / dub (?layer=captions) and picture --lang paths are reachable through the same seam but not exercised on a real reel.
+- Only 2 reels validated against the browser picture (SSIM).
 
 ---
 

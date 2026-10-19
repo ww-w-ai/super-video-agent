@@ -9,6 +9,7 @@ import { ffmpeg, ffprobe } from "./ffmpeg.mjs";
 import { measureLoudness } from "./audio-analysis.mjs";
 import { streamGrayFrames } from "./frame-diff.mjs";
 import { createFreezeStream } from "./freeze-scan.mjs";
+import { filmFrameCount } from "./frame-count.mjs";
 
 const SAMPLE_RATE = 48000;
 
@@ -148,7 +149,7 @@ export async function scanFilePicture(file, { width, height, fps, expectedSec = 
   };
   const { frames } = await streamGrayFrames(file, { width, height, onFrame, spawnFn });
   const scan = freeze.finish();
-  const expected = expectedSec == null ? null : Math.round(expectedSec * fps);
+  const expected = expectedSec == null ? null : filmFrameCount(expectedSec, fps);
   return {
     freezeRuns: scan.runs,
     recheckSpans: scan.recheckSpans,

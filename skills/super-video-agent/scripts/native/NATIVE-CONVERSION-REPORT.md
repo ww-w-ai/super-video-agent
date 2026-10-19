@@ -12,7 +12,7 @@ changes to the reels themselves. This is a measured match, not a POC claim.
 | File | Role |
 |---|---|
 | `reel-host.mjs` | The engine. Loads a reel, shims the browser globals the engine/scene touch, registers the reel's fonts with skia, runs the inlined ENGINE + AUDIO + the film's own `src/*.js` helpers + SCENE unmodified, awaits `__reel.ready`, then `seek(t)` draws any frame into a skia Canvas. |
-| `render-native.mjs` | Renders a reel (whole film or a span) to mp4 using the project's OWN encoder (`lib/ffmpeg.mjs` `spawnImagePipeEncoder`), so the file is a drop-in for `render.mjs`'s `out/picture.mp4` — same codec/crf/preset/gop. |
+| `native-page.mjs` | The page API the tools use (evaluate, routes, init scripts, seek/capture) on top of `reel-host.mjs`. `scripts/lib/browser.mjs` opens it instead of Chromium when `SVA_RENDERER=native`, so `SVA_RENDERER=native node SKILL/scripts/render.mjs <reel>` renders with the whole render.mjs pipeline (segments, spans, sound bed, cues, mix) and still.mjs, verify.mjs and state-checks.mjs check the native frames. |
 | `validate.mjs` | Per-frame SSIM of the native render vs the reel's `out/picture.mp4`. |
 | `bench-browser.mjs` | Browser-path fps on the same reel + same frames, for an apples-to-apples fps baseline. |
 | `smoke.mjs` | Quick load + sample-frame sanity check. |
@@ -95,9 +95,8 @@ perceptually invisible.
 | clean (170-185 s) | 24.9 | 19.8 | 1.26x |
 
 Native is ~25% faster per frame AND drops the Chromium dependency. Hardware HEVC
-encode is not the bottleneck (draw-only ≈ draw+encode). `render.mjs` runs a
-parallel browser-worker pool for throughput; the native path can be pooled the
-same way (one process per segment).
+encode is not the bottleneck (draw-only ≈ draw+encode). Native sessions share one
+thread, so `render.mjs --workers` adds no native drawing throughput.
 
 ## Ports cleanly / needs shim / can't port
 
@@ -116,15 +115,15 @@ High confidence for **2D picture rendering**: the host faithfully reproduces the
 browser output (>= 0.988 SSIM on the deliverable, pixel-perfect on clean frames)
 and is a drop-in for the capture step, proven on two shipped reels.
 
+How to render natively: `SVA_RENDERER=native node SKILL/scripts/render.mjs <reel>`
+(any render.mjs flag works: `--span`, `--no-captions`, `--preview`, ...).
+
 Not yet done for a full production switch:
-1. Wire the native host into `render.mjs` as an alternative capture backend
-   (behind a flag), so segments, caching, contrast checks, and the sound bed all
-   keep working.
-2. Parallelize (worker pool per segment) to beat the browser pool on throughput,
+1. Parallelize (one process per segment) to beat the browser pool on throughput,
    not just per-frame.
-3. Exercise the caption-layer / dub (`?layer=captions`, `--lang`) paths — only
-   the base `?captions=0` picture was validated.
-4. Validate across more 2D reels (fonts, scene kinds) before flipping the default.
+2. Exercise the caption-layer / dub (`?layer=captions`, `--lang`) paths on a real
+   reel — only the base picture and the captioned final were run natively.
+3. Validate across more 2D reels (fonts, scene kinds) before flipping the default.
 
 No fabricated pass: every SSIM and fps number above was produced by ffmpeg/the
 host in this build and is reproducible with the scripts in `scripts/native/`.

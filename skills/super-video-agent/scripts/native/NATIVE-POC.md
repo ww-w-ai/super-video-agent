@@ -1,5 +1,8 @@
 # Native (no-browser) render POC
 
+To render a 2D reel natively: `SVA_RENDERER=native node SKILL/scripts/render.mjs <reel>`. The scripts below are the
+first standalone measurements.
+
 Machine: Apple M2, 8-core. 1920x1080, 300 frames, 30 fps, libx264 veryfast, raw RGBA piped to ffmpeg.
 
 | Backend | Script | Libs | fps | Browser baseline |

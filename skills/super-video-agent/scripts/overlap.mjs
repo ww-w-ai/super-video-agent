@@ -7,6 +7,7 @@ import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, writeJson } from "./lib/reeldir.mjs";
 import { serveDir } from "./lib/server.mjs";
 import { openReel, seekTo, stubSeconds } from "./lib/browser.mjs";
+import { lastFilmFrame } from "./lib/frame-count.mjs";
 import { checkHookResult, overlapSpans, formatSpans } from "./lib/overlap.mjs";
 import { isMain } from "./lib/is-main.mjs";
 
@@ -65,7 +66,7 @@ export async function main(argv) {
 }
 
 async function sample(page, fps, duration, step) {
-  const last = Math.max(0, Math.ceil(duration * fps - 1e-9) - 1);
+  const last = lastFilmFrame(duration, fps);
   const samples = [];
   for (let frame = 0; frame <= last; frame += step) {
     const t = frame / fps;

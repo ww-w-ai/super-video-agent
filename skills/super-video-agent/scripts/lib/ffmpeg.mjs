@@ -437,26 +437,19 @@ export async function probeEncodeSource(file) {
 }
 
 /**
- * Spawn a long-lived ffmpeg process that reads PNG frames from stdin
- * (image2pipe) and encodes them with videoEncodeArgs. Caller writes frames
- * then ends stdin. `width`/`height` are the output size (the hardware bitrate);
- * `encoder` defaults to SVA_VENC's choice.
+ * Spawn a long-lived ffmpeg process that reads frames from stdin and encodes
+ * them with videoEncodeArgs. Caller writes frames then ends stdin. Frames are
+ * PNG files (image2pipe), or with `rgbaSize` {width, height} raw unpremultiplied
+ * RGBA frames of that size (rawvideo). `width`/`height` are the output size
+ * (the hardware bitrate); `encoder` defaults to SVA_VENC's choice.
  * Returns {proc, done} where done resolves when the process exits 0.
  */
-export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium", scaleFilter, width, height, encoder }) {
+export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium", scaleFilter, width, height, encoder, rgbaSize = null }) {
   const gop = keyframeInterval(fps);
-  const args = [
-    "-hide_banner",
-    "-loglevel",
-    "error",
-    "-y",
-    "-f",
-    "image2pipe",
-    "-framerate",
-    String(fps),
-    "-i",
-    "-",
-  ];
+  const input = rgbaSize
+    ? ["-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${rgbaSize.width}x${rgbaSize.height}`]
+    : ["-f", "image2pipe"];
+  const args = ["-hide_banner", "-loglevel", "error", "-y", ...input, "-framerate", String(fps), "-i", "-"];
   if (scaleFilter) args.push("-vf", scaleFilter);
   args.push(
     ...videoEncodeArgs({ crf, preset, width, height, encoder }),
@@ -471,7 +464,7 @@ export function spawnImagePipeEncoder({ fps, outPath, crf = 18, preset = "medium
     proc.on("error", (e) => reject(new Error(`ffmpeg failed to start: ${e.message}`)));
     proc.on("close", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`ffmpeg image2pipe exited ${code}\n${stderr}`));
+      else reject(new Error(`ffmpeg ${rgbaSize ? "rawvideo" : "image2pipe"} exited ${code}\n${stderr}`));
     });
   });
   return { proc, done };

@@ -12,6 +12,7 @@
 // whose box covers >= 95% of the text box ({kind: "fill", color, alpha}), or a strokeText of the same
 // string at the same box with lineWidth >= 2 px ({kind: "outline", ...}); null when nothing backs it or
 // a draw that does not cover the box (an image, a clear, a partial fill) came after the backing.
+import { lastFilmFrame } from "./frame-count.mjs";
 
 /**
  * Wraps the 2D context on the page; draws on canvases attached to the document are recorded.
@@ -31,7 +32,7 @@ export async function installTextProbe(page, { pixels = false, paused = false } 
  */
 export async function collectFrameStates(page, { fps, duration, step, range = null, onProgress = null, dom = false }) {
   const hook = await page.evaluate(() => typeof window.__reel.visibleAt === "function");
-  const end = Math.max(0, Math.ceil(duration * fps - 1e-9) - 1);
+  const end = lastFilmFrame(duration, fps);
   const first = range ? Math.min(end, Math.ceil(range.from * fps - 1e-9)) : 0;
   const last = range ? Math.min(end, Math.floor(range.to * fps + 1e-9)) : end;
   const total = Math.floor((last - first) / step) + 1;

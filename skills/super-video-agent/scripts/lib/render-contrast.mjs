@@ -82,6 +82,7 @@ async function captureWithoutCaptions(page, t, capture) {
 
 /** The older measure for an engine without tagged draws: with/without-caption pixel difference. */
 async function measureByDifference(collector, { page, t, lineId, withPng, capture }) {
+  if (!withPng) withPng = await capture(page);
   const withoutPng = await captureWithoutCaptions(page, t, capture);
   if (!withoutPng) {
     collector.unsupported = true;
@@ -94,8 +95,9 @@ async function measureByDifference(collector, { page, t, lineId, withPng, captur
 }
 
 /**
- * Measures one frame the encoder just drew (a sampled frame only). `withPng` (that frame) and `capture`
- * are used only by the fallback for an engine that does not tag its caption draws. Never throws.
+ * Measures one frame the encoder just drew (a sampled frame only). `withPng` (that frame, or null when
+ * the encoder took raw pixels: it is then captured again) and `capture` are used only by the fallback
+ * for an engine that does not tag its caption draws. Never throws.
  */
 export async function measureDrawnFrame(collector, { page, frame, withPng, capture }) {
   const sample = collector.frames.get(frame);

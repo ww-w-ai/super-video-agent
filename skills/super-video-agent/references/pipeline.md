@@ -975,6 +975,23 @@ records its encoder, so a change of `SVA_VENC` re-renders cached segments; cuts 
 re-encode with the encoder of the file they cut; and a stream-copy join of parts from two encoders
 stops with a message naming both.
 
+`SVA_RENDERER` (default `browser`) picks what draws the reel page for every script that opens one:
+`browser` is headless Chromium; `native` runs the page's scripts in Node and draws with skia-canvas,
+with no browser. Every script works the same way under either (`SVA_RENDERER=native node
+scripts/render.mjs <reel>` renders, mixes and muxes as usual) and prints one `renderer:` line naming
+the one in use. `native` draws 2D canvas reels only: a 3D/WebGL reel (module scripts, a WebGL
+context) or a page with elements beside its `<canvas>` stops on load with a message to use `browser`.
+Native sessions share one thread, so `--workers` adds no drawing speed there. A native render hands
+the encoder raw frames, not PNG. A film's frame count is round(duration × fps) for the render and
+every check.
+
+`SVA_NATIVE_RASTER` (default `cpu`) picks where native draws: `cpu` runs on every host; `gpu` uses
+Metal on macOS or Vulkan on Linux and leaves the CPU cores to the encoder (a 73 s 1080×1920 Short on
+an Apple Silicon Mac: 59 s on `cpu`, 44 s on `gpu`). Use it to put drawing on a GPU machine or to split
+load between jobs. A host with no usable GPU draws on the CPU and prints one `native raster:` line
+saying so. The two differ only by rounding (invisible); keep one setting for a render and the checks
+that compare against it.
+
 ## Asset library
 
 Recorded sound effects and reaction clips ("짤") live outside the skill, in one folder per user:
