@@ -209,6 +209,10 @@ keeps the file's own length, and `measure`, `report` and the judge prompt all na
 noisiness over 60 Hz–12 kHz, so a library file's leading encoder silence or its 16 kHz low-pass
 does not read as brightness 0 Hz or as a pure tone.
 
+A card may also carry `"file": "<path relative to the reel>"` (any recipe kind): `measure` then
+reads that audio file whole and does not open the page, which suits effect files the film made
+itself.
+
 A film with hundreds of cues does not need a card for each. Flag the cues that get a card with
 `card: true` in `SFX_CUES`: the scaffold's `sfxStems()` then renders only those (every cue when
 none is flagged), so `measure` does not receive every cue's samples at once.

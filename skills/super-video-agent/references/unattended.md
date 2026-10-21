@@ -46,7 +46,13 @@ Shape both to the film.
    one more review. Cap the rounds.
 7. **Check the done-file, then resume.** If a session ends and its done-file is missing, the runner
    resumes that session by its id with a short note, up to a cap. After the cap the stage is marked
-   failed, the stages that need it are skipped, and the others go on.
+   failed, the stages that need it are skipped, and the others go on. The runner gives each stage its
+   own `--session-id` on the first call, so a resume is possible even when that call fails at once. A
+   call that fails with a dropped-connection message (`Can't reach the API server`, `ENOTFOUND`, `SSL
+   certificate hostname mismatch`, `ECONNRESET`, `socket hang up`) is not a failed job: the runner waits
+   (`networkBackoffSec`, default 30, 60, 90 s, then 90 s each), logs one status line, and resumes the
+   same session, up to `maxNetworkRetries` (default 40, plan or stage level). These retries do not
+   count against `maxResumes`. Any other failure follows the resume cap as before.
 8. **Never edit a script while it runs.** A shell script is read as it executes, so an edit changes
    the running job. Copy it and edit the copy, or let the runner run a `script` stage from its own
    snapshot copy.
@@ -76,7 +82,9 @@ Shape both to the film.
 | `cost-report.mjs <film-dir> [--results <dir>]` (results default `<film-dir>/results`) | per stage: sessions, cost, session time, wall time, turns, tokens, flags; TTS usage when the synthesis tools logged it |
 
 **The plan file** (`run.mjs`) is JSON, every path absolute: `dir` (state, logs, results, `status.txt`),
-`claude` and `claudeArgs` (the command for session stages), `maxParallel`, `lock`
+`claude` and `claudeArgs` (the command for session stages), optional `model` and `effort`
+(`low|medium|high|xhigh|max`; a stage's own `model` / `effort` override them and become `--model` / `--effort`
+on every call of that stage), `maxParallel`, `lock`
 (`gpu`, `threshold`, `gpuWaitMaxSec`, `gpuIdleSamples`) and `stages`. A stage has a `name`, a `kind`
 (`session` or `job`), a `done` file, optional `needs` (stage names), `owns` (files or folders it writes)
 and `verify` (`json`, `contains`, `matches`, `minBytes`), and either a `prompt` file (session) or a
@@ -112,7 +120,8 @@ alive is refused unless `--force`.
 
 When a film's stages finish, print the report to the user in the final message: per stage the
 sessions, cost, session time, wall time, turns and tokens, and the TTS usage. `run.mjs` prints it
-at the end and writes `<dir>/cost-report.txt`; `cost-report.mjs <film-dir>` prints it again.
+at the end and writes `<dir>/cost-report.txt`; `cost-report.mjs <film-dir>` prints it again. Each run writes
+`results/<stage>.<run id>.<n>.json`, so the report sums the sessions of every run.
 Whatever a tool could not measure (a session result with no cost field, no TTS usage log) is listed as
 not logged, never estimated.
 

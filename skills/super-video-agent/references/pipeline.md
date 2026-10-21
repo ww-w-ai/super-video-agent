@@ -975,6 +975,40 @@ records its encoder, so a change of `SVA_VENC` re-renders cached segments; cuts 
 re-encode with the encoder of the file they cut; and a stream-copy join of parts from two encoders
 stops with a message naming both.
 
+`SVA_RENDERER` (default `browser`) picks what draws the reel page for every script that opens one:
+`browser` is headless Chromium; `native` runs the page's scripts in Node and draws with skia-canvas,
+with no browser. Every script works the same way under either (`SVA_RENDERER=native node
+scripts/render.mjs <reel>` renders, mixes and muxes as usual) and prints one `renderer:` line naming
+the one in use. `native` draws 2D canvas reels and 3D reels (a module scene that imports `three`)
+on WebGPU in the same process. A 3D page lives on Node's own global object, so one is open per
+process: a 3D render runs `--workers N` as 1. A page with elements beside its `<canvas>`, or a
+classic script that asks for a WebGL canvas context, stops on load with a message to use `browser`.
+Native sessions share one thread, so `--workers` adds no drawing speed there. A native render hands
+the encoder raw frames, not PNG. A film's frame count is round(duration × fps) for the render and
+every check.
+
+Native drawing has three rules a page relies on:
+
+- The host clears the stage before every seek. skia-canvas keeps every drawing command since the last
+  full clear and replays them on each read, so any canvas the page reuses across frames (offscreen
+  work canvases too) needs a full `clearRect` before it is drawn again, or memory and frame time grow
+  with every frame. A reel that means to draw over its last frame sets `nativeKeepStage: true` on
+  `window.__reel`.
+- A 3D page's `window.__reel.seek(t)` may be async and returns once the stage is drawn. After
+  `renderer.render()`, it awaits `renderer.readPixelsAsync()` (the 3D picture as tight RGBA rows,
+  top-down) and puts the pixels on the stage. `readRenderTargetPixelsAsync` returns tight rows too, so
+  a page never removes row padding itself. A scene that still copies with a synchronous
+  `gl.readPixels` in `copyToStage()` is rewritten on load to await the same read.
+- Node uniforms that update once per frame (light colour, intensity, position, skinning) follow the
+  seek: the host starts a new node frame at time t before each seek.
+
+`SVA_NATIVE_RASTER` (default `cpu`) picks where native draws: `cpu` runs on every host; `gpu` uses
+Metal on macOS or Vulkan on Linux and leaves the CPU cores to the encoder (a 73 s 1080×1920 Short on
+an Apple Silicon Mac: 59 s on `cpu`, 44 s on `gpu`). Use it to put drawing on a GPU machine or to split
+load between jobs. A host with no usable GPU draws on the CPU and prints one `native raster:` line
+saying so. The two differ only by rounding (invisible); keep one setting for a render and the checks
+that compare against it.
+
 ## Asset library
 
 Recorded sound effects and reaction clips ("짤") live outside the skill, in one folder per user:

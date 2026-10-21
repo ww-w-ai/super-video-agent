@@ -52,6 +52,9 @@ in `FILM.md`. One row per image:
   the length of the shot, and the credits at the end.
 - Mark an image an AI model edited or generated from another work as such, in the ledger's `change`
   column and in its credit line, so a derivative never reads as the original.
+- Example of one image tool, not a recommendation: `codex exec` runs read-only by default, so its
+  built-in image generation creates the picture but cannot write it to the folder you asked for.
+  Pass `-s workspace-write`, or copy the file from the generated-images path it prints on stdout.
 - A credit roll is text that moves: measure each roll line against the frame width and the safe
   area (`review.mjs <reel-dir> --scan` reports text outside it), and split or shrink a line that
   is wider.

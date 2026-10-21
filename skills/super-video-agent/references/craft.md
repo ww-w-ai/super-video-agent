@@ -13,20 +13,35 @@ missed the point — invent what fits this film.
 
 Viewers read a frame as alive when something keeps changing, and as broken when it freezes.
 How it stays alive is yours to choose: ink bleeding, a pen still moving, film grain, a slow
-push, a counter ticking. One way that has worked: each drawn element shifts a little on its own
-stepped rhythm (a "boil"). In the reference shorts, components and lines
-shaking slightly made the video look natural instead of paused. Keep it subtle enough that it reads as hand-made, not shaking —
-viewers complained about motion sickness when everything moved a lot. Text the viewer must read
-stays still.
+push, a counter ticking, marks arriving, a highlight sweeping. Boil — each drawn element shifting a
+little on its own stepped rhythm — is ONE such tool, not the default, and the weakest kind of
+aliveness because it carries no meaning.
 
-Elements at rest boil; while an element moves it does not; boil returns once it arrives (`Reel.moving`).
-A moving element may also step its angle on the beat (a stop-motion feel). That is a motion choice, not boil; use it where it suits the film.
+Use boil (and any all-over wobble) only where a screen would otherwise be dull if static, and the
+film wants that hand-made shimmer. Do NOT use it on informational screens — diagrams, data, text
+cards, anything the viewer is reading or studying. Those stay still; bring them to life instead
+with motivated motion: elements arriving in reading order, a slow push/pan, a counter, a left-to-right
+highlight. A still informational frame with one thing happening beats a frame where everything
+jitters.
+
+Especially in long-form: never run a frame-wide wobble across the whole film. A boil that never
+stops over 10+ minutes causes motion sickness and breaks focus — viewers complained. Decide boil
+per scene, not once for the film.
+
+When boil is used: keep it subtle enough to read as hand-made, not shaking. Text the viewer must
+read stays still regardless. Elements at rest boil; while an element moves it does not; boil returns
+once it arrives (`Reel.moving`). A moving element may also step its angle on the beat (a stop-motion
+feel) — a motion choice, not boil; use it where it suits the film.
 
 ## Marks are made
 
 Things arrive the way this film's look would make them: a pen draws the circle, a note is slapped on,
 a stamp hits, ink spreads, a card slides and settles. The order the marks appear is the order
 the eye reads. Everything fading or zooming in together reads as a template.
+
+A still that represents the film (cover, thumbnail, poster frame, a Short's opening frame) shows
+every element in it fully arrived: pick a moment after its reveals end, or draw it with the reveals
+complete. A half-drawn, half-wiped or half-typed picture reads as a broken frame.
 
 ## One picture per line
 
@@ -134,6 +149,7 @@ one that fits the content, or use or invent another technique that suits this fi
 | Collage animation | scraps of magazines or photos pasted together, the cut-and-paste texture shown on purpose | Terry Gilliam's *Monty Python* animation |
 | Photo animation | a real person's photo cut out; only the head or arms move | documentary, news and explainer videos |
 | 2.5D parallax | a still split into near and far layers; a camera move gives depth | the "living photo" shot in documentaries; the engine helper `Reel.parallax` and its edge check are in `references/parallax.md` |
+| Pen line art (limited animation) | ink lines drawn stroke by stroke, a few separate drawings a second | book, manual and instruction-leaflet figures brought to life; the model sheet, code drawing and review loop are in `references/pen-line.md` |
 
 Studio tools for these are Toon Boom Harmony, Moho and Adobe Character Animator; setting up the
 joints is called cut-out rigging. A cut-out figure moves well when its parts share one fabric and
@@ -167,6 +183,17 @@ look in your own words in `FILM.md`.
 | Half-empty frames | small visuals in a large blank frame |
 | "It'll become the new slop animation template" | a look that any subject would get; no look chosen for this film |
 | "SFX is a joke, literal overproduced garbage" | effects stacked everywhere instead of on a few real events |
+
+## Light on a 3D object
+
+Light effects built as flat additive planes (light shafts) or long thin cross-arm glints read as
+hard vertical or horizontal lines beside the object. A flat plane seen narrow or edge-on becomes a
+line, and with depth writes off nothing ever occludes it. Steam built from stacked translucent
+planes reads as fake for the same reason.
+
+Light reads natural when it comes from the scene's own source (window daylight, a lamp). Move the
+light or its environment, or turn the object, so highlights travel over the surface. Keep any
+glint small, short-armed, with a soft falloff.
 
 ## Photo sources
 

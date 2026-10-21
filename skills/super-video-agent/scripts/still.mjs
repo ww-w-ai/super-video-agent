@@ -2,13 +2,12 @@
 // Render one frame at full resolution (design.md §2.3), or tile PNG files
 // into one contact sheet (--sheet).
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { ffmpeg, probeVideoInfo } from "./lib/ffmpeg.mjs";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths } from "./lib/reeldir.mjs";
-import { serveDir } from "./lib/server.mjs";
+import { serveDir, serveOverrides } from "./lib/server.mjs";
 import { openReel, captureFrame, stubSeconds, warmShotsOf, glIssues, glReportLines } from "./lib/browser.mjs";
 import { buildContactSheet } from "./lib/contact-sheet.mjs";
 import { pictureUrl } from "./render.mjs";
@@ -195,33 +194,7 @@ async function serveDubLayer(origin, dir, code) {
     `note: dub/${code}/timings.placed.json does not exist yet; previewing on the base language's clock with ${code}'s plan text ` +
       `(word times are spread by character count)${missing.length ? `; no ${code} text for ${missing.join(", ")} (base text shown)` : ""}\n`
   );
-  return overrideServer(origin, { [`/dub/${code}/timings.placed.json`]: JSON.stringify(timings) });
-}
-
-/** A loopback server that returns `bodies[path]` (JSON) and forwards every other request to `origin`. */
-function overrideServer(origin, bodies) {
-  return new Promise((resolve, reject) => {
-    const server = http.createServer(async (req, res) => {
-      const pathname = new URL(req.url, "http://127.0.0.1").pathname;
-      if (bodies[pathname] !== undefined) {
-        res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-        res.end(bodies[pathname]);
-        return;
-      }
-      try {
-        const r = await fetch(origin.url.replace(/\/$/, "") + req.url);
-        res.writeHead(r.status, { "content-type": r.headers.get("content-type") || "application/octet-stream", "cache-control": "no-store" });
-        res.end(Buffer.from(await r.arrayBuffer()));
-      } catch (e) {
-        res.writeHead(502);
-        res.end(String(e.message));
-      }
-    });
-    server.on("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      resolve({ url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise((done) => server.close(() => done())) });
-    });
-  });
+  return serveOverrides(origin, { [`/dub/${code}/timings.placed.json`]: JSON.stringify(timings) });
 }
 
 /**

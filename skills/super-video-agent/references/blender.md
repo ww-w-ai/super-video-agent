@@ -85,6 +85,17 @@ overlap or blink hooks as evidence about Blender geometry.
    to add captions and voice. Review the final file with `review.mjs --file <final.mp4>` and
    inspect extracted frames. A browser still of the placeholder page is not Blender QA.
 
+### A wordless film with an on-screen text layer
+
+`--insert` replaces the page's frames for the inserted span (`render.mjs` skips browser picture
+rendering for covered segments), so the page's own text and overlay layer does not appear in that
+span. For a film whose picture is a Blender clip with text drawn over it, either:
+
+- draw the Blender frames inside the page as its background (an image sequence or video texture
+  under the overlay) and render the page normally, without `--insert`, so the overlay keeps
+  drawing; or
+- render the overlay separately (transparent background) and composite it over the Blender clip.
+
 Do not pass `.blend` or Python directly to `render.mjs`. It accepts the browser reel and an
 already-rendered clip. A Blender render failure does not automatically convert its scene into
 Three.js. Preserve the scene and evidence; before substantial authoring, an unusable runtime

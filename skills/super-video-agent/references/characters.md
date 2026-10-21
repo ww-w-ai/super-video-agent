@@ -10,7 +10,8 @@ needs before choosing it; do not pick one only because it is written here.
 ## Name the technique
 
 People, hands and pen lines drawn from plain shapes in code look crude beside the rest of a frame.
-Do not draw a character that way unless the user asks for it. Choose a named technique for each
+Do not draw a character that way unless the user asks for it. Pen line art built on a generated
+model sheet, with traced detail and an outside review, is a different route (`references/pen-line.md`). Choose a named technique for each
 scene and write its name in `FILM.md` (and in the plan's visual notes). The name makes you choose
 on purpose. When the user asks for code-drawn parts (a rig of shapes, a drawn figure), the user's
 request wins over this advice: name it as the technique and build it.
@@ -23,6 +24,7 @@ Techniques the skill already has code or assets for (tested, so the quality is k
 | A photo placed inside a 3D scene | the 3D scaffold; `references/3d.md` |
 | Soft-body wobble, cover over a posed body, blinks from a fixed list | `examples/3d-round-plush-cast/`, `overlap.mjs`, `blink-check.mjs` |
 | Generated-image cut-outs on a rig | the pattern below (written in the page; no bundled library) |
+| Pen line art: a posable figure drawn in code from a generated model sheet | `references/pen-line.md` (written in the page; no bundled library) |
 
 These are examples. When none fits, find the technique that suits the content's style (for
 example collage, photo animation, 2.5D parallax; see `references/craft.md` "Named 2D techniques"),

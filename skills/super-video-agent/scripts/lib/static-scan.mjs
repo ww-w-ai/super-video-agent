@@ -5,6 +5,7 @@
 // and checks it against the banned-token list.
 import fs from "node:fs";
 import path from "node:path";
+import { pictureTextOrigins } from "./picture-text-origin.mjs";
 
 const BANNED = [
   { name: "Math.random", re: /Math\.random\s*\(/g, hardLimit: 0 },
@@ -171,22 +172,28 @@ function markArgumentBounds(tokens) {
     const value = tokens[i].value;
     if (["(", "[", "{"].includes(value)) stack.push(i);
     else if ([")", "]", "}"].includes(value)) {
-      const open = tokens[stack.pop()];
-      if (open) { open.close = i; open.argEnd ??= i; }
+      const openIndex = stack.pop();
+      const open = tokens[openIndex];
+      if (open) { open.close = i; open.argEnd ??= i; tokens[i].open = openIndex; }
     } else if (value === "," && stack.length) tokens[stack.at(-1)].argEnd ??= i;
   }
   return tokens;
 }
 
-/** Direct linguistic literals warn. Direct pictureText calls are registered; other expressions need review. */
+/**
+ * Direct linguistic literals warn. Direct pictureText calls are registered, and so are identifiers assigned
+ * from one and calls to functions that only return one (picture-text-origin.mjs); other expressions need review.
+ */
 export function pictureTextCalls(code) {
   const tokens = pictureTokens(code);
+  const isPictureTextResult = pictureTextOrigins(tokens);
   const calls = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i].value !== "fillText" || tokens[i + 1]?.value !== "(") continue;
     const arg = tokens[i + 2]?.value || "";
     const end = tokens[i + 1].argEnd;
     if (arg === "Reel" && tokens[i + 3]?.value === "." && tokens[i + 4]?.value === "pictureText" && tokens[i + 5]?.value === "(" && tokens[i + 5].close === end - 1) continue;
+    if (isPictureTextResult(i)) continue;
     const quoted = /^["'`]/.test(arg);
     const dynamic = !quoted || end !== i + 3 || (arg.startsWith("`") && arg.includes("${"));
     if (!dynamic && !/\p{L}/u.test(arg)) continue;

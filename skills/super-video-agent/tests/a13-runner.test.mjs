@@ -565,7 +565,7 @@ test("runner: a missing done-file resumes the session by id, then the cost repor
   const r = await runPlan(planOf(f, [sessionStage(f, "voice", 2)]), { print: (s) => printed.push(s) });
   assert.equal(r.ok, true);
   assert.equal(f.calls("voice").resumes, 1);
-  assert.ok(fs.existsSync(path.join(f.dir, "results", "voice.0.json")) && fs.existsSync(path.join(f.dir, "results", "voice.1.json")));
+  assert.deepEqual(fs.readdirSync(path.join(f.dir, "results")).map((n) => n.replace(/\.r[0-9a-z]+\./, ".")).sort(), ["voice.0.json", "voice.1.json"]);
   assert.match(printed.join(""), /voice \| 2 \| 1\.00/);
   assert.match(printed.join(""), /total \| 2 \| 1\.00/);
   const status = fs.readFileSync(path.join(f.dir, "status.txt"), "utf8");

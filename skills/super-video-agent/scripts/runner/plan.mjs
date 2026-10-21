@@ -3,6 +3,7 @@
 import path from "node:path";
 
 const NAME = /^[A-Za-z0-9_-]+$/;
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 /** Throws one Error listing every problem, or returns the plan with defaults filled in. */
 export function validatePlan(plan) {
@@ -11,6 +12,7 @@ export function validatePlan(plan) {
   if (!isAbs(plan?.dir)) problems.push(`"dir" must be an absolute path (got ${JSON.stringify(plan?.dir)})`);
   if (!stages.length) problems.push('"stages" must list at least one stage');
   const names = new Set();
+  modelProblems(plan, "plan", problems);
   for (const s of stages) checkStage(s, names, problems);
   for (const s of stages) for (const n of s.needs || []) if (!names.has(n)) problems.push(`stage "${s.name}" needs unknown stage "${n}"`);
   if (!problems.length) {
@@ -22,6 +24,12 @@ export function validatePlan(plan) {
   return normalise(plan);
 }
 
+/** "model" is a non-empty string and "effort" one of EFFORTS; both optional, on the plan or on a stage. */
+function modelProblems(obj, where, problems) {
+  if (obj?.model !== undefined && (typeof obj.model !== "string" || !obj.model)) problems.push(`${where}: "model" must be a non-empty string (got ${JSON.stringify(obj.model)})`);
+  if (obj?.effort !== undefined && !EFFORTS.includes(obj.effort)) problems.push(`${where}: "effort" must be one of ${EFFORTS.join("|")} (got ${JSON.stringify(obj.effort)})`);
+}
+
 const isAbs = (p) => typeof p === "string" && path.isAbsolute(p);
 
 function checkStage(s, names, problems) {
@@ -29,6 +37,7 @@ function checkStage(s, names, problems) {
   if (!s || typeof s.name !== "string" || !NAME.test(s.name)) return problems.push(`stage name must match ${NAME} (got ${JSON.stringify(s?.name)})`);
   if (names.has(s.name)) problems.push(`${where}: name used twice`);
   names.add(s.name);
+  modelProblems(s, where, problems);
   // The done-file is checked by the runner and written into the session's prompt: both must see the same absolute path.
   if (!isAbs(s.done)) problems.push(`${where}: "done" must be an absolute path (a relative one resolves differently for the runner and the session)`);
   if (s.kind === "session") {

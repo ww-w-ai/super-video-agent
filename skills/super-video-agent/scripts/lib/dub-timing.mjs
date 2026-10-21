@@ -3,6 +3,7 @@
 // line's slot (base line start -> next base line start, the last line's
 // slot runs to the film's end), never cutting audio and never moving the
 // picture. No I/O, no ffmpeg.
+import { filmFrameCount } from "./frame-count.mjs";
 
 // The picture's slot is the reference. Order for every line: sped up by at most
 // 10% (pitch kept) when longer than its slot, then at least MIN_BREATH_SEC of
@@ -308,7 +309,7 @@ export const TRIM_PAD_SEC_DEFAULT = DEFAULT_TRIM_PAD_SEC;
  *   langFrames:number, sharedFrames:number}}
  */
 export function planCaptionSpans({ lines, duration, fps, labelSpans = [], minSharedSec = 1.0, lastLineHolds = true }) {
-  const totalFrames = Math.round(duration * fps);
+  const totalFrames = filmFrameCount(duration, fps);
   const clampFrame = (f) => Math.max(0, Math.min(totalFrames, f));
   const held = lines.map((l, i) => ({ start: l.start, end: lastLineHolds && i === lines.length - 1 ? duration : l.end }));
   const intervals = [...held, ...labelSpans]

@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs, printHelpAndExit, fail } from "./lib/cli.mjs";
 import { mlxModelCached, modelRepos, defaultEngine } from "./lib/stt-engine.mjs";
-import { gpuReport } from "./lib/browser.mjs";
+import { gpuReport, rendererBackend, rendererLine } from "./lib/browser.mjs";
 import { chooseVideoEncoder } from "./lib/ffmpeg.mjs";
 import { isMain } from "./lib/is-main.mjs";
 
@@ -31,6 +31,9 @@ SVA_CHROME_ARGS adds raw Chromium flags. Information only.
 They also print the video encoder SVA_VENC picks (auto = HEVC hardware, else
 H.264 hardware, else libx264, each hardware one only when a 1-frame test encode
 works; hw, hevc, h264 = that hardware or not ready; sw = libx264) and why.
+They also print the page renderer SVA_RENDERER picks (browser = headless Chromium,
+the default; native = skia-canvas in Node, 2D canvas reels only); any other value
+is not ready.
 
 --check        report what is missing without installing anything.
 --dir <reel>   measure the free disk of <reel>/out (where renders write). Without
@@ -80,6 +83,11 @@ export async function main(argv) {
     const enc = encoderReport();
     for (const line of enc.lines) console.log(line);
     if (enc.error) missing.push(enc.error);
+  }
+  try {
+    console.log(rendererLine(rendererBackend(process.env)));
+  } catch (e) {
+    missing.push(e.message);
   }
   if (hasPlaywright() && (await hasChromium())) for (const line of await renderingLines(process.env)) console.log(line);
 
