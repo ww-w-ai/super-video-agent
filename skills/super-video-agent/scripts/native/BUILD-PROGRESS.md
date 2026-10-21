@@ -69,7 +69,8 @@ fps (same reel, same frames, single process, draw+capture):
   OffscreenCanvas left undefined -> createElement path. Raster is CPU on every host (skia's GPU engine was not
   deterministic across seek history). One global tweak: ctx.textRendering="optimizeLegibility" (measured closer to
   Chromium than the default).
-- Can't port (out of scope here): 3D reels (WebGL). headless-gl is WebGL1 only; modern three needs WebGL2.
+- 3D reels: headless-gl is WebGL1 only and modern three needs WebGL2, so 3D runs on WebGPU instead
+  (sections below; the tools reach it through the same native page since "3D through the native page").
 
 ## Known gaps / not done
 - Not parallelized: native sessions share one thread, so `--workers` adds no drawing throughput.
@@ -230,3 +231,40 @@ Gotcha: the pod's `/usr/local/bin/ffmpeg` (and MyDisk/ffbin) is a 2026 master bu
 API 13.1 / driver >=610 — nvenc fails on the 550 driver. Fix = `apt-get install -y ffmpeg` (4.4).
 Not measured: skia CPU-raster fps on the pod — the sample reel (MyDisk/rea-render) was deleted by
 another process mid-run; no reel remained. Bring-up notes for the next pod are in BENCH-SUMMARY.md.
+
+# 3D through the native page (SVA_RENDERER=native)
+
+A reel with a module scene now opens through `native-page.mjs` like a 2D reel, so render (incl.
+`--only`/`--handle`/`--use-draft`/`--span`), still, verify and state-checks run on it, with sound.
+`reel-host-3d.mjs` puts the page globals on Node's global (ES modules run only in the main realm),
+so one 3D page is open per process; closing it removes them again, and each open gets its own module
+graph (`?sva-open=<id>` on the scene and its imports). render.mjs runs `--workers N` as 1 for it.
+
+Host fixes (tests: `tests/native-3d.test.mjs`, `tests/native-stage.test.mjs`):
+- Node frame: three advances `nodeFrame.frameId` only in its requestAnimationFrame loop. The shim
+  starts a new node frame at t on the first render of each seek. Light uniforms and skinning
+  (`skeleton.update()` runs once per frameId) were frozen at the first rendered frame before.
+- Stage clear: both hosts clear the stage before each seek (`nativeKeepStage: true` opts out).
+  A putImageData-only page, 100 seeks at 600x600: RSS +149 MB before, bounded after.
+- Output target: the adapter's target is the renderer's output target (tone mapping, sRGB once,
+  4x MSAA in three's frame buffer). The target itself carries samples only on the direct path.
+- Read-back: `readRenderTargetPixelsAsync` returns tight rows (`3d/readback.mjs`); the copy hook is
+  `renderer.readPixelsAsync()`. The `copyToStage` rewrite runs only on a scene with the template's
+  synchronous `gl.readPixels`.
+- The Dawn GPU instance is kept referenced: once collected, the next buffer map segfaults.
+
+Measured on day04 (`3d/bench-3d.mjs`, 300 frames from t=0.5, 1080x1920, M2; load varied, so the
+item-4 cost is from back-to-back pairs):
+
+| | fps |
+|---|--:|
+| host before this change (120 frames) | 13.8 |
+| this change, adapter on the old path (own sRGB target, 0 samples) | 72.7 / 77.3 |
+| this change, output target + 4x MSAA | 61.3 / 69.0 |
+| same, with 4 samples on the target too (not kept) | 41.6 / 43.2 (old path 59.0 / 61.4 in the same pairs) |
+
+The jump from 13.8 is the stage clear. SSIM against the browser final (HEVC, footer text):
+t=0.5 0.858 -> 0.937, t=2.5 0.846 -> 0.945 (the arm pose now matches: skinning follows t).
+Reference 16:9 film, full native render with sound (3120 frames, HEVC + AAC, 104 s): 322 s while
+the test suite ran alongside; shot d05 alone 11.9 s with page load; d05 frame vs its earlier native
+picture SSIM 0.984.

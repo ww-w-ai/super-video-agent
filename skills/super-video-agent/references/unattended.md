@@ -46,7 +46,13 @@ Shape both to the film.
    one more review. Cap the rounds.
 7. **Check the done-file, then resume.** If a session ends and its done-file is missing, the runner
    resumes that session by its id with a short note, up to a cap. After the cap the stage is marked
-   failed, the stages that need it are skipped, and the others go on.
+   failed, the stages that need it are skipped, and the others go on. The runner gives each stage its
+   own `--session-id` on the first call, so a resume is possible even when that call fails at once. A
+   call that fails with a dropped-connection message (`Can't reach the API server`, `ENOTFOUND`, `SSL
+   certificate hostname mismatch`, `ECONNRESET`, `socket hang up`) is not a failed job: the runner waits
+   (`networkBackoffSec`, default 30, 60, 90 s, then 90 s each), logs one status line, and resumes the
+   same session, up to `maxNetworkRetries` (default 40, plan or stage level). These retries do not
+   count against `maxResumes`. Any other failure follows the resume cap as before.
 8. **Never edit a script while it runs.** A shell script is read as it executes, so an edit changes
    the running job. Copy it and edit the copy, or let the runner run a `script` stage from its own
    snapshot copy.

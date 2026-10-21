@@ -56,7 +56,7 @@ const plane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicM
 scene.add(plane);
 renderer.render(scene, cam);
 const px = new Uint8Array(W * H * 4);
-await renderer.__readPixelsAsync(px);
+await renderer.readPixelsAsync(px);
 const c = px.length / 2 + W * 2; // near center
 console.log(`center px RGBA = ${px[c]},${px[c + 1]},${px[c + 2]},${px[c + 3]}  (expect reddish/orange, NOT 0,0,0)`);
 const out = path.join(here, "..", "out", "canvastex-test.png");

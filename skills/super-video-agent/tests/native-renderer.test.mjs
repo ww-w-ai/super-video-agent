@@ -1,6 +1,7 @@
 // SVA_RENDERER=native: backend selection, the one frame-count rule, and the
 // native page's contract (evaluate / seek / capture, query flags, routes,
-// init scripts, session isolation, unsupported calls, 3D refusal).
+// init scripts, session isolation, unsupported calls, load refusals).
+// 3D reels: tests/native-3d.test.mjs.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -273,14 +274,16 @@ test("native page: every call it does not provide throws, never returns empty da
   });
 });
 
-test("native: a 3D/WebGL reel, a page beside the canvas and a script error fail on load with the reason", async () => {
-  const moduleReel = REEL.replace("<script>", '<script type="importmap">{}</script><script>');
-  await withReel(moduleReel, {}, async (server, url) => {
-    await assert.rejects(openReel(url, { warm: false }), /step "load reel\.html": the native renderer draws 2D canvas reels only: reel\.html has a <script type="importmap">.*SVA_RENDERER=browser/);
+test("native: blocks the browser does not run are skipped; a WebGL context, a page beside the canvas and a script error fail on load", async () => {
+  const dataBlocks = REEL.replace("<script>", '<script type="importmap">{}</script><script type="application/json">{"a":1}</script><script>');
+  await withReel(dataBlocks, {}, async (server, url) => {
+    const s = await openReel(url, { warm: false });
+    assert.equal(s.meta.duration, 2.5);
+    await s.close();
   });
   const glReel = REEL.replace('canvas.getContext("2d")', 'canvas.getContext("webgl2")');
   await withReel(glReel, {}, async (server, url) => {
-    await assert.rejects(openReel(url, { warm: false }), /2D canvas reels only: the scene asked for a "webgl2" canvas context/);
+    await assert.rejects(openReel(url, { warm: false }), /no WebGL canvas context: the scene asked for a "webgl2" canvas context\. It draws 2D canvas reels and three\.js reels.*SVA_RENDERER=browser/);
   });
   const domReel = REEL.replace("<canvas", '<div class="caption">hi</div><canvas');
   await withReel(domReel, {}, async (server, url) => {

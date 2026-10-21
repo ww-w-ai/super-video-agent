@@ -36,7 +36,9 @@ const HELP = `usage: sfx-cards.mjs measure <reel-dir> [--stub <sec>]
        sfx-cards.mjs judge <reel-dir> [--repeat <n>]
        sfx-cards.mjs report <reel-dir>
 
-measure  Fills sound-cards.json's "measured" field for every card: a "kit"
+measure  Fills sound-cards.json's "measured" field for every card. A card
+         with "file": "<path relative to the reel>" is measured from that
+         file whole, without the page. Otherwise a "kit"
          or "custom" recipe is measured from window.__reel.sfxStems() (the
          page's own cue, rendered alone) when reel.html and voice/timings.json
          exist and the page defines it; an "asset" recipe is measured from
@@ -120,11 +122,22 @@ export async function runMeasure(dir, { stubSec = null } = {}) {
   const assetLibManifest = readAssetLibManifest(p);
   const plan = fs.existsSync(p.planJson) ? readJson(p.planJson) : null;
 
-  const stemCards = cards.filter((c) => c.recipe.kind !== "asset");
+  const stemCards = cards.filter((c) => c.recipe.kind !== "asset" && !c.file);
   const stems = stemCards.length ? await fetchSfxStems(dir, p, stubSec) :{ byId: new Map(), list: [] };
 
   const unmeasured = [];
   for (const card of cards) {
+    if (card.file) {
+      const filePath = path.resolve(p.root, card.file);
+      if (!fs.existsSync(filePath)) {
+        unmeasured.push(card.id);
+        continue;
+      }
+      const samples = await decodeMonoPcm(filePath, SAMPLE_RATE);
+      card.measured = await measureAssetSpan(samples, SAMPLE_RATE, null);
+      process.stdout.write(`${card.id}: measured ${describeSpan(card.measured)} (file ${card.file})\n`);
+      continue;
+    }
     if (card.recipe.kind === "asset") {
       const trim = assetTrim(card, plan);
       const measured = await measureAssetCard(p, card, assetLibManifest, trim.maxSec);

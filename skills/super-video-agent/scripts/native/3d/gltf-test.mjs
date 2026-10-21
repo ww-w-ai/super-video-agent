@@ -93,7 +93,7 @@ cam.lookAt(center);
 
 renderer.render(scene, cam);
 const px = new Uint8Array(W * H * 4);
-await renderer.__readPixelsAsync(px);
+await renderer.readPixelsAsync(px);
 
 const c = new skia.Canvas(W, H);
 const ctx = c.getContext("2d");

@@ -7,9 +7,15 @@
 // A virtual SCENE module is served through the `load` hook: the host registers
 // a sentinel specifier "sva-scene:<id>" whose URL sits inside the reel dir (so
 // the scene's relative imports — ./scenes/x.js, ./assets/models/y.js — resolve
-// against the sample reel), and whose source is the patched SCENE block.
+// against the reel), and whose source is the scene block.
+//
+// Each page open registers its own layer with its own `openId`. The scene URL
+// carries it as a `sva-open=<id>` query, and every file the scene graph imports (outside
+// node_modules) gets it too, so a reopened page builds its own module graph
+// instead of reusing the last page's module state. three and its addons stay
+// shared. The newest layer answers first; a specifier it does not own passes on.
 
-let CFG = null; // { shimUrl, threeWebgpuUrl, threeTslUrl, addonsBaseUrl, scenes: { "<url>": "<source>" } }
+let CFG = null; // { shimUrl, threeWebgpuUrl, threeTslUrl, addonsBaseUrl, addonOverrides, sceneUrls, scenes, openId }
 
 export async function initialize(data) {
   CFG = data;
@@ -28,10 +34,21 @@ export async function resolve(specifier, context, nextResolve) {
     if (CFG.addonOverrides && CFG.addonOverrides[suffix]) return { url: CFG.addonOverrides[suffix], shortCircuit: true };
     return { url: CFG.addonsBaseUrl + suffix, shortCircuit: true };
   }
-  if (specifier.startsWith("sva-scene:")) {
-    return { url: CFG.sceneUrls[specifier], shortCircuit: true };
+  if (CFG.sceneUrls[specifier]) return { url: CFG.sceneUrls[specifier], shortCircuit: true };
+  const resolved = await nextResolve(specifier, context);
+  if (fromThisOpen(context.parentURL) && resolved.url.startsWith("file:") && !resolved.url.includes("?") && !resolved.url.includes("/node_modules/")) {
+    return { ...resolved, url: `${resolved.url}?sva-open=${CFG.openId}` };
   }
-  return nextResolve(specifier, context);
+  return resolved;
+}
+
+function fromThisOpen(parentURL) {
+  if (!parentURL) return false;
+  try {
+    return new URL(parentURL).searchParams.get("sva-open") === String(CFG.openId);
+  } catch (e) {
+    return false;
+  }
 }
 
 export async function load(url, context, nextLoad) {

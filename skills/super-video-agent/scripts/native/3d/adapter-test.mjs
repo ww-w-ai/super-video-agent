@@ -48,18 +48,16 @@ const dir = new THREE.DirectionalLight(0xffffff, 2.2); dir.position.set(5, 8, 6)
 
 renderer.render(scene, cam);
 
-// reel's copyToStage idiom, patched: await the async readback, then gl.readPixels copies.
+// The copy hook a 3D page awaits after render(): tight RGBA rows, top-down.
 const glPixels = new Uint8Array(W * H * 4);
-await renderer.__readPixelsAsync(glPixels);
-const gl = renderer.getContext();
-gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, glPixels);
+await renderer.readPixelsAsync(glPixels);
 
 console.log("top-left px (bg?):", glPixels[0], glPixels[1], glPixels[2], glPixels[3]);
 console.log("center px:", glPixels[(H / 2 * W + W / 2) * 4], glPixels[(H / 2 * W + W / 2) * 4 + 1], glPixels[(H / 2 * W + W / 2) * 4 + 2]);
 const small = new skia.Canvas(W, H);
 const sctx = small.getContext("2d");
 const img = sctx.createImageData(W, H);
-img.data.set(glPixels); // no flip: WebGPU readback is top-down (the probe needed none)
+img.data.set(glPixels);
 sctx.putImageData(img, 0, 0);
 
 const out = path.join(here, "..", "out", "adapter-test.png");

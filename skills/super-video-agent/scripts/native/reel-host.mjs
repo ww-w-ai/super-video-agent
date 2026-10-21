@@ -9,9 +9,10 @@
 // the scripts run and __reel.ready resolves, seek(t) draws one frame into the
 // stage canvas exactly as the browser page would.
 //
-// Only the 2D Canvas path is supported. A reel with module scripts (the 3D
-// template) or a scene that asks for a WebGL context fails with a message
-// that says so.
+// This realm runs classic scripts on the 2D Canvas. A reel with a module
+// scene (the 3D template) runs in reel-host-3d.mjs instead; a classic scene
+// that asks for a WebGL canvas context fails with a message that says so.
+// Both hosts clear the stage before each seek (trapReelSeek).
 
 import fs from "node:fs";
 import path from "node:path";
@@ -42,41 +43,63 @@ Canvas.prototype.getContext = function patchedGetContext(...args) {
   return ctx;
 };
 
-/** The error every 3D/WebGL detection throws: what was found and what to run instead. */
-export function notNative2d(reason) {
-  return new Error(`the native renderer draws 2D canvas reels only: ${reason}. Render this reel in the browser (SVA_RENDERER=browser, the default)`);
+/** The error a scene asking for a WebGL canvas context throws: what it asked for and what to run instead. */
+export function noGlContext(kind) {
+  return new Error(`the native renderer has no WebGL canvas context: the scene asked for a "${kind}" canvas context. It draws 2D canvas reels and three.js reels (a module scene that imports "three"); render this reel in the browser (SVA_RENDERER=browser, the default)`);
 }
 
 // ---- reel.html parsing -----------------------------------------------------
 
+const CLASSIC_TYPES = new Set(["", "text/javascript", "application/javascript"]);
+
 /**
- * Every `<script>` in document order, inline or `src="..."`, as
- * [{source, filename}]. External src is read relative to the reel dir. The
- * inlined ENGINE/AUDIO and any film helper files (src/kit.js, src/scenes-*.js)
- * all attach globals the SCENE block then uses, so they must run in order.
- * A `type="module"` or `type="importmap"` script (the 3D template) throws
- * notNative2d.
+ * Every script the browser would run, in document order, inline or
+ * `src="..."`, as [{kind: "classic"|"module", source, filename}]. External src
+ * is read relative to the reel dir. The inlined ENGINE/AUDIO and any film
+ * helper files (src/kit.js, src/scenes-*.js) attach globals the SCENE block
+ * then uses, so they run in order. An importmap is skipped (the 3D host
+ * resolves "three" itself), as is any other non-script type (data blocks).
  */
-export function collectScripts(html, reelDir) {
+export function scriptBlocks(html, reelDir) {
   const out = [];
   const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   let m;
   while ((m = re.exec(html))) {
     const attrs = m[1];
-    const type = (attrs.match(/\btype\s*=\s*["']([^"']+)["']/) || [])[1];
-    if (type && type !== "text/javascript" && type !== "application/javascript") {
-      throw notNative2d(`reel.html has a <script type="${type}"> (the 3D/WebGL template)`);
-    }
+    const type = ((attrs.match(/\btype\s*=\s*["']([^"']+)["']/) || [])[1] || "").trim().toLowerCase();
+    const kind = type === "module" ? "module" : CLASSIC_TYPES.has(type) ? "classic" : null;
+    if (!kind) continue;
     const src = (attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/) || [])[1];
     if (src) {
       const abs = path.resolve(reelDir, src.split("?")[0]);
-      out.push({ source: fs.readFileSync(abs, "utf8"), filename: abs });
+      out.push({ kind, source: fs.readFileSync(abs, "utf8"), filename: abs });
     } else {
-      out.push({ source: m[2], filename: `${path.join(reelDir, "reel.html")} (inline #${out.length})` });
+      out.push({ kind, source: m[2], filename: `${path.join(reelDir, "reel.html")} (inline #${out.length})` });
     }
   }
   if (!out.length) throw new Error("reel.html has no <script> blocks");
   return out;
+}
+
+/** Whether reel.html runs a module script (a 3D reel: reel-host-3d.mjs hosts it). */
+export function isModuleReel(html) {
+  return /<script\b[^>]*\btype\s*=\s*["']\s*module\s*["']/i.test(html);
+}
+
+/** The classic scripts of a reel without a module scene; a module reel throws (it needs the 3D host). */
+export function collectScripts(html, reelDir) {
+  const blocks = scriptBlocks(html, reelDir);
+  if (blocks.some((b) => b.kind === "module")) throw new Error("reel.html has a <script type=\"module\"> scene (a 3D reel): open it through scripts/lib/browser.mjs, which hosts it in scripts/native/reel-host-3d.mjs");
+  return blocks;
+}
+
+/**
+ * Throws the native refusal when reel.html's <body> holds elements beside
+ * the canvas: the native renderer draws only the canvas.
+ */
+export function assertCanvasOnly(html) {
+  const extra = bodyElementsBesideCanvas(html);
+  if (extra.length) throw new Error(`the native renderer draws only the <canvas>; reel.html's <body> also has <${extra.join(">, <")}>, which would be missing from the picture. Render this reel in the browser (SVA_RENDERER=browser, the default)`);
 }
 
 /**
@@ -103,17 +126,6 @@ export function stageSize(html) {
     return Number.isFinite(v) && v > 0 ? v : fallback;
   };
   return { width: attr("width", 300), height: attr("height", 150) };
-}
-
-/** WIDTH / HEIGHT / FPS baked into whichever script declares them (the scene block). */
-export function sceneDims(sources) {
-  const joined = Array.isArray(sources) ? sources.map((s) => (typeof s === "string" ? s : s.source)).join("\n") : String(sources);
-  const num = (name) => {
-    const m = joined.match(new RegExp("var\\s+" + name + "\\s*=\\s*(\\d+(?:\\.\\d+)?)"));
-    if (!m) throw new Error(`no ${name} declared in the reel scripts`);
-    return Number(m[1]);
-  };
-  return { width: num("WIDTH"), height: num("HEIGHT"), fps: num("FPS") };
 }
 
 /**
@@ -168,7 +180,7 @@ const GL_KINDS = /^(webgl2?|experimental-webgl|webgpu|bitmaprenderer)$/i;
  * a canvas of this class hands out gets the realm's own prototype (inheriting
  * skia's), so a page that wraps CanvasRenderingContext2D.prototype (the
  * state-checks probe) changes only its own realm. Asking for a WebGL context
- * throws notNative2d.
+ * throws noGlContext.
  */
 let gpuFallbackWarned = false;
 
@@ -196,7 +208,7 @@ export function realmCanvasClasses(raster = nativeRaster()) {
       super(width, height, { ...opts, gpu: raster === "gpu" });
     }
     getContext(kind, settings) {
-      if (GL_KINDS.test(String(kind))) throw notNative2d(`the scene asked for a "${kind}" canvas context`);
+      if (GL_KINDS.test(String(kind))) throw noGlContext(kind);
       const ctx = super.getContext(kind, settings);
       if (ctx && Object.getPrototypeOf(ctx) !== proto) Object.setPrototypeOf(ctx, proto);
       return ctx;
@@ -359,9 +371,68 @@ function makeTimers(onError) {
   return { globals, clearAll };
 }
 
-function makeConsole(onConsole) {
+/** A console whose every call reaches onConsole(type, text), with Playwright's type names. */
+export function makeConsole(onConsole) {
   const say = (type) => (...args) => onConsole(type, util.format(...args));
   return { log: say("log"), info: say("info"), debug: say("debug"), trace: say("trace"), warn: say("warning"), error: say("error") };
+}
+
+// ---- seek ------------------------------------------------------------------
+
+const HOSTED_SEEK = Symbol.for("sva.native.hostedSeek");
+const baseCtx = skia.CanvasRenderingContext2D.prototype;
+
+/**
+ * Clears the whole stage to transparent, whatever transform the page left
+ * set. skia-canvas keeps every drawing command since the last full clear and
+ * replays them on each read, so a page that paints the stage without
+ * clearRect would grow memory and slow down with every frame. Calls skia's
+ * own methods, so a page that wraps its context prototype sees nothing.
+ */
+export function clearStage(stage) {
+  const ctx = stage.getContext("2d");
+  baseCtx.save.call(ctx);
+  baseCtx.setTransform.call(ctx, 1, 0, 0, 1, 0, 0);
+  baseCtx.clearRect.call(ctx, 0, 0, stage.width, stage.height);
+  baseCtx.restore.call(ctx);
+}
+
+/**
+ * Makes `global.__reel` an accessor that wraps the reel's seek(t) when the
+ * page assigns it (or first reads it back): the stage is cleared, then
+ * `beforeSeek(t, reel)` runs, then the page's own seek. A reel with
+ * `nativeKeepStage: true` draws over the last frame instead (a page that
+ * means to accumulate). Every caller (seekTo, probes, the page itself) goes
+ * through the wrapped seek. A sync seek stays sync.
+ */
+export function trapReelSeek(global, { stage, beforeSeek = () => {} }) {
+  let reel;
+  Object.defineProperty(global, "__reel", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      hostSeek(reel, stage, beforeSeek);
+      return reel;
+    },
+    set(v) {
+      reel = v;
+      hostSeek(reel, stage, beforeSeek);
+    },
+  });
+}
+
+function hostSeek(reel, stage, beforeSeek) {
+  if (!reel || typeof reel !== "object") return;
+  const own = Object.getOwnPropertyDescriptor(reel, "seek");
+  if (!own || !own.writable || typeof own.value !== "function" || own.value[HOSTED_SEEK]) return;
+  const seek = own.value;
+  const hosted = function (t) {
+    if (reel.nativeKeepStage !== true) clearStage(stage);
+    beforeSeek(t, reel);
+    return seek.apply(this, arguments);
+  };
+  hosted[HOSTED_SEEK] = true;
+  reel.seek = hosted;
 }
 
 /**
@@ -402,18 +473,6 @@ export function pageGlobals({ reelDir, pageUrl, resolveLocal = fileUrlResolver, 
   };
 }
 
-/**
- * Install the browser globals on globalThis for this reel (the 3D host, which
- * runs its module graph in this realm). `captions` false renders the picture
- * (?captions=0), matching out/picture.mp4.
- */
-export function installGlobals({ reelDir, stage, faces, captions = false }) {
-  const pageUrl = pathToFileURL(path.join(reelDir, "reel.html")).href + (captions ? "" : "?captions=0");
-  const g = pageGlobals({ reelDir, pageUrl, stage, faces });
-  Object.assign(globalThis, g, { window: globalThis, self: globalThis });
-  return g.document;
-}
-
 // ---- realm -----------------------------------------------------------------
 
 // A context whose global is an ordinary object (Node >= 22.8) keeps global
@@ -425,6 +484,22 @@ function newContext() {
   }
   const context = vm.createContext({});
   return { context, global: vm.runInContext("globalThis", context) };
+}
+
+/**
+ * The page's stage: a canvas of the realm's classes at the <canvas> tag's
+ * size, connected and laid out at the origin, with the reel's fonts registered.
+ */
+export function reelStage(html, reelDir) {
+  const { width, height } = stageSize(html);
+  const faces = parseFontFaces(html);
+  registerFonts(faces, reelDir);
+  const classes = realmCanvasClasses();
+  const stage = new classes.Canvas(width, height);
+  warnGpuFallback(stage);
+  Object.defineProperty(stage, "isConnected", { value: true });
+  stage.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0 });
+  return { classes, stage, width, height, faces };
 }
 
 /**
@@ -441,23 +516,15 @@ export function createReelRealm({ htmlPath, pageUrl = pathToFileURL(htmlPath).hr
   const reelDir = path.dirname(htmlPath);
   const html = fs.readFileSync(htmlPath, "utf8");
   const scripts = collectScripts(html, reelDir);
-  const extra = bodyElementsBesideCanvas(html);
-  if (extra.length) throw new Error(`the native renderer draws only the <canvas>; reel.html's <body> also has <${extra.join(">, <")}>, which would be missing from the picture. Render this reel in the browser (SVA_RENDERER=browser, the default)`);
-  const { width, height } = stageSize(html);
-  const faces = parseFontFaces(html);
-  registerFonts(faces, reelDir);
-
-  const classes = realmCanvasClasses();
-  const stage = new classes.Canvas(width, height);
-  warnGpuFallback(stage);
-  Object.defineProperty(stage, "isConnected", { value: true });
-  stage.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0 });
+  assertCanvasOnly(html);
+  const { classes, stage, width, height, faces } = reelStage(html, reelDir);
 
   const timers = makeTimers(onError);
   const { context, global } = newContext();
   Object.assign(global, pageGlobals({ reelDir, pageUrl, resolveLocal, answer, stage, faces, classes, timers: timers.globals, console: makeConsole(onConsole) }));
   global.window = global;
   global.self = global;
+  trapReelSeek(global, { stage });
 
   const compiled = new Map();
   const evaluate = (fn, arg) => {

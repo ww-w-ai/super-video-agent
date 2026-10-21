@@ -520,6 +520,11 @@ export async function render({ dir, paths, preview, workers = 1, only, plan = fa
 
 async function renderWithPool({ dir, paths, pool, picture, preview, workers, only, plan, noCaptions, stubSec, stubSegments, insert, lang, handleSec, probeAll, spans = null, fixPictureDuration = false, assemble = null, bedOnly = false, cacheKey = null, keepAssembledCopies = false }) {
   const meta = await probeMeta(pool);
+  // A native 3D page lives on Node's own global object: one per process.
+  if (workers > 1 && (await pool.use(async (s) => !!s.page.native3d))) {
+    process.stderr.write(`note: --workers ${workers} runs as 1: a native 3D reel opens one page per process\n`);
+    workers = 1;
+  }
   const fps = meta.fps;
   const duration = meta.duration;
   if (bedOnly) return await rebuildPictureBed({ paths, pool, meta, lang });

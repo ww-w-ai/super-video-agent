@@ -4,6 +4,8 @@
 // and shape both to it. Start it detached from any session:  nohup node run.mjs plan.json > run.out 2>&1 &
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { isNetworkError, backoffMs, DEFAULT_MAX_NETWORK_RETRIES, DEFAULT_NETWORK_BACKOFF_SEC } from "./network-errors.mjs";
 import { parseArgs, printHelpAndExit } from "../lib/cli.mjs";
 import { spawnGroup, runLocked, installExitKill, readSlot, releaseDeadSlot, defaultLockDir, assertSafeLockDir } from "./lock.mjs";
 import { busyThreshold } from "./gpu-probe.mjs";
@@ -33,6 +35,10 @@ Runs the stages of a film in dependency order, unattended. Plan file (all paths 
                  while the done-file is missing. The prompt file is sent with the done-file's ABSOLUTE path appended.
                  A stage's "model" and "effort" (low|medium|high|xhigh|max) override the plan's and become
                  --model / --effort on every call of that stage, resumes included.
+                 Each stage gets its own --session-id on the first call. A call that fails with a dropped-connection
+                 message (can't reach the API, ENOTFOUND, SSL hostname mismatch, ECONNRESET, socket hang up) waits
+                 "networkBackoffSec" (default [30,60,90], the last value repeats) and continues with --resume, up to
+                 "maxNetworkRetries" (default 40; plan or stage), not counted against maxResumes.
   kind job       a command (or "script": "/abs/x.sh", run from a snapshot copy so editing the original is safe).
                  "heavy" (default for jobs) runs under the render slot: one at a time, in fair order, and only while
                  the machine's GPU is not busy with other work (see lock.mjs). Retried up to maxAttempts.
@@ -126,15 +132,6 @@ function claudeCall(ctx, stage, n, extraArgs, input) {
   });
 }
 
-function sessionIdOf(ctx, stage, n) {
-  try {
-    const r = JSON.parse(fs.readFileSync(path.join(ctx.plan.dir, "results", resultName(ctx, stage, n)), "utf8"));
-    return r.session_id || null;
-  } catch {
-    return null;
-  }
-}
-
 /** A heavy job may still hold the slot; resuming a session now would only race it. */
 async function waitSlotFree(ctx, stage) {
   let said = false;
@@ -147,19 +144,56 @@ async function waitSlotFree(ctx, stage) {
   }
 }
 
+/** True when call n of this run failed with a dropped-connection message (stderr log or JSON result). */
+function callHitNetworkError(ctx, stage, n) {
+  const files = [path.join(ctx.plan.dir, "results", resultName(ctx, stage, n)), path.join(ctx.plan.dir, "logs", `${stage.name}.${ctx.runId}.${n}.err`)];
+  return files.some((f) => {
+    try {
+      return isNetworkError(fs.readFileSync(f, "utf8"));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
+ * One logical call: runs claude, and while it fails on a network message (done-file still missing) waits and
+ * calls again with --resume of the same session, up to maxNetworkRetries. `st` carries the call counter, the
+ * retry count and the session id across the stage. Resolves {gaveUp: true} when the retries ran out.
+ */
+async function callWithNetworkRetry(ctx, stage, st, firstArgs, input, startedAtMs) {
+  const limit = stage.maxNetworkRetries ?? ctx.plan.maxNetworkRetries ?? DEFAULT_MAX_NETWORK_RETRIES;
+  const backoff = stage.networkBackoffSec ?? ctx.plan.networkBackoffSec ?? DEFAULT_NETWORK_BACKOFF_SEC;
+  let args = firstArgs;
+  let note = input;
+  for (;;) {
+    const n = st.calls++;
+    await claudeCall(ctx, stage, n, args, note);
+    if (verifyDone(stage, startedAtMs).ok || !callHitNetworkError(ctx, stage, n)) return { gaveUp: false };
+    if (st.netRetries >= limit) return { gaveUp: true };
+    st.netRetries++;
+    const wait = backoffMs(st.netRetries, backoff);
+    ctx.log(`${stage.name}: network error, retry ${st.netRetries}/${limit} in ${Math.round(wait / 1000)}s (resume ${st.sid})`);
+    await sleep(wait);
+    await waitSlotFree(ctx, stage);
+    args = ["--resume", st.sid];
+    note = `Continue the job. The connection dropped. The done-file ${stage.done} is still missing. Run every job in the foreground and write the done-file last.`;
+  }
+}
+
 async function runSession(ctx, stage, startedAtMs) {
   const prompt = fs.readFileSync(stage.prompt, "utf8") + sessionFooter(stage);
-  await claudeCall(ctx, stage, 0, [], prompt);
+  const st = { calls: 0, netRetries: 0, sid: randomUUID() };
+  let net = await callWithNetworkRetry(ctx, stage, st, ["--session-id", st.sid], prompt, startedAtMs);
   for (let n = 0; ; n++) {
     const v = verifyDone(stage, startedAtMs);
     if (v.ok) return { ok: true, attempts: n + 1 };
+    if (net.gaveUp) return { ok: false, attempts: n + 1, reason: `${v.reason}; network still down after ${st.netRetries} retries` };
     if (n >= stage.maxResumes) return { ok: false, attempts: n + 1, reason: `${v.reason}; gave up after ${n} resume(s)` };
-    const sid = sessionIdOf(ctx, stage, n);
-    if (!sid) return { ok: false, attempts: n + 1, reason: `${v.reason}; no session_id in results/${resultName(ctx, stage, n)} to resume` };
     await waitSlotFree(ctx, stage);
     ctx.log(`${stage.name}: ${v.reason}, resume ${n + 1}`);
     const note = `Continue the job. The done-file ${stage.done} is still missing or invalid (${v.reason}). Run every job in the foreground and write the done-file last.`;
-    await claudeCall(ctx, stage, n + 1, ["--resume", sid], note);
+    net = await callWithNetworkRetry(ctx, stage, st, ["--resume", st.sid], note, startedAtMs);
   }
 }
 

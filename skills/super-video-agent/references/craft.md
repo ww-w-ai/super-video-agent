@@ -184,6 +184,17 @@ look in your own words in `FILM.md`.
 | "It'll become the new slop animation template" | a look that any subject would get; no look chosen for this film |
 | "SFX is a joke, literal overproduced garbage" | effects stacked everywhere instead of on a few real events |
 
+## Light on a 3D object
+
+Light effects built as flat additive planes (light shafts) or long thin cross-arm glints read as
+hard vertical or horizontal lines beside the object. A flat plane seen narrow or edge-on becomes a
+line, and with depth writes off nothing ever occludes it. Steam built from stacked translucent
+planes reads as fake for the same reason.
+
+Light reads natural when it comes from the scene's own source (window daylight, a lamp). Move the
+light or its environment, or turn the object, so highlights travel over the surface. Keep any
+glint small, short-armed, with a soft falloff.
+
 ## Photo sources
 
 For any photo scene, check reuse rights and keep the source credit visible while

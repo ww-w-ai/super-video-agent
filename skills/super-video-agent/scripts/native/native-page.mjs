@@ -3,6 +3,11 @@
 // it in place of a browser page, so every tool that goes through openReel /
 // seekTo / captureFrame / page.evaluate runs natively unchanged.
 //
+// A 2D reel runs in its own vm realm (reel-host.mjs). A reel with a module
+// scene (3D, "three") runs on WebGPU in this process's main realm
+// (reel-host-3d.mjs), one such page per process at a time; `native3d` says
+// which one this page holds.
+//
 // Implemented: on("pageerror" | "console"), route(RegExp, handler) with
 // route.fulfill, addInitScript(fn, arg), goto(url), waitForFunction(fn, arg,
 // {timeout}), evaluate(fn, arg), close(), and capturePng() (the stage canvas as
@@ -12,8 +17,9 @@
 // the handle waitForFunction returns, throws "not supported on
 // SVA_RENDERER=native: <what>".
 
+import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createReelRealm } from "./reel-host.mjs";
+import { createReelRealm, isModuleReel } from "./reel-host.mjs";
 import { servedSite, servedFilePath } from "../lib/server.mjs";
 
 /** The error for a page feature the native backend does not provide. */
@@ -54,6 +60,10 @@ export function createNativePage() {
 
   const page = {
     native: true,
+    /** True once goto() opened a 3D (module scene) reel. */
+    get native3d() {
+      return !!(realm && realm.is3d);
+    },
     on(event, fn) {
       if (!(event in listeners)) throw unsupportedNative(`page.on("${event}")`);
       listeners[event].push(fn);
@@ -70,10 +80,10 @@ export function createNativePage() {
     },
     async goto(url) {
       if (realm) throw unsupportedNative("a second page.goto on one page (open a new reel session)");
-      realm = openRealm(url, { routes, emit });
+      realm = await openRealm(url, { routes, emit });
       for (const s of initScripts) realm.evaluate(s.fn, structuredClone(s.arg));
       try {
-        realm.runScripts();
+        await realm.runScripts();
       } catch (e) {
         emit("pageerror", e);
         throw crossRealmError(e);
@@ -121,7 +131,8 @@ export function createNativePage() {
 
 // The realm for `url`: a serveDir() URL maps to its root, a file: URL to its
 // file. Fetches go through the page's routes, then the server's overrides.
-function openRealm(url, { routes, emit }) {
+// A module-scene reel gets the 3D host, loaded only then.
+async function openRealm(url, { routes, emit }) {
   const target = new URL(url);
   const site = servedSite(url);
   let htmlPath;
@@ -140,14 +151,17 @@ function openRealm(url, { routes, emit }) {
     throw new Error(`SVA_RENDERER=native opens a reel from a lib/server.mjs serveDir() URL or a file: URL; ${url} is neither`);
   }
   if (!htmlPath) throw new Error(`native page: ${url} leaves the served folder`);
-  return createReelRealm({
+  const opts = {
     htmlPath,
     pageUrl: url,
     resolveLocal,
     answer: (abs) => answerFetch(abs, routes, site),
     onConsole: (type, text) => emit("console", { type: () => type, text: () => text }),
     onError: (e) => emit("pageerror", crossRealmError(e)),
-  });
+  };
+  if (!isModuleReel(fs.readFileSync(htmlPath, "utf8"))) return createReelRealm(opts);
+  const { createReel3DRealm } = await import("./reel-host-3d.mjs");
+  return createReel3DRealm(opts);
 }
 
 /** A Response for `url` from the first matching route, else the server's override body, else null. */

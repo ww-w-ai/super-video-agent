@@ -2,9 +2,10 @@
 // time, and captures the single <canvas> as a PNG buffer via toDataURL (no
 // screenshot compositing, so we get exactly the pixels the engine drew).
 // SVA_RENDERER picks what draws the page: headless Chromium through
-// playwright-core (browser, the default) or the in-process skia-canvas host
-// (native, 2D canvas reels only). Both give the same page API here, so every
-// tool that opens a reel through this file works with either.
+// playwright-core (browser, the default) or the in-process host (native:
+// skia-canvas for the 2D canvas, WebGPU for a three.js module scene). Both
+// give the same page API here, so every tool that opens a reel through this
+// file works with either.
 import fs from "node:fs";
 import { scanFreezes, scanSize } from "./freeze-scan.mjs";
 import { getChromium } from "./playwright.mjs";
@@ -28,7 +29,7 @@ export function rendererBackend(env = process.env) {
 /** The one line a tool prints about the backend that draws its reel. */
 export function rendererLine(backend) {
   return backend === "native"
-    ? `renderer: native (SVA_RENDERER=native; skia-canvas in this process, ${nativeRaster().toUpperCase()} raster (SVA_NATIVE_RASTER), 2D canvas reels only, sessions share one thread)`
+    ? `renderer: native (SVA_RENDERER=native; skia-canvas in this process, ${nativeRaster().toUpperCase()} raster (SVA_NATIVE_RASTER), 3D reels on WebGPU one page at a time, sessions share one thread)`
     : "renderer: browser (SVA_RENDERER=browser; headless Chromium)";
 }
 
