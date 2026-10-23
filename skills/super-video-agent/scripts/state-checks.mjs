@@ -16,9 +16,16 @@ import { textOverlapSpans, glyphFallbacks, findFlicker, visibleKeys, formatState
 import { contrastFindings } from "./lib/text-contrast.mjs";
 import { gatherSources, visibilitySourceReview, formatSourceFindings } from "./lib/source-review.mjs";
 import { isMain } from "./lib/is-main.mjs";
+import { picturePayload } from "./render.mjs";
 
 const HELP = `usage: state-checks.mjs <reel-dir> [--only overlap,glyphs,flicker,covers,reserve,langglyphs,contrast] [--step <frames>] [--fps <n>]
                         [--range <t0>-<t1>] [--source-only] [--no-source] [--out <json>] [--stub <sec>] [--outline-em <n>]
+                        [--lang <code>]
+
+--lang <code> opens the page as that language's picture render does (Reel.lang = <code>, picture strings from
+dub/<code>/plan.json meta.overlay.picture), so overlap, glyphs and the other frame checks see the text that
+language draws. A translated label runs a different width: run this for every language picture. The report
+goes to out/state-checks-<code>.json unless --out names a file.
 
 --range <t0>-<t1> reads the frame checks (overlap, glyphs, flicker, reserve, contrast) only between t0 and t1 seconds
 (e.g. --range 42-61.5); the other checks are unchanged. Progress goes to stderr about every 10 s
@@ -189,8 +196,17 @@ export async function main(argv) {
   } catch (e) {
     return fail(e.message);
   }
-  const outPath = typeof flags.out === "string" ? abs(flags.out) : path.join(paths.outDir, "state-checks.json");
-  const result = { reel: paths.reelHtml, checks: only };
+  const lang = typeof flags.lang === "string" && flags.lang ? flags.lang : null;
+  if (flags.lang !== undefined && !lang) return fail("--lang takes a language code, e.g. --lang en");
+  let picture = null;
+  if (lang) {
+    const dubPlanPath = path.join(dir, "dub", lang, "plan.json");
+    if (!fs.existsSync(dubPlanPath)) return fail(`no ${dubPlanPath} — --lang needs dub/${lang}/plan.json`);
+    picture = picturePayload({ lang, basePlan: null, dubPlan: readJson(dubPlanPath) });
+  }
+  const defaultOut = lang ? `state-checks-${lang}.json` : "state-checks.json";
+  const outPath = typeof flags.out === "string" ? abs(flags.out) : path.join(paths.outDir, defaultOut);
+  const result = { reel: paths.reelHtml, checks: only, ...(lang ? { lang } : {}) };
 
   if (!flags["no-source"] && only.includes("flicker")) {
     const fps = planFps(paths, flags);
@@ -212,7 +228,7 @@ export async function main(argv) {
   const server = await serveDir(dir);
   let session;
   try {
-    session = await openReel(server.url, { stubSec, warm: false });
+    session = await openReel(server.url, { stubSec, warm: false, ...(picture ? { picture } : {}) });
     const { fps, duration } = session.meta;
     const report = { step, fps, duration };
     const frameChecks = only.filter((c) => FRAME_CHECKS.includes(c));

@@ -491,6 +491,11 @@ render.mjs <dir> --no-captions --lang <code>   # out/picture-<code>.mp4 + .bed.w
 dub.mjs <dir> --lang <code>                    # uses out/picture-<code>.mp4 when it exists
 ```
 
+Size and place a picture string from its measured width in that language
+(`ctx.measureText(Reel.pictureText(key, fallback)).width` with `ctx.font` set), never from a width
+fixed for the base language: a unit or label slot sized for `명` does not hold `people (est.)`. After
+each language picture render, run `state-checks.mjs <dir> --lang <code>` and read its overlap list.
+
 The page gets `Reel.lang` (the code; the plan's own language in a base render) and the strings
 before `ready`. A key missing from `meta.overlay.picture` draws its fallback and, when the language
 supplied other strings, records `picture-string-missing` (a fact: the fallback may be intended).
@@ -829,7 +834,12 @@ one (for example "checked nothing" under `setSafeArea("none")`) and the engine's
 
 ### Text, glyphs, flicker, regions: `state-checks.mjs`
 
-`state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--range <t0>-<t1>] [--step <frames>] [--outline-em <n>]`
+`state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--range <t0>-<t1>] [--step <frames>] [--outline-em <n>] [--lang <code>]`
+
+- `--lang <code>` opens the page the way that language's picture render does (`Reel.lang`, the
+  strings in `dub/<code>/plan.json` `meta.overlay.picture`) and writes `out/state-checks-<code>.json`.
+  Without it the frame checks see only the base language's text, so a translated label that runs
+  wider than the base one is not checked. Run it for every language picture.
 
 - `--range <t0>-<t1>` reads the frame checks (overlap, glyphs, flicker) only between those seconds;
   progress goes to stderr about every 10 s.

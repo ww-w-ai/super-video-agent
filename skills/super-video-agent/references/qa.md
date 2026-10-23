@@ -118,7 +118,7 @@ points at the line that causes it, the state scan confirms it in the rendered ti
   `page-cue-word-missing`; any mark outside 0 to the film's duration gives
   `page-cue-outside-timeline`. A film with no word cue and no page event still says `checked nothing`.
 - **Text overlap, glyph fallback, one-frame flicker, covered content, language glyphs** —
-  `scripts/state-checks.mjs <dir> [--only overlap,glyphs,flicker,covers,langglyphs] [--step
+  `scripts/state-checks.mjs <dir> [--lang <code>] [--only overlap,glyphs,flicker,covers,langglyphs] [--step
   <frames>] [--range <t0>-<t1>] [--outline-em <n>]`. It wraps the canvas text calls while the page
   seeks every frame, so a reel needs no change; `--range` reads the frame checks only between
   those seconds, and progress goes to stderr. *overlap*: text boxes sharing area with another text
