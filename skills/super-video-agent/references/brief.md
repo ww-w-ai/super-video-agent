@@ -16,7 +16,7 @@ what was filled in.
 | 4 | Camera and transitions | how the camera moves and how one place becomes the next (one take, cuts, a zoom into the next scene) |
 | 5 | Facts and sources | what the film may state, from which file or page; "no number that is not in the source" |
 | 6 | Voice and tone | who speaks, how, in which voice (the user's own recording, a character, a narrator) |
-| 7 | Size, length, language | frame ratio, target length, base language and any dubs |
+| 7 | Size, length, language | frame ratio, target length, base language and any dubs, and how each dub ships: its own video, or an audio track on one video (`dub.mjs --audio-only`; no per-language picture render) |
 
 ## Procedure
 

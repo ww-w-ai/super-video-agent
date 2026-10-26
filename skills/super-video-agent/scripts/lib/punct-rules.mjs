@@ -19,6 +19,7 @@ export const LANGUAGES = {
   fr: { scripts: LATIN, quotes: "«…»", highPunctSpace: true },
   it: { scripts: LATIN, quotes: "«…» or “…”" },
   pt: { scripts: LATIN, quotes: "“…” or «…»" },
+  vi: { scripts: LATIN, quotes: "“…”" },
   ru: { scripts: ["Cyrillic", "Latin"], quotes: "«…»" },
   ko: { scripts: ["Hangul", "Latin"], quotes: "“…” or '…'" },
   ja: { scripts: ["Hiragana", "Katakana", "Han", "Latin"], quotes: "「…」", cjk: true },

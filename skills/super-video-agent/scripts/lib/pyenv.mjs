@@ -26,7 +26,9 @@ export function runPythonBatch(pythonPath, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(pythonPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...extraEnv },
+      // UTF-8 both ways: on Windows Python otherwise writes in the console code page (cp949, cp1252…)
+      // and fails on the first character outside it.
+      env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1", ...extraEnv },
     });
     let stdout = "";
     let stderr = "";

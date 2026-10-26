@@ -8,8 +8,9 @@ import path from "node:path";
 import { readJson, writeJson } from "./reeldir.mjs";
 
 const LANG_TAG = /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
-// Per-line fields that are the film's timing and structure, the same in every language.
-const LINE_KEEP = ["pauseBeforeMs", "pauseAfterMs", "lead", "rate", "speaker"];
+// Per-line fields that are the film's timing and structure, the same in every language
+// (emotion = the line's mood preset, visual = the picture note: neither is language copy).
+const LINE_KEEP = ["pauseBeforeMs", "pauseAfterMs", "lead", "rate", "speaker", "emotion", "visual"];
 // meta.voice fields that name one speaker; they differ per language, so they are left for the user.
 const VOICE_SPEAKER = ["voiceId", "refAudio", "refText", "refTokens"];
 

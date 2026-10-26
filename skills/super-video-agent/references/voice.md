@@ -628,7 +628,8 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
   finished line); never trim one take at a word end.
 - Shorts pacing: the user picks 1.0–1.2× at the start (SKILL.md Flow 1); unanswered, a Short speaks at `meta.voice.rate` 1.1 in every language (ffmpeg atempo, clamped
   0.8–1.3); a local voice at its own speed sounds slow there. On a 9:16 film with no rate set,
-  `voice.mjs` fills this in and says so. If the total is still over target, cut lines rather
+  `voice.mjs` fills this in and says so. The rate applies to every provider, `file` clips
+  included: a reused finished take that already has its pace needs `meta.voice.rate` 1.0. If the total is still over target, cut lines rather
   than speeding further.
 - A line's own `rate` (0.5–2) replaces the film's rate for that line — for a deliberately rushed
   run, such as a quick list of extras that should feel like "and much more".

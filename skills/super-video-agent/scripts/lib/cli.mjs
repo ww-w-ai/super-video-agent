@@ -10,14 +10,18 @@ export function abs(p) {
  * Parse argv (already stripped of node + script path) into
  * {positional: string[], flags: {name: string|boolean}}.
  * `--foo bar` -> flags.foo = "bar"; `--foo` (no value / next is another flag)
- * -> flags.foo = true.
+ * -> flags.foo = true. `--foo=bar` -> flags.foo = "bar" (`--foo=` -> ""), so a
+ * `=` form is never read as an unknown flag and silently dropped.
  */
 export function parseArgs(argv) {
   const positional = [];
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a.startsWith("--")) {
+    if (a.startsWith("--") && a.indexOf("=") > 2) {
+      const eq = a.indexOf("=");
+      flags[a.slice(2, eq)] = a.slice(eq + 1);
+    } else if (a.startsWith("--")) {
       const name = a.slice(2);
       const next = argv[i + 1];
       if (next !== undefined && !next.startsWith("--")) {

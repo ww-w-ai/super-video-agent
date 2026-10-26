@@ -254,7 +254,9 @@ changed state. An unchanged neighbour stays REUSE.
 
 A segment re-renders when: its `.mp4` is missing, its frame range moved (the shot before it
 changed duration), fps or output size changed, or any of its three probe hashes changed (the
-drawn pixels changed). The joined track (picture, preview or final) is re-stamped onto the exact
+drawn pixels changed). A change that shows only between the three probes (a motion or hover phase
+moved inside a shot) is not noticed and the old segment is reused: name such shots with
+`--only <ids>`. The joined track (picture, preview or final) is re-stamped onto the exact
 1/fps grid without re-encoding: PTS rounded to the grid, DTS one frame per packet, every frame one
 tick of a track timescale equal to the frame rate. Frame hashes are unchanged. A plain `-c copy`
 join leaves timestamps a few ticks off at segment joins and the last frame held long, and a later
@@ -776,7 +778,8 @@ All reports below print facts and never stop the run; a stop is only for a defin
   `out/audio-<code>.<ext>` pointing at the newest): the same trim, fit, place and mix, no caption
   capture, no video. Its length is checked against the picture timings' `duration`; when the picture
   file exists, the picture, bed and timings pair check runs too. Use it to add a language to a video
-  that is already uploaded. `--replace-audio` cannot (it needs the frozen caption text to equal the
+  that is already uploaded, and for every dub when the film's languages ship as audio tracks on one
+  video (brief slot 7): then no `out/final-<code>.mp4` is made for them. `--replace-audio` cannot (it needs the frozen caption text to equal the
   dub's); `--audio-only` does not combine with `--min-gap`.
 - **Time insert.** `dub.mjs <dir> --insert-time <sec> --seconds <n>` (a title-card hold, say) shifts
   every `dub/<code>/timings.placed.json` and every `.srt` under `out/` and `dub/<code>/` by `<n>`
@@ -883,6 +886,7 @@ row to `scripts/lib/punct-rules.mjs` and to this table.
 | fr | Latin | full-width marks, `¿ ¡` | no space before `? ! ; :`, straight quote | «…» |
 | it | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | «…» or “…” |
 | pt | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | “…” or «…» |
+| vi | Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | “…” |
 | ru | Cyrillic, Latin | full-width marks, `¿ ¡` | space before `, .`, straight quote | «…» |
 | ko | Hangul, Latin | full-width marks, `¿ ¡` | space before `, .`; Han, Kana or Cyrillic letters | “…” or '…' |
 | ja | Hiragana, Katakana, Han, Latin | half-width `, . ! ? : ;` straight after a CJK character, `¿ ¡` | space between CJK characters; Hangul or Cyrillic letters; straight quote | 「…」 |

@@ -32,3 +32,12 @@ test("the selected base pair still runs the real pair guard", async (t) => {
   const picked = pickPictureFiles(outDir, "en", fs.existsSync, true);
   await assert.rejects(requireMatchedPair({ outDir, picked, lang: "en" }), /not one render.*missing.*picture.bed.wav/);
 });
+
+test("parseArgs: --name=value and --name= are read as the flag, not dropped", () => {
+  const { positional, flags } = parseArgs(["/reel", "--lines=k1,k2", "--retime", "--lang=", "--max-speed", "1.13"]);
+  assert.deepEqual(positional, ["/reel"]);
+  assert.equal(flags.lines, "k1,k2");
+  assert.equal(flags.lang, "");
+  assert.equal(flags.retime, true);
+  assert.equal(flags["max-speed"], "1.13");
+});

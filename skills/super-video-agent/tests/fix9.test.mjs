@@ -145,6 +145,8 @@ test("dub scaffold: ids and pauses kept, text and language copy left empty, spea
   assert.equal(dub.meta.overlay, undefined);
   assert.deepEqual(dub.lines[0], { id: "k1", text: "", pauseBeforeMs: 200, pauseAfterMs: 1600 });
   assert.equal(dub.lines[1].text, "");
+  const moody = buildDubPlan({ meta: {}, lines: [{ id: "a", text: "x", emotion: "happy", visual: "the car drives off" }] }, "en");
+  assert.deepEqual(moody.lines[0], { id: "a", text: "", emotion: "happy", visual: "the car drives off" });
 });
 
 test("dub scaffold --copy keeps the base copy and voice", () => {

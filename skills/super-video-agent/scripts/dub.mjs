@@ -82,7 +82,7 @@ const HELP = `usage: dub.mjs <reel-dir> --lang <code> [--min-gap <sec>] [--max-s
 
 --init-plan: writes <reel-dir>/dub/<code>/plan.json from the base plan.json and
 exits (no render, no voice). It keeps each line's id, pauseBeforeMs,
-pauseAfterMs, lead and rate, sets meta.lang to <code>, and leaves each line's
+pauseAfterMs, lead, rate, emotion and visual, sets meta.lang to <code>, and leaves each line's
 text empty, meta.pronounce out, meta.overlay strings left out (validate-plan
 on dub/<code> lists the keys the page reads; a film that reads them through
 Reel.overlayText gets its fallback and an overlay-text-missing issue until

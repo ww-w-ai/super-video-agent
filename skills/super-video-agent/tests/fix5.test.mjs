@@ -130,7 +130,7 @@ test("N6: a deliberately wrong sentence is reported before the table is trusted"
     const found = checkText(lang, text).filter((f) => f.severity === "wrong");
     assert.ok(found.length >= 1, `${lang}: ${text}`);
   }
-  for (const [lang, text] of [["de", "Das ist gut, oder nicht?"], ["es", "¿Qué quieres?"], ["ja", "これは本当です、そうです。"], ["zh-Hans", "这是真的，对吗？"], ["ko", "정말 그래요."]]) {
+  for (const [lang, text] of [["de", "Das ist gut, oder nicht?"], ["es", "¿Qué quieres?"], ["ja", "これは本当です、そうです。"], ["zh-Hans", "这是真的，对吗？"], ["ko", "정말 그래요."], ["vi", "Các con ơi, vui không nào?"]]) {
     assert.deepEqual(checkText(lang, text), [], `${lang}: ${text}`);
   }
 });

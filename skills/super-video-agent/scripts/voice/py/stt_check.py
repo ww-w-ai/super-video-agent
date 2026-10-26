@@ -32,6 +32,11 @@ import os
 import json
 import subprocess
 
+# Transcripts hold any script; never let the console code page (cp949 on Korean Windows) decide.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 MODEL_NOT_DOWNLOADED_EXIT = 3
 SAMPLE_RATE = 16000
 FRAME_SEC = 0.01
