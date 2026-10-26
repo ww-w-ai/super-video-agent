@@ -35,6 +35,18 @@ function makeLib() {
   put("parts/holder.dat", ring("Technic Brick  1 x  1 with Hole", [-10, 10], [12, 0], 12, [`1 16 0 0 0 ${I} stud.dat`]));
   put("parts/drum.dat", ring("Technic Wedge Belt Wheel", [-4, 4], [0, 0], 10));
   put("parts/axle.dat", boxDat("Technic Axle  4", [-40, 40, -3, 3, -3, 3]));
+  // EV-30 articulated parts. Pivot primitives carry no geometry here; the gate reads where they are placed.
+  put("p/4-4cylo.dat", "0 Cylinder Open 1.0\n");
+  put("p/joint8ball.dat", "0 Joint-8 Ball\n");
+  put("p/joint8socket1.dat", "0 Joint-8 Socket\n");
+  const multi = (title, boxes, extra = []) => [`0 ${title}`, ...boxes.map((b, k) => boxDat(`~${title} ${k}`, b).split("\n").slice(1, 7).join("\n")), ...extra, ""].join("\n");
+  const pin = (x) => `1 16 ${x} -4 14 0 4 0 4 0 0 0 0 4 4-4cylo.dat`; // a knuckle circle on the pin line y -4, z 14, along X
+  // hinge halves (co-origin at rest, like 73983 = 2429 + 2430): the pin runs along X at y -4, z 14
+  put("parts/hbase.dat", multi("Hinge Plate  1 x  2 Base", [[-20, 20, 0, 8, -10, 18], [-20, -12, -8, 0, 10, 18], [12, 20, -8, 0, 10, 18]], [`1 16 -10 0 0 ${I} stud.dat`, `1 16 10 0 0 ${I} stud.dat`, pin(-16), pin(-12), pin(12), pin(16)]));
+  put("parts/htop.dat", multi("Hinge Plate  1 x  2 Top", [[-20, 20, -16, -8, -10, 10], [-12, 12, -16, 0, 10, 18]], [`1 16 -10 -16 0 ${I} stud.dat`, `1 16 10 -16 0 ${I} stud.dat`, pin(-12), pin(12)]));
+  // ball joint: the ball's centre at (0, 4, -20) of the ball plate; the socket's centre at (0, 4, 0) of the limb
+  put("parts/ballp.dat", multi("Plate  1 x  2 with Ball Joint-8 on Side", [[-20, 20, 0, 8, -10, 10], [-2, 2, 2, 6, -16, -10], [-4, 4, 0, 8, -24, -16]], [`1 16 -10 0 0 ${I} stud.dat`, `1 16 10 0 0 ${I} stud.dat`, `1 16 0 4 -20 ${I} joint8ball.dat`]));
+  put("parts/sockp.dat", multi("Plate  1 x  2 with Socket Joint-8", [[-6, 6, -2, 10, -6, 6], [-10, 10, 0, 8, -30, -6]], [`1 16 0 4 0 ${I} joint8socket1.dat`]));
   return root;
 }
 
@@ -351,4 +363,97 @@ test("DIRECTION: auto picks the joint's axis, and the planner API offers only jo
   assert.equal(opts[0].clear, true);
   assert.deepEqual(b.bestArrival([3]).from, [1, 0, 0], "the open end of the axle");
   assert.equal(b.directionOf([0, -1, 0], b.jointsOf([3])).ok, false);
+});
+
+// ---------------------------------------------------------------- EV-30: hinges, ball joints, turned parts
+
+/** 3x4 row-major matrices: compose, translate, turn by deg about X (y' = y cos + z sin) through a point. */
+const M = {
+  mul: (A, B) => {
+    const r = [];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) r[i * 4 + j] = A[i * 4] * B[j] + A[i * 4 + 1] * B[4 + j] + A[i * 4 + 2] * B[8 + j];
+      r[i * 4 + 3] = A[i * 4] * B[3] + A[i * 4 + 1] * B[7] + A[i * 4 + 2] * B[11] + A[i * 4 + 3];
+    }
+    return r;
+  },
+  t: (x, y, z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z],
+  rx: (deg, [cy, cz] = [0, 0]) => {
+    const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    return [1, 0, 0, 0, 0, c, s, cy - c * cy - s * cz, 0, -s, c, cz + s * cy - c * cz];
+  },
+  ry: (deg) => {
+    const a = (deg * Math.PI) / 180, c = Math.cos(a), s = Math.sin(a);
+    return [c, 0, s, 0, 0, 1, 0, 0, -s, 0, c, 0];
+  },
+};
+const line = (m, file) => `1 4 ${[m[3], m[7], m[11], m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]].map((v) => Math.round(v * 1e6) / 1e6).join(" ")} ${file}`;
+const HB = M.t(0, -8, -10); // the hinge base on the base plate's studs at z -10
+const PIN = [-4, 14]; // the pin line (y, z) in the hinge's own frame
+
+/** base plate, hinge base, hinge top swung deg about its pin, two 1x1 plates on the swung top's studs. */
+function hinged(deg, top = M.mul(HB, M.rx(deg, PIN))) {
+  return [ref(0, 0, 0, "base.dat"), line(HB, "hbase.dat"), line(top, "htop.dat"), line(M.mul(top, M.t(-10, -24, 0)), "p1.dat"), line(M.mul(top, M.t(10, -24, 0)), "p1.dat")];
+}
+
+test("HINGE: a hinge pair at 0/20/45/90 deg with plates built on the swung half passes; the joint is found on the pin", () => {
+  for (const deg of [0, 20, 45, 90]) {
+    const { report } = run(hinged(deg));
+    assert.equal(report.pass, true, `${deg} deg: ${JSON.stringify(report.violations)}`);
+  }
+  const base = fromLdraw(["0 FILE model.ldr", ...hinged(45), ""].join("\n"));
+  const model = createModel({ libraryDir: lib, placements: base.placements });
+  const b = createBuild(model);
+  b.place([0]);
+  b.place([1]);
+  const j = b.jointsOf([2]).find((x) => x.kind === "hinge");
+  assert.ok(j, "hinge joint");
+  assert.deepEqual(j.pin.map((v) => Math.round(v * 1000) / 1000), [1, 0, 0]);
+  assert.equal(b.supportOf([2]).how, "hinge joint");
+  b.place([2]);
+  // the plate on the swung half seats on the turned stud, and arrives along that stud's own axis
+  const best = b.bestArrival([3]);
+  const a = (45 * Math.PI) / 180;
+  assert.ok(Math.abs(best.from[1] + Math.cos(a)) < 0.01 && Math.abs(best.from[2] - Math.sin(a)) < 0.01, JSON.stringify(best.from));
+});
+
+test("HINGE: a plate floating at an angle next to a hinge fails; a hinge top turned about the wrong point fails", () => {
+  const lines = hinged(20).slice(0, 3);
+  const top = M.mul(HB, M.rx(20, PIN));
+  const floating = run([...lines, line(M.mul(top, M.t(-10, -27, 0)), "p1.dat")]).report;
+  assert.deepEqual(floating.violations.support.map((s) => s.label), [uid(4)]);
+  // swung 20 deg about a line 6 LDU off the pin: the halves still overlap, but no knuckle circles line up
+  const wrong = run(hinged(20, M.mul(HB, M.rx(20, [PIN[0], PIN[1] - 6]))).slice(0, 3)).report;
+  assert.deepEqual(wrong.violations.support.map((s) => s.label), [uid(3)], JSON.stringify(wrong.violations));
+});
+
+test("HINGE: place then swing is checked as one step (arrival at rest, then the turn); a swing through the base fails", () => {
+  const lines = hinged(90);
+  const order = (swingFrom) => [uid(1), uid(2), { id: uid(3), arrive: "swing", ...(swingFrom != null ? { swingFrom } : {}) }, uid(4), uid(5)];
+  const good = run(lines, order()).report;
+  assert.equal(good.pass, true, JSON.stringify(good.violations));
+  assert.equal(good.swings.length, 1);
+  assert.equal(good.swings[0].swingFrom, 90, "back to the rest pose (right-hand about +X; M.rx turns the other way)");
+  assert.equal(good.unchecked.length, 0, "a swing on a pin is checked, not listed as unchecked");
+  // the long way round (-270 to the same rest pose) drives the flap down through the base plate
+  const bad = run(lines, order(-270)).report;
+  assert.equal(bad.pass, false);
+  assert.ok(bad.violations.crossing.some((c) => c.from === "swing" && c.hits.some((h) => h.with === uid(1))), JSON.stringify(bad.violations.crossing));
+});
+
+test("BALL: a limb turned freely about its ball passes; a socket off the ball fails", () => {
+  const BP = M.t(0, -8, -30); // ball plate on the base plate's studs at z -30: its ball centre at (0, -4, -50), past the base edge
+  const c = [0, -4, -50];
+  const limb = (R, off = [0, 0, 0]) => M.mul(M.t(c[0] + off[0], c[1] + off[1], c[2] + off[2]), M.mul(R, M.t(0, -4, 0)));
+  const R = M.mul(M.ry(35), M.rx(25));
+  const good = run([ref(0, 0, 0, "base.dat"), line(BP, "ballp.dat"), line(limb(R), "sockp.dat")]).report;
+  assert.equal(good.pass, true, JSON.stringify(good.violations));
+  const off = run([ref(0, 0, 0, "base.dat"), line(BP, "ballp.dat"), line(limb(R, [3, 0, 0]), "sockp.dat")]).report;
+  assert.deepEqual(off.violations.support.map((s) => s.label), [uid(3)], JSON.stringify(off.violations));
+});
+
+test("TURNED PARTS: stud joints are judged in the parts' own frames, so a stack turned as a whole holds together", () => {
+  const T = M.mul(M.ry(30), M.rx(30));
+  const { report } = run([line(T, "p1.dat"), line(M.mul(T, M.t(0, -8, 0)), "p1.dat"), line(M.mul(T, M.t(0, -16, 0)), "p1.dat")]);
+  assert.equal(report.pass, true, JSON.stringify(report.violations));
 });

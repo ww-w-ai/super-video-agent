@@ -31,6 +31,13 @@ Per landing:
             (either end, never across it), a clip square to its bar; hinge, minifig and loose joints set no direction.
             A part with several joints passes when it matches any one it seats on (its path must still be clear).
             "from": "auto" picks the first clear joint direction.
+  HINGES    (EV-30) hinge plates/bricks/tiles, finger and click hinges and turntables join on their pin line (a pin
+            circle of each half on one line, at any angle about it); a ball joint on its ball centre (at any angle).
+            Stud joints are judged in each part's own frame, so plates built on a swung half join it. The partner of
+            such a joint is not swept for CROSSING (knuckles interlock by design). A hinged half either arrives at its
+            angle, or uses "arrive": "swing": it arrives at the hinge's rest pose (square to its partner; "from",
+            default above) and swings on the pin, every 3 degrees checked against all placed parts but the partner.
+            "swingFrom": <deg> sets the start angle (right-hand about the pin axis with its largest component positive).
   VISIBILITY (required) the landing is seen from the camera of its moment, with everything placed before it in the way:
             sample points on the part's own triangles are cast to the eye; it counts as seen when at least --min-visible
             (default 0.1) of them are in frame and unblocked. Any hidden landing, any landing with no camera, or no
@@ -39,9 +46,11 @@ Per landing:
 
 --lib <dir>         the LDraw parts library (holds parts/ and p/)
 --order <file>      [{"id": "<uid>"|<index>, "from": [x,y,z]|"above"|"below"|"+x"|"-z"|"auto", "travel": <ldu>|"auto",
-                    "seatLen": 8, "ids": [...], "build": [...], "arrive": "slide"|"swing", "ignore": false}, ...]
---groups <file>     sub-assembly ranges {"units":[{"k0","k1","kind","name","from"?}]} (k1 exclusive; a staged planner's
-                    stage.json works as is); kind "panel"/"swing" swings in: its path is listed as unchecked
+                    "seatLen": 8, "ids": [...], "build": [...], "arrive": "slide"|"swing", "swingFrom": <deg>,
+                    "ignore": false}, ...]
+--groups <file>     sub-assembly ranges {"units":[{"k0","k1","kind","name","from"?,"swingFrom"?}]} (k1 exclusive; a staged
+                    planner's stage.json works as is); kind "panel"/"swing" swings in: on a hinge pin the swing is
+                    checked, without one its path is listed as unchecked
 --cameras <file>    the film's camera track, in the build model's LDraw frame (k = main landing index):
                     {"cameras":[{"k0","k1" | "t0","t1", "eye":[x,y,z],"target":[x,y,z],"up":[0,-1,0],"fov":40,"aspect":1.778,
                     "opening"?:true}], "landingTimes"?:[sec per landing], "perLanding"?:[camera per landing]}
@@ -73,7 +82,11 @@ function lines(report, n) {
   out.push(`SUPPORT ${c.support}  CROSSING ${c.crossing}  ORDER ${c.order}  DIRECTION ${c.direction}  UNPLACED ${c.unplaced}${report.visibility ? (report.visibility.missingCameras ? "  VISIBILITY no cameras" : `  HIDDEN ${c.hidden} (${report.visibility.pct}%)  NO-CAMERA ${c.noCamera}  excepted ${c.excepted}`) : "  (structure only)"}  unchecked ${c.unchecked}  ignored ${c.ignored}`);
   const v = report.violations;
   for (const s of v.support.slice(0, n)) out.push(`  SUPPORT  ${s.scope} #${s.index} ${s.label} (${s.title}${s.parts > 1 ? `, ${s.parts} parts` : ""}): joins nothing placed before it`);
-  for (const s of v.crossing.slice(0, n)) out.push(`  CROSSING ${s.scope} #${s.index} ${s.label} from ${JSON.stringify(s.from)} travel ${s.travel}: ${s.hits.map((h) => `${h.member} through ${h.with} at ${h.at} LDU`).join("; ")}`);
+  for (const s of v.crossing.slice(0, n))
+    out.push(s.from === "swing"
+      ? `  CROSSING ${s.scope} #${s.index} ${s.label} swing from ${s.swingFrom} deg: ${s.hits.map((h) => `${h.member} through ${h.with} (${h.how})`).join("; ")}`
+      : `  CROSSING ${s.scope} #${s.index} ${s.label} from ${JSON.stringify(s.from)} travel ${s.travel}: ${s.hits.map((h) => `${h.member} through ${h.with} at ${h.at} LDU`).join("; ")}`);
+  if (report.swings && report.swings.length) out.push(`  swings on a pin checked: ${report.swings.length} (e.g. #${report.swings[0].index} ${report.swings[0].label} on ${report.swings[0].kind} with ${report.swings[0].with}, from ${report.swings[0].swingFrom} deg)`);
   for (const s of v.order.slice(0, n)) out.push(`  ORDER    ${s.scope} #${s.index} ${s.label}: arrives from ${s.above ? "above" : "below"} but ${s.count} placed part(s) ${s.above ? "above" : "below"} it, e.g. ${s.blockers[0].blocker}`);
   const fmt = (a) => `[${a.map((x) => Math.round(x * 100) / 100).join(",")}]`;
   const rule = { exact: "from", axis: "along ±", perp: "square to bar" };

@@ -21,7 +21,7 @@ with the film.
 
 ## Required before any render of an LDraw build
 
-Not an example: a rule (owner 2026-10-26, EV-27, EV-28 and EV-29 in `docs/evolution/ledger.md`). Run the
+Not an example: a rule (owner 2026-10-26 and 10-27, EV-27 to EV-30 in `docs/evolution/ledger.md`). Run the
 gate on the **final** order — the exact build.json or order file the renderer reads — before any
 still, preview, verify or render, and again after every change to the order:
 
@@ -34,7 +34,8 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   a known non-zero count is not "small enough" (owner: "0% 가 될 때까지 검토하고 맞춰").
 - SUPPORT: at its landing every part (or sub-assembly) joins a part already placed, or the table:
   a stud seated in an underside (found from the parts' stud primitives and the receiving part's own
-  walls and tubes, not from boxes), axle/pin in a hole, clip/bar, hinge, wheel, minifig joint.
+  walls and tubes, not from boxes), axle/pin in a hole, clip/bar, wheel, minifig joint, or an
+  articulated joint at any angle (HINGES below).
   CROSSING: the arrival sweep (from `travel` away along the arrival direction to `seatLen` away; the
   joint closing is not sampled) passes through no triangle of a placed part, flush faces included.
   ORDER: nothing arrives from above into a column where a placed part already sits above it (from
@@ -46,6 +47,21 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   no direction. A part with several joints (studs below and an axle sideways) passes when it matches
   any one it seats on, and its path must still be clear. `"from": "auto"` picks the first clear joint
   direction.
+  HINGES (EV-30; owner: "힌지로 적용해"): build angles with real hinges, never a free-turned part. Hinge
+  plates, bricks and tiles (2429/2430 = 73983, 3937/3938, 6134, 3830/3831), finger and click hinges
+  (2452, 4275/4276, 44301/44302, 30383, 60471) and turntables (3680/3679) join on their pin line: a pin
+  circle (cylinder, ring, disc or cone primitive) of each half on one line, at any angle about it. A
+  ball joint (14417/14418/14419/14704) joins on its ball centre, at any angle. Two halves that only
+  overlap, or one turned about the wrong point, join nothing. Studs are judged in each part's own
+  frame, so plates built on a swung half join it and arrive along its turned stud axis; a sub-assembly
+  turned as a whole holds together. The partner of an articulated joint is not swept for CROSSING
+  (knuckles interlock by design); every other part is. A hinged half lands one of two ways: at its
+  angle (from above or along its pin, the first clear), or `"arrive": "swing"` = place, then swing:
+  it arrives at the hinge's rest pose (square to its partner; from above or along the pin, the first
+  clear, or the step's `from`) and turns on the pin to where it stands, the turn checked every 3
+  degrees against all placed parts but the partner (`"swingFrom": <deg>` sets the start angle,
+  right-hand about the pin axis with its largest component positive). Land a hinge's second half
+  right after the first, before tiles or plates that sit on the first half in its swing path.
   VISIBILITY (required): each landing is seen from the camera of its moment, with everything placed
   before it in the way (sample points on the part's own triangles cast to the eye against the placed
   parts' triangles; seen = at least `--min-visible` of them, default 0.1). It needs the film's camera
@@ -66,12 +82,13 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   `directionOf`, `arrivalOptions` / `bestArrival` (the joint directions, clear ones first: take the
   arrival from here, never a fixed "from above"), `visibleOf(candidate, camera)`,
   `visibleCandidates(candidates, camera)` and `proposeCamera(candidate, camera)` (the smallest orbit
-  turn that shows it), then `place`. A planner picks only supported, clear, visible candidates with a
+  turn that shows it), `swingCheck(members, {from, swingFrom})` / `hingeOf` / `restAngle` for a hinged
+  half, then `place`. A planner picks only supported, clear, visible candidates with a
   joint-matching arrival. When none is visible, turn the camera (`proposeCamera`) or move that area
   into a sub-assembly shot.
 - Options, each recorded in the stamp: `--ignore-tail <n>` (assembled minifigs added last),
-  `--ignore <regex>` (landings not checked), `--loose <regex>` (hinged or odd parts held by any box
-  contact), `--classes <json>` (joint kind for a part whose title does not say), `--ground none`.
+  `--ignore <regex>` (landings not checked), `--loose <regex>` (odd parts held by any box contact;
+  hinges, turntables and ball joints are checked on their pin and need no `--loose`), `--classes <json>` (joint kind for a part whose title does not say), `--ground none`.
   Minifig parts are not swept against each other (their joints interlock deeper than a stud); build
   a figure as its own piece.
 
@@ -84,6 +101,8 @@ How to fix a failing order:
   sub-assembly on its own screen.
 - Arrive along the joint: a drum, pulley or wheel slides along its axle from the free end, an axle
   goes into its holes along its own axis, a part pressed onto studs comes along the stud axis.
+- An angle: use a hinge, click hinge, turntable or ball joint and turn the part on its pin, with the
+  parts on it turned the same way. A part merely set at an angle next to a hinge joins nothing.
 - A part held only from above or from the side (an overhang, a plate under a groove tile, a beam
   over a gap) waits until what holds it is placed, or goes in a sub-assembly built on its own:
   beside the model, upright, or on its own screen, then carried in as one piece (an `--order` step
@@ -107,7 +126,8 @@ JSON, and a bare list of steps also works):
    {"id": "model.ldr#1.1"},                                  // a part uid, as ldraw-bake.mjs writes it
    {"id": 4, "from": "-z", "travel": 40},                    // or its 0-based index in file order
    {"ids": ["model.ldr#3.1", "model.ldr#4.1"], "from": "above", "build": [{"id": "model.ldr#3.1"}, {"id": "model.ldr#4.1"}]},
-   {"id": "model.ldr#5.1", "arrive": "swing"}                // swung in: support checked, path listed as unchecked
+   {"id": "model.ldr#5.1", "arrive": "swing"}                // place, then swing on its hinge pin (checked);
+                                                             // with no pin primitive: support only, listed unchecked
  ]}
 ```
 
@@ -116,7 +136,8 @@ JSON, and a bare list of steps also works):
 (default: `ids` order), then landed as one piece. A sub-model item's uid names the whole sub-model.
 Every part must be placed exactly once. `--groups` folds index ranges of any order into
 sub-assemblies: `{"units": [{"k0": 120, "k1": 180, "kind": "fly", "name": "tower", "from": [0,-1,0]}]}`
-(k1 exclusive; a staged planner's `stage.json` works as is; kind `panel` swings in). `--cameras`,
+(k1 exclusive; a staged planner's `stage.json` works as is; kind `panel` swings in, checked on a
+hinge pin as above). `--cameras`,
 the film's camera track in the build model's LDraw frame:
 `{"cameras": [{"k0": 0, "k1": 400, "eye": [x,y,z], "target": [x,y,z], "up": [0,-1,0], "fov": 40, "aspect": 1.778}]}`
 with k = main landing index (after `--groups` folding); or entries with `"t0"`/`"t1"` seconds plus

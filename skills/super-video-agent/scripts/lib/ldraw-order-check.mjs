@@ -1,7 +1,8 @@
 // Build-order gate for LDraw models (references/assembly.md "Required before any render of an LDraw build").
 // Renderer-independent: it reads the model (an MPD/LDR or a bake's build.json) and a build order, and judges, for each
 // landing in that order:
-//   SUPPORT   the landing joins a part placed earlier (stud into an underside, axle/pin, clip/bar, hinge, minifig) or the
+//   SUPPORT   the landing joins a part placed earlier (stud into an underside, axle/pin, clip/bar, hinge or turntable on its
+//             pin line and ball on its socket at any angle (EV-30), minifig) or the
 //             ground; a sub-assembly's first part is free (it is built on its own), the rest join earlier members;
 //   CROSSING  the arrival sweep (from `travel` away along `from` to `seatLen` away) crosses no triangle of a placed part;
 //   ORDER     a part arriving from above has no placed part above it in its column (from below: none below it);
@@ -16,7 +17,7 @@ import { crossingsAt, surfaceOf, CELL as SURFACE_CELL } from "./surface-crossing
 import { connectionClass } from "./ldraw-connect.mjs";
 
 export const TOOL = "ldraw-order-check";
-export const VERSION = 3; // 2: DIRECTION check, 3: VISIBILITY required (EV-29); a stamp of an older version no longer opens the gate
+export const VERSION = 4; // 2: DIRECTION check, 3: VISIBILITY required (EV-29), 4: hinge/ball joints on their pin (EV-30); a stamp of an older version no longer opens the gate
 export const STAMP_NAME = "order-check.json";
 
 const GRID = 40; // spatial hash cell for part boxes (LDU)
@@ -263,7 +264,7 @@ const TAG_RULES = [
   ["minifig", /^Minifig/i],
   ["axis", /\b(Axle|Pin|Peg|Bush|Bushing)\b/i],
   ["hole", /^Technic\b|\b(Liftarm|Beam|Hole|Holes|Hub|Gear|Bush)\b/i],
-  ["clip", /\b(Clip|Clips|Hinge|Handle|Bar|Lightsaber|Antenna|Ladder|Hose|Whip|Rod|Tow Ball|Ball|Socket|Turntable|Fishing)\b/i],
+  ["clip", /\b(Clip|Clips|Hinge|Finger|Fingers|Click|Handle|Bar|Lightsaber|Antenna|Ladder|Hose|Whip|Rod|Tow Ball|Ball|Socket|Turntable|Fishing)\b/i],
   ["wheel", /\b(Wheel|Tyre|Tire|Rim)\b/i],
 ];
 const TAG_PAIRS = new Set(["axis:hole", "axis:axis", "axis:wheel", "hole:wheel", "wheel:wheel", "clip:clip", "clip:minifig", "minifig:minifig", "axis:clip"]);
@@ -301,6 +302,84 @@ function barsOf(lib, name, cache) {
     }
     if (/^\d+-\d+\w*\.dat$/.test(base) || /^(stud|stug|box|rect|disc|edge|ring|ndis|con)/.test(base)) continue;
     for (const s of barsOf(lib, ref.file, cache)) out.push({ p: apply(ref.m, ...s.p), a: unit(applyDir(ref.m, ...s.a)), len: s.len * Math.hypot(...applyDir(ref.m, ...s.a)) });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- articulated joints (EV-30): hinge, click hinge, turntable, ball
+
+/** The articulated family of a part from its title: "hinge" (hinge plates/bricks/tiles, finger and click hinges), "turntable", "ball" (ball joint, socket, tow ball), or null. */
+export function articOf(title0) {
+  const title = String(title0).replace(/^[~_=]+/, "");
+  if (/\bTurntable\b/i.test(title)) return "turntable";
+  if (/\b(Ball|Socket)\b/i.test(title)) return "ball";
+  if (/\b(Hinge|Finger|Fingers|Click)\b/i.test(title)) return "hinge";
+  return null;
+}
+
+const CIRCLE_PRIM = /^\d+-\d+(cyl\w*|ring\w*|disc|ndis|con\w*|edge|chrd|tang)\.dat$/;
+const SPHERE_PRIM = /^\d+-\d+sph\w*\.dat$/;
+const JOINT_PRIM = /^joint\d*(ball|socket)\w*\.dat$/;
+const HINGE_COS = 0.996; // pin axes within ~5 degrees
+const HINGE_OFF = 0.75; // pin lines within 0.75 LDU of each other
+const HINGE_GAP = 12; // knuckles of the two halves sit within 12 LDU along the pin
+const BALL_OFF = 1.5; // ball centre within 1.5 LDU of the socket centre
+
+/**
+ * Pivot features of a library file in its own frame: circles (cylinder, ring, disc, cone and edge primitives of radius
+ * 1.5..12: knuckles, pins, turntable rings) as {c, a, r}, and ball/socket centres (joint ball/socket primitives, sphere
+ * primitives) as {c, kind}. Studs, tubes and boxes are not walked into.
+ */
+function pivotsOf(lib, name, cache) {
+  const id = norm(name);
+  if (cache.has(id)) return cache.get(id);
+  const out = { circles: [], centers: [] };
+  cache.set(id, out);
+  for (const raw of lib.readPart(name).split(/\r?\n/)) {
+    const ref = parseRef(raw);
+    if (!ref) continue;
+    const base = norm(ref.file).split("/").pop();
+    const m = ref.m;
+    if (CIRCLE_PRIM.test(base)) {
+      const c0 = [m[0], m[4], m[8]], c2 = [m[2], m[6], m[10]];
+      const r0 = Math.hypot(...c0), r2 = Math.hypot(...c2);
+      if (r0 >= 1.5 && r0 <= 12 && Math.abs(r0 - r2) < 0.1 * r0) out.circles.push({ c: [m[3], m[7], m[11]], a: unit([c0[1] * c2[2] - c0[2] * c2[1], c0[2] * c2[0] - c0[0] * c2[2], c0[0] * c2[1] - c0[1] * c2[0]]), r: r0 });
+      continue;
+    }
+    if (JOINT_PRIM.test(base) || SPHERE_PRIM.test(base)) {
+      out.centers.push({ c: [m[3], m[7], m[11]], kind: /socket/.test(base) ? "socket" : "ball" });
+      continue;
+    }
+    if (/^(stud|stug|box|rect|tri|axle|axl|peghole|connhole|beamhole|npeghol|\d+-\d+)/.test(base)) continue;
+    const sub = pivotsOf(lib, ref.file, cache);
+    for (const s of sub.circles) out.circles.push({ c: apply(m, ...s.c), a: unit(applyDir(m, ...s.a)), r: s.r });
+    for (const s of sub.centers) out.centers.push({ c: apply(m, ...s.c), kind: s.kind });
+  }
+  return out;
+}
+
+/** An axis with its largest component positive (so a swing angle has one sign convention). */
+const canonAxis = (a) => {
+  let k = 0;
+  if (Math.abs(a[1]) > Math.abs(a[k])) k = 1;
+  if (Math.abs(a[2]) > Math.abs(a[k])) k = 2;
+  return a[k] < 0 ? a.map((x) => -x + 0) : a.slice();
+};
+
+/** 3x3 rotation (row-major, 9 numbers) by deg about unit axis a (right-hand rule). */
+function rotation(a, deg) {
+  const t = (deg * Math.PI) / 180, c = Math.cos(t), s = Math.sin(t), C = 1 - c;
+  const [x, y, z] = a;
+  return [c + x * x * C, x * y * C - z * s, x * z * C + y * s, y * x * C + z * s, c + y * y * C, y * z * C - x * s, z * x * C - y * s, z * y * C + x * s, c + z * z * C];
+}
+
+/** Placement matrix m turned by rotation R (3x3) about the line through point c. */
+function turnAbout(m, R, c) {
+  const out = new Array(12);
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 3; j++) out[i * 4 + j] = R[i * 3] * m[j] + R[i * 3 + 1] * m[4 + j] + R[i * 3 + 2] * m[8 + j];
+    const d = [m[3] - c[0], m[7] - c[1], m[11] - c[2]];
+    out[i * 4 + 3] = c[i] + R[i * 3] * d[0] + R[i * 3 + 1] * d[1] + R[i * 3 + 2] * d[2];
   }
   return out;
 }
@@ -367,6 +446,7 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
   const lib = library || openLibrary(libraryDir);
   const studCache = new Map();
   const barCache = new Map();
+  const pivotCache = new Map();
   const parts = new Map();
   const partOf = (id) => {
     let p = parts.get(id);
@@ -377,7 +457,9 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
     for (const arr of flat.tris.values()) for (const x of arr) tris.push(x);
     const bounds = tris.length ? boundsOf([tris]) : [0, 0, 0, 0, 0, 0];
     const title = partTitle(lib, file);
-    p = { id, file, title, tris, bounds, studs: studsOf(lib, file, studCache), bars: barsOf(lib, file, barCache), tags: jointTags(title, norm(id).replace(/\.dat$/, ""), classes, loose), _surf: null, _corners: null };
+    const tags = jointTags(title, norm(id).replace(/\.dat$/, ""), classes, loose);
+    const artic = tags.has("clip") || tags.size === 0 ? articOf(title) : null;
+    p = { id, file, title, tris, bounds, studs: studsOf(lib, file, studCache), bars: barsOf(lib, file, barCache), tags, artic, pivots: artic ? pivotsOf(lib, file, pivotCache) : null, _surf: null, _corners: null };
     parts.set(id, p);
     return p;
   };
@@ -428,7 +510,60 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
   let groundY = -Infinity;
   for (const p of P) groundY = Math.max(groundY, p.box[4]);
   const hasLoose = P.some((p) => p.part.tags.has("loose"));
-  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose };
+
+  /** A placement-like object for a pose that is not in the model (a hinge half at its rest angle, mid-swing). */
+  const posed = (pl, m) => ({ idx: -1, uid: pl.uid, part: pl.part, m, box: transformBounds(m, pl.part.bounds), _inv: null, _studs: null });
+  const pivotsW = (pl) => {
+    if (pl._piv) return pl._piv;
+    const pv = pl.part.pivots || { circles: [], centers: [] };
+    return (pl._piv = { circles: pv.circles.map((s) => ({ c: apply(pl.m, ...s.c), a: unit(applyDir(pl.m, ...s.a)) })), centers: pv.centers.map((s) => ({ c: apply(pl.m, ...s.c), kind: s.kind })) });
+  };
+  const jointCache = new Map();
+  /**
+   * The articulated joint between placements p and q, at any angle about it: {kind:"hinge"|"turntable", axis, point}
+   * when a pin circle of each lies on one line (axes parallel, lines within HINGE_OFF, knuckles within HINGE_GAP along
+   * it), {kind:"ball", point} when a ball centre of one sits on a socket centre of the other, or {kind, legacy:true}
+   * when one of the parts has no pivot primitive (then box overlap decides, as before). null = they do not join.
+   */
+  const articJoint = (p, q) => {
+    const A = p.part.artic, B = q.part.artic;
+    if (!A || !B) return null;
+    const key = p.idx >= 0 && q.idx >= 0 ? (p.idx < q.idx ? `${p.idx}|${q.idx}` : `${q.idx}|${p.idx}`) : null;
+    if (key && jointCache.has(key)) return jointCache.get(key);
+    let r = null;
+    if (overlaps(p.box, q.box, OVERLAP)) {
+      const ball = A === "ball" || B === "ball";
+      const kind = ball ? "ball" : A === "turntable" || B === "turntable" ? "turntable" : "hinge";
+      if (ball && A !== B) r = null;
+      else if (ball) {
+        const ca = pivotsW(p).centers, cb = pivotsW(q).centers;
+        if (!ca.length || !cb.length) r = { kind, legacy: true };
+        else
+          for (const x of ca) {
+            for (const y of cb) if (Math.hypot(x.c[0] - y.c[0], x.c[1] - y.c[1], x.c[2] - y.c[2]) <= BALL_OFF) { r = { kind, point: x.c.slice() }; break; }
+            if (r) break;
+          }
+      } else {
+        const ca = pivotsW(p).circles, cb = pivotsW(q).circles;
+        if (!ca.length || !cb.length) r = { kind, legacy: true };
+        else
+          outer: for (const x of ca)
+            for (const y of cb) {
+              const d = x.a[0] * y.a[0] + x.a[1] * y.a[1] + x.a[2] * y.a[2];
+              if (Math.abs(d) < HINGE_COS) continue;
+              const w = [y.c[0] - x.c[0], y.c[1] - x.c[1], y.c[2] - x.c[2]];
+              const along = w[0] * x.a[0] + w[1] * x.a[1] + w[2] * x.a[2];
+              if (Math.abs(along) > HINGE_GAP) continue;
+              if (Math.hypot(w[0] - along * x.a[0], w[1] - along * x.a[1], w[2] - along * x.a[2]) > HINGE_OFF) continue;
+              r = { kind, axis: canonAxis(x.a), point: x.c.slice() };
+              break outer;
+            }
+      }
+    }
+    if (key) jointCache.set(key, r);
+    return r;
+  };
+  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose, posed, articJoint };
 }
 
 /**
@@ -535,14 +670,22 @@ export function createBuild(model, { ground = model.groundY } = {}) {
         tag++;
         let j = null;
         const A = p.part.tags;
+        let jk = null;
         boxes.query(grow(p.box, 1), seen, tag, (q) => {
           if (j != null) return;
-          const B = model.P[q].part.tags;
+          const Q = model.P[q];
+          const B = Q.part.tags;
           if ((!A.size && !B.size) || !pairOk(A, B)) return;
-          if (overlaps(p.box, model.P[q].box, A.has("loose") || B.has("loose") ? -OVERLAP : OVERLAP)) j = q;
+          // two articulated parts (hinge halves, ball and socket, turntable) join only on their pin line or ball centre
+          if (p.part.artic && Q.part.artic && !A.has("loose") && !B.has("loose")) {
+            const aj = model.articJoint(p, Q);
+            if (aj) { j = q; jk = aj.kind; }
+            return;
+          }
+          if (overlaps(p.box, Q.box, A.has("loose") || B.has("loose") ? -OVERLAP : OVERLAP)) j = q;
         });
         if (j != null) {
-          const r = pick({ ok: true, how: [...p.part.tags].join("+") + " joint", with: model.P[j].uid, from: [0, -1, 0] });
+          const r = pick({ ok: true, how: jk ? `${jk} joint` : [...p.part.tags].join("+") + " joint", with: model.P[j].uid, from: [0, -1, 0] });
           if (r) return r;
         }
       }
@@ -587,6 +730,11 @@ export function createBuild(model, { ground = model.groundY } = {}) {
           const Q = model.P[q];
           const B = Q.part.tags;
           if ((!A.size && !B.size) || !pairOk(A, B)) return;
+          if (p.part.artic && Q.part.artic && !A.has("loose") && !B.has("loose")) {
+            const aj = model.articJoint(p, Q);
+            if (aj) mine.push({ member: p.uid, with: Q.uid, kind: aj.kind, rule: "any", ...(aj.axis ? { pin: aj.axis, point: aj.point } : aj.point ? { point: aj.point } : {}) });
+            return;
+          }
           if (!overlaps(p.box, Q.box, A.has("loose") || B.has("loose") ? -OVERLAP : OVERLAP)) return;
           mine.push({ member: p.uid, with: Q.uid, ...tagJoint(p, Q) });
         });
@@ -629,6 +777,11 @@ export function createBuild(model, { ground = model.groundY } = {}) {
       if (j.rule === "exact") add(j.v, j);
       else if (j.rule === "axis") { add(j.v, j); add(j.v.map((x) => -x + 0), j); }
       else if (j.rule === "perp") for (const w of [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]) if (Math.abs(w[0] * j.v[0] + w[1] * j.v[1] + w[2] * j.v[2]) <= DIR_PERP) add(w, j);
+    }
+    // a hinge half with no stud joint: from above, or along its pin (a swivel hinge's halves stack along the pin)
+    if (!cands.length && joints.some((j) => j.pin)) {
+      add([0, -1, 0], joints.find((j) => j.pin));
+      for (const j of joints) if (j.pin) { add(j.pin, j); add(j.pin.map((x) => -x + 0), j); }
     }
     if (!cands.length) add([0, -1, 0], joints[0]);
     for (const c of cands) {
@@ -858,9 +1011,13 @@ export function createBuild(model, { ground = model.groundY } = {}) {
 
   /** Triangle crossings along each member's arrival sweep, against placed parts only. */
   function crossingsOf(members, from, travel, seatLen = DEFAULT_SEAT) {
+    return crossingsOfPl(members.map((i) => model.P[i]), from, travel, seatLen);
+  }
+
+  /** crossingsOf for placement objects (model placements or posed ones). The articulated partner is not swept against. */
+  function crossingsOfPl(pls, from, travel, seatLen = DEFAULT_SEAT) {
     const out = [];
-    for (const i of members) {
-      const p = model.P[i];
+    for (const p of pls) {
       const b = p.box;
       const swept = [0, 1, 2, 3, 4, 5].map((k) => (k < 3 ? Math.min(b[k], b[k] + from[k] * travel) : Math.max(b[k], b[k] + from[k % 3] * travel)));
       tag++;
@@ -871,6 +1028,9 @@ export function createBuild(model, { ground = model.groundY } = {}) {
         // minifig joints (hips/legs, arm/torso, hand/arm, held item) interlock deeper than any stud seat; a figure is
         // assembled as its own piece, so its parts are not swept against each other
         if (p.part.tags.has("minifig") && Q.part.tags.has("minifig")) continue;
+        // hinge knuckles, a ball in its socket and turntable rings interlock by design: the partner of an articulated
+        // joint is not swept against (any other part still is)
+        if (p.part.artic && Q.part.artic && model.articJoint(p, Q)) continue;
         const iv = interval(b, Q.box, from, seatLen, travel);
         if (!iv) continue;
         const hit = pairCrossing(p, Q, from, iv);
@@ -878,6 +1038,159 @@ export function createBuild(model, { ground = model.groundY } = {}) {
       }
     }
     return out;
+  }
+
+  // ------------------------------------------------ place, then swing on a hinge (EV-30)
+
+  /** The hinge or turntable the members turn on against a placed part: {kind, axis, point, member, with} or null. */
+  function hingeOf(members) {
+    for (const i of members) {
+      const p = model.P[i];
+      if (!p.part.artic) continue;
+      let found = null;
+      tag++;
+      boxes.query(grow(p.box, 1), seen, tag, (q) => {
+        if (found) return;
+        const j = model.articJoint(p, model.P[q]);
+        if (j && j.axis) found = { ...j, member: i, with: q };
+      });
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * The angle (degrees about hinge.axis, right-hand) that turns the members back to the hinge's rest pose: the pose where
+   * the hinge half and its partner are square to each other again (same orientation first, else the nearest square one).
+   * null when no square pose lies on the swing.
+   */
+  function restAngle(hinge) {
+    const p = model.P[hinge.member], q = model.P[hinge.with];
+    const Rq = [q.m[0], q.m[1], q.m[2], q.m[4], q.m[5], q.m[6], q.m[8], q.m[9], q.m[10]];
+    let best = null;
+    for (let deg = -180; deg < 180; deg += 1) {
+      const R = rotation(hinge.axis, deg);
+      const t = turnAbout(p.m, R, hinge.point);
+      // relative rotation Rq^T * Rp'
+      let err = 0, trace = 0;
+      for (let i = 0; i < 3; i++)
+        for (let j = 0; j < 3; j++) {
+          const v = Rq[i] * t[j] + Rq[3 + i] * t[4 + j] + Rq[6 + i] * t[8 + j];
+          err = Math.max(err, Math.abs(v - Math.round(v)));
+          if (i === j) trace += v;
+        }
+      if (err > 0.03) continue;
+      const cand = { deg, same: trace > 2.9 };
+      if (!best || (cand.same && !best.same) || (cand.same === best.same && Math.abs(deg) < Math.abs(best.deg))) best = cand;
+    }
+    if (!best) return null;
+    // refine to 0.05 degree
+    let d0 = best.deg;
+    for (const step of [0.5, 0.1, 0.05]) {
+      let bestErr = Infinity, bestD = d0;
+      for (let k = -10; k <= 10; k++) {
+        const d = d0 + k * step;
+        const t = turnAbout(p.m, rotation(hinge.axis, d), hinge.point);
+        let err = 0;
+        for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) { const v = Rq[i] * t[j] + Rq[3 + i] * t[4 + j] + Rq[6 + i] * t[8 + j]; err += (v - Math.round(v)) ** 2; }
+        if (err < bestErr) { bestErr = err; bestD = d; }
+      }
+      d0 = bestD;
+    }
+    return Math.abs(d0) < 0.05 ? 0 : Math.round(d0 * 100) / 100;
+  }
+
+  /** Shrunken triangle edges of a part (6 numbers each), cached: an edge of one part through a face of another is interpenetration. */
+  const edgesOf = (part) => {
+    if (part._edges) return part._edges;
+    const t = part.tris, out = [];
+    for (let o = 0; o + 8 < t.length; o += 9) {
+      const c = [(t[o] + t[o + 3] + t[o + 6]) / 3, (t[o + 1] + t[o + 4] + t[o + 7]) / 3, (t[o + 2] + t[o + 5] + t[o + 8]) / 3];
+      const v = [0, 1, 2].map((k) => {
+        const w = [t[o + k * 3], t[o + k * 3 + 1], t[o + k * 3 + 2]];
+        const dist = Math.hypot(c[0] - w[0], c[1] - w[1], c[2] - w[2]);
+        const f = dist ? Math.min(0.3 / dist, 0.5) : 0;
+        return [w[0] + (c[0] - w[0]) * f, w[1] + (c[1] - w[1]) * f, w[2] + (c[2] - w[2]) * f];
+      });
+      for (let k = 0; k < 3; k++) out.push(...v[k], ...v[(k + 1) % 3]);
+    }
+    return (part._edges = out);
+  };
+
+  /** Do placements a and b pass through each other where they stand (an edge of one through a face of the other)? */
+  function interpenetrate(a, b) {
+    for (const [x, y] of [[a, b], [b, a]]) {
+      const rel = mul(model.invOf(y), x.m);
+      const surf = model.surfaceOfPart(y.part);
+      const e = edgesOf(x.part);
+      for (let o = 0; o + 5 < e.length; o += 6) {
+        const p = apply(rel, e[o], e[o + 1], e[o + 2]), q = apply(rel, e[o + 3], e[o + 4], e[o + 5]);
+        if (segmentHitsSurface(surf, p, q)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * "Place, then swing": the members arrive at the hinge's rest pose and then turn on the pin to where they stand. The
+   * arrival comes along `from`, or (from = null) the first clear of: from above, along the pin, against the pin. Checks
+   * the arrival at rest (CROSSING, the hinge partner excepted) and the swing itself, sampled every `step` degrees,
+   * against every placed part but the partner.
+   * @returns {{hinge:object|null, swingFrom:number|null, from:number[]|null, crossings:object[], reason?:string}}
+   */
+  function swingCheck(members, { from = null, swingFrom = null, travel = "auto", seatLen = DEFAULT_SEAT, step = 3 } = {}) {
+    const hinge = hingeOf(members);
+    if (!hinge) return { hinge: null, swingFrom: null, from: null, crossings: [], reason: "no hinge or turntable pin against a placed part" };
+    const start = swingFrom ?? restAngle(hinge);
+    if (start == null) return { hinge, swingFrom: null, from: null, crossings: [], reason: "no square rest pose on this pin: give swingFrom (degrees)" };
+    const at = (deg) => members.map((i) => model.posed(model.P[i], turnAbout(model.P[i].m, rotation(hinge.axis, deg), hinge.point)));
+    const crossings = [];
+    // 1) the arrival at the rest pose
+    const rest = at(start);
+    const travelFor = (fromU) => {
+      if (travel !== "auto") return travel;
+      for (let d = 0; d < 4000; d += 2) {
+        let hit = false;
+        tag++;
+        for (const p of rest) {
+          const b = p.box.map((v, k) => v + fromU[k % 3] * d);
+          boxes.query(b, seen, tag, (q) => { if (!hit && !model.articJoint(p, model.P[q]) && overlaps(b, model.P[q].box, OVERLAP)) hit = true; });
+          if (hit) break;
+        }
+        if (!hit) return Math.max(72, d + 24);
+      }
+      return 4000;
+    };
+    const tries = from ? [unit(from)] : [[0, -1, 0], hinge.axis.slice(), hinge.axis.map((x) => -x + 0)];
+    let fromU = null, arrival = null;
+    for (const f of tries) {
+      const cr = crossingsOfPl(rest, f, travelFor(f), seatLen);
+      if (!arrival || cr.length < arrival.length) { fromU = f; arrival = cr; }
+      if (!cr.length) break;
+    }
+    for (const c of arrival) crossings.push({ ...c, how: `arrival at the rest pose (${start} deg) from ${JSON.stringify(fromU.map((x) => Math.round(x * 1000) / 1000))}: ${c.how}` });
+    // 2) the swing from the rest pose to the final one
+    if (Math.abs(start) > 1e-6) {
+      const n = Math.max(1, Math.ceil(Math.abs(start) / step));
+      const hitPairs = new Set();
+      for (let s = 0; s < n; s++) {
+        const deg = start * (1 - s / n);
+        for (const p of at(deg)) {
+          tag++;
+          boxes.query(p.box, seen, tag, (q) => {
+            const Q = model.P[q];
+            const key = `${p.uid}|${Q.uid}`;
+            if (hitPairs.has(key) || !overlaps(p.box, Q.box, OVERLAP)) return;
+            if (p.part.artic && Q.part.artic && model.articJoint(p, Q)) return;
+            if (interpenetrate(p, Q)) {
+              hitPairs.add(key);
+              crossings.push({ member: p.uid, with: Q.uid, at: Math.round(deg * 10) / 10, how: `swing on the ${hinge.kind} pin passes through a placed part at ${Math.round(deg * 10) / 10} deg from the final pose` });
+            }
+          });
+        }
+      }
+    }
+    return { hinge: { kind: hinge.kind, axis: hinge.axis, point: hinge.point, member: model.P[hinge.member].uid, with: model.P[hinge.with].uid }, swingFrom: start, from: fromU, crossings };
   }
 
   function place(members) {
@@ -895,7 +1208,7 @@ export function createBuild(model, { ground = model.groundY } = {}) {
     }
   }
 
-  return { supportOf, jointsOf, directionOf, arrivalOptions, bestArrival, visibleOf, visibleCandidates, proposeCamera, blockersOf, crossingsOf, autoTravel, place, isPlaced: (i) => !!placed[i], get count() { return count; } };
+  return { supportOf, jointsOf, directionOf, arrivalOptions, bestArrival, visibleOf, visibleCandidates, proposeCamera, blockersOf, crossingsOf, crossingsOfPl, hingeOf, restAngle, swingCheck, autoTravel, place, isPlaced: (i) => !!placed[i], get count() { return count; } };
 }
 
 // ---------------------------------------------------------------- running an order
@@ -918,8 +1231,16 @@ function runEvents(model, events, scope, report, opts) {
     if (!sup.ok && !ev.ignore) report.violations.support.push({ ...where, uid: model.P[ev.members[0]].uid, title: model.P[ev.members[0]].part.title });
     if (ev.ignore) {
       /* skipped on request (--ignore / --ignore-tail / "ignore": true); counted in the report */
-    } else if (ev.arrive === "swing") report.unchecked.push({ ...where, reason: "swing arrival: support checked; path and column not checked" });
-    else {
+    } else if (ev.arrive === "swing") {
+      // on a hinge or turntable pin: the arrival at the rest pose and the swing are checked; otherwise (a panel swung in
+      // with no pin primitive) support only, listed as unchecked
+      const sw = sup.ok && !(opts.firstFree && k === 0) ? build.swingCheck(ev.members, { from: Array.isArray(ev.from) ? ev.from : null, swingFrom: Number.isFinite(ev.swingFrom) ? ev.swingFrom : null, travel: ev.travel, seatLen: ev.seatLen ?? DEFAULT_SEAT }) : { hinge: null, reason: "not held" };
+      if (!sw.hinge || sw.swingFrom == null) report.unchecked.push({ ...where, reason: `swing arrival: support checked; path and column not checked (${sw.reason})` });
+      else {
+        report.swings.push({ ...where, kind: sw.hinge.kind, with: sw.hinge.with, swingFrom: sw.swingFrom, from: sw.from, axis: sw.hinge.axis.map((x) => Math.round(x * 1000) / 1000) });
+        if (sw.crossings.length) report.violations.crossing.push({ ...where, from: "swing", swingFrom: sw.swingFrom, hits: sw.crossings.slice(0, 8), count: sw.crossings.length });
+      }
+    } else {
       const bl = build.blockersOf(ev.members, from);
       if (bl.length) report.violations.order.push({ ...where, from, above: from[1] < 0, blockers: bl.slice(0, 8), count: bl.length });
       const cr = build.crossingsOf(ev.members, from, travel, ev.seatLen ?? DEFAULT_SEAT);
@@ -983,7 +1304,7 @@ export function cameraResolver(spec, landings) {
  */
 export function checkOrder({ model, events, options = {} }) {
   const t0 = process.hrtime.bigint();
-  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], unplaced: options.unplaced || [] }, unchecked: [], visibility: null };
+  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], unplaced: options.unplaced || [] }, unchecked: [], swings: [], visibility: null };
   const ground = options.ground === undefined ? model.groundY : options.ground;
   const cameraFor = options.structureOnly ? null : cameraResolver(options.cameras, events.length);
   if (!options.structureOnly) report.visibility = { required: true, missingCameras: !cameraFor, checked: 0, hidden: [], noCamera: [], excepted: [], maxHidden: options.maxHidden ?? 0, minVisible: options.minVisible ?? 0.1 };
@@ -1009,6 +1330,7 @@ const joinOf = (it) => ({
   from: it.join && Array.isArray(it.join.from) ? unit(it.join.from) : "auto",
   travel: it.join && Number.isFinite(it.join.travel) ? it.join.travel : "auto",
   seatLen: it.join && Number.isFinite(it.join.seatLen) ? it.join.seatLen : DEFAULT_SEAT,
+  ...(it.join && it.join.arrive === "swing" ? { arrive: "swing", swingFrom: Number.isFinite(it.join.swingFrom) ? it.join.swingFrom : undefined } : {}),
 });
 
 /**
@@ -1114,7 +1436,7 @@ export function fromOrderSpec(spec, base) {
     if (Array.isArray(st.build)) internal = st.build.map((x, j) => mk(x, `${k}.${j}`));
     else if (members.length > 1) internal = res.length === 1 && res[0].group ? res[0].group.internal : members.map((i) => ({ label: base.placements[i].uid, members: [i], from: "auto", travel: "auto", seatLen: DEFAULT_SEAT }));
     const label = st.label || (ids.length === 1 ? String(ids[0]) : `${ids[0]}..(${members.length})`);
-    return { label, members, from, travel, seatLen, group: st.group || (members.length > 1 ? label : undefined), arrive: st.arrive === "swing" ? "swing" : "slide", internal, ignore: !!st.ignore };
+    return { label, members, from, travel, seatLen, group: st.group || (members.length > 1 ? label : undefined), arrive: st.arrive === "swing" ? "swing" : "slide", swingFrom: Number.isFinite(st.swingFrom) ? st.swingFrom : undefined, internal, ignore: !!st.ignore };
   };
   const events = steps.map((st, k) => mk(st, k));
   for (const e of events) for (const i of e.members) {
@@ -1142,7 +1464,7 @@ export function applyGroups(events, spec) {
     while (k < u.k0) out.push(events[k++]);
     const internal = events.slice(u.k0, u.k1);
     const swing = u.arrive === "swing" || u.kind === "panel" || u.kind === "swing" || u.hinge;
-    out.push({ label: `${u.kind || "group"} ${u.name || u.k0}`, members: internal.flatMap((e) => e.members), from: parseFrom(u.from ?? [0, -1, 0]), travel: u.travel ?? "auto", seatLen: u.seatLen ?? DEFAULT_SEAT, group: u.name || `${u.k0}`, arrive: swing ? "swing" : "slide", internal });
+    out.push({ label: `${u.kind || "group"} ${u.name || u.k0}`, members: internal.flatMap((e) => e.members), from: parseFrom(u.from ?? [0, -1, 0]), travel: u.travel ?? "auto", seatLen: u.seatLen ?? DEFAULT_SEAT, group: u.name || `${u.k0}`, arrive: swing ? "swing" : "slide", swingFrom: Number.isFinite(u.swingFrom) ? u.swingFrom : undefined, internal });
     k = u.k1;
   }
   while (k < events.length) out.push(events[k++]);
