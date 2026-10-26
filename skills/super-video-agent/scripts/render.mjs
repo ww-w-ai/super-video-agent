@@ -44,6 +44,7 @@ import {
 import { clipVersusPage } from "./lib/segment-verify.mjs";
 import { draftsDir, draftSpan, draftSidecar, slotCut, reelStamp, slotProbeFrames, compareDraft } from "./lib/drafts.mjs";
 import { isMain } from "./lib/is-main.mjs";
+import { orderGate } from "./lib/ldraw-order-check.mjs";
 
 const HELP = `usage: render.mjs <reel-dir> [--preview] [--workers N] [--only id,id [--handle <sec>]] [--plan] [--no-captions [--lang <code> [--probe-all]]]
                  [--stub <sec> [--segments N]] [--insert <clip.mp4>@<start-sec> [--insert-stills <dir>]] [--use-draft <id>]
@@ -254,6 +255,11 @@ One render opens the reel page once (once per --workers worker) and uses
 that session for the shot list, the probes, the frames, the page sound and
 the sound cues; its warm-up seeks only the shots it will capture. The last
 line says how many times the page was opened.
+
+LDraw build gate: a reel whose data/ (or data/<dir>/) holds a bake build.json is
+refused until scripts/ldraw-order-check.mjs has passed on that exact file (its
+order-check.json stamp matches the file's hash). --skip-order-check "<reason>"
+renders anyway and appends the reason to out/order-check-override.log.
 `;
 
 /**
@@ -296,6 +302,13 @@ export async function main(argv) {
   }
   if (!fs.existsSync(paths.reelHtml)) {
     fail(`no reel.html in ${dir} — run new-reel.mjs first`);
+    return;
+  }
+  // An LDraw build may not be rendered before its build order passed (references/assembly.md, EV-28).
+  const gate = orderGate(dir, { skipReason: flags["skip-order-check"] });
+  for (const line of gate.lines) process.stderr.write(`${line}\n`);
+  if (!gate.ok) {
+    fail("LDraw build order not cleared (see the lines above)");
     return;
   }
   const noCaptions = !!flags["no-captions"];

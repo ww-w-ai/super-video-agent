@@ -12,6 +12,7 @@ import { sha256, buildProbeTimes, deterministicShuffle, parseTimeRange } from ".
 import { collectPlanCues, cueKey } from "./lib/cues.mjs";
 import { checkedNothingNext } from "./lib/checked-nothing.mjs";
 import { isMain } from "./lib/is-main.mjs";
+import { orderGate } from "./lib/ldraw-order-check.mjs";
 
 const HELP = `usage: verify.mjs <reel-dir> [--stub <sec>] [--no-cue-check] [--range <t0>-<t1> | --only <shotIds> | --world <key>]
 
@@ -64,6 +65,11 @@ don't match assets/lib/cues.json, i.e. \`assets.mjs fetch\` hasn't run since
 the cues last changed. --no-cue-check turns that warning off (for a session
 that cannot run assets.mjs).
 
+LDraw build gate: a reel whose data/ (or data/<dir>/) holds a bake build.json
+fails until scripts/ldraw-order-check.mjs has passed on that exact file (its
+order-check.json stamp matches the file's hash). --skip-order-check "<reason>"
+goes on anyway and appends the reason to out/order-check-override.log.
+
 Exits 0 on pass. Exits 1 with a DIAGNOSIS line on the first failure found.
 `;
 
@@ -77,6 +83,14 @@ export async function main(argv) {
   const paths = reelPaths(dir);
   if (!fs.existsSync(paths.reelHtml)) {
     fail(`no reel.html in ${dir} — run new-reel.mjs first`);
+    return;
+  }
+  // An LDraw build is not verified before its build order passed (references/assembly.md, EV-28).
+  const gate = orderGate(dir, { skipReason: flags["skip-order-check"] });
+  for (const line of gate.lines) process.stdout.write(`${line}\n`);
+  if (!gate.ok) {
+    process.stderr.write("DIAGNOSIS: LDraw build order not cleared — run scripts/ldraw-order-check.mjs on the reel's build.json until it passes (see the lines above)\n");
+    process.exitCode = 1;
     return;
   }
   let stubSec;

@@ -4,7 +4,7 @@ import "../engine/reel-crossing.js";
 
 const RC = globalThis.ReelCrossing;
 
-export const { surfaceOf, crossingsAt, pathCrossings, bestEnd } = RC;
+export const { surfaceOf, crossingsAt, pathCrossings, bestEnd, CELL } = RC;
 
 /**
  * Triangles (9 numbers each) moved by a 3x4 row-major matrix [a b c x, d e f y, g h i z].

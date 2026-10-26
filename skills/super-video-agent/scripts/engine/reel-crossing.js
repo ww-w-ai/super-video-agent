@@ -176,5 +176,5 @@
     return { dir: best.dir, hits: best.hits, trials };
   }
 
-  globalThis.ReelCrossing = { surfaceOf, crossingsAt, pathCrossings, bestEnd, PARALLEL };
+  globalThis.ReelCrossing = { surfaceOf, crossingsAt, pathCrossings, bestEnd, PARALLEL, CELL };
 })();

@@ -16,7 +16,7 @@ The model's own tree gives the step order: a sub-model's steps run first, then i
                  colour table), or a flat folder of part files. A part that is not there stops the run and is named.
 --out <dir>      where build.json and parts.json go (a reel's data/ folder)
 --until <n>      bake only the first n steps of the model that is built (sub-models they join are baked whole)
---classes <json> {"<part id>": "stud" | "axis" | "hole"} for parts whose title does not say how they join
+--classes <json> path to a JSON file (not inline JSON) holding {"<part id>": "stud" | "axis" | "hole"} for parts whose title does not say how they join
 --detail         also print, for each crossing path, where along it the surfaces cross
 
 build.json   tree, order (model, step, via), per model the steps with each item's matrix, colour, box, join class and
@@ -25,6 +25,9 @@ build.json   tree, order (model, step, via), per model the steps with each item'
 parts.json   per part, triangles and edge lines by colour key as base64 Float32 (9 and 6 numbers per triangle and
              line), local box, title; colours used, with values from LDConfig.ldr
 Exit 0 when the files were written; a missing library file, a model that contains itself or an unreadable file stops.
+
+REQUIRED next: scripts/ldraw-order-check.mjs <dir>/build.json --lib <parts-folder> must pass on the order that will be
+rendered (this bake's, or a planner's rewrite of it); render.mjs and verify.mjs refuse the reel until it has.
 `;
 
 function summary(r) {
@@ -69,6 +72,7 @@ export function main(argv) {
     if (r.report.noColourTable) process.stdout.write("note: no LDConfig.ldr in the library folder; parts.json has no colour values\n");
     if (r.report.unknownColours.length) process.stdout.write(`note: colour codes with no table entry: ${r.report.unknownColours.join(", ")}\n`);
     process.stdout.write(`wrote ${path.join(abs(flags.out), "build.json")} and parts.json\n`);
+    process.stdout.write(`REQUIRED before any render: node scripts/ldraw-order-check.mjs ${path.join(abs(flags.out), "build.json")} --lib ${abs(flags.lib)} (again after any change to the order; render.mjs and verify.mjs refuse the reel until it passes)\n`);
   } catch (e) {
     return fail(e.message);
   }
