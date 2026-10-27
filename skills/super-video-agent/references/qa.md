@@ -17,6 +17,9 @@
 | Caption breaks | `validate-plan.mjs --breaks [--dub <code>]` | not a gate — the table lists every break; the reviewer finds none that cuts a phrase (`script-review.md` "Caption breaks"; a dub reads it once per language) |
 
 A failing gate prints a DIAGNOSIS line naming the time or element. Fix the cause, not the threshold.
+A defect you already know about (a non-zero count, a known mismatch) is a FAIL in the report, fixed
+or flagged as a failure; never pass it on as an information figure (owner 2026-10-26: "알고 있으면서
+그러면 안되지"; EV-38).
 
 **A check that looked at nothing has not passed.** `review.mjs` gives such a check the verdict
 `CHECKED NOTHING` (in `review.json` its `pass` is `null`, listed under `checkedNothing` with the

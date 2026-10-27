@@ -246,3 +246,36 @@ run could have passed or failed it, so it is worth another design round or an ow
 that sound (a new synth voice, different pitch/envelope/layers, a better library sound, or a new
 one made for this film), re-measure, re-judge — up to 3 rounds, without asking. This tool reports;
 it never blocks a render.
+
+## 8. A build or timelapse with many hits and no narration
+
+What owner reviews of long LEGO build films taught (2026-10-26/27, EV-36). Examples of a method
+that worked, not a fixed recipe.
+
+- **One hit per landing, on its frame.** Each part that seats gets exactly one click on the first
+  video frame at or after it seats: no random thinning, no jitter, no early offset. Parts seating
+  on the same frame share one slightly stronger click; at high rates the click is shorter and
+  softer, never dropped. Check it on the final file: detected onsets against the landing frames,
+  median about 0 ms, every landing within one frame.
+- **A wide palette for dense hits.** Hundreds of identical clicks tire the ear. Walk the click's
+  body tone over a pentatonic scale across about two octaves (440–1760 Hz) by a slow random walk,
+  never the same note and timbre twice in a row, and pick the timbre by part type (small round
+  parts the lightest high tick, tiles a slide-click, plates a high snap, bricks a mid press, large
+  parts a low full click).
+- **Event sounds from the animation, not a fixed interval.** A wing beat, a hoof, a camera
+  shutter is timed from the page's own motion formula (the mid-downstroke, each footfall, the click
+  pose), only while the thing is on screen and large enough to see. Verify onsets on the final file.
+- **No synthesized noise beds.** Filtered-noise "water", "wind" or "crowd" under the whole film
+  reads as 8-bit noise ("8bit 음 같은걸로 만들다 보니 노이즈처럼 들려"). Default: no ambience. A real
+  field recording (CC0 or public domain, source and licence in `FILM.md`) at a low level is the only
+  alternative, and only when it clearly sounds real.
+- **Music: composed or CC0 only.** Nothing Content-ID-prone. A way that worked: compose the piece
+  in code as MIDI stems (chords, voice leading, melody, humanised timing), render each stem with
+  FluidSynth and free SoundFonts (GeneralUser GS, MuseScore_General), keep melody fundamentals and
+  percussion out of the click band, master, and record that the music is original.
+- **Balance.** Over the build, the music sits about 4 LU below the effects (one constant gain for
+  the film). Dip the music about 2.5 dB only where the clicks run dense (6 or more per second over
+  a 2 s window, ramps of 1.5 s or longer), never within a few seconds of an event sound, back up in
+  tours, pauses and the ending. The music runs to the last frame with a fade of about 2.5 s; check
+  that the dip envelope spans the whole film (an envelope that ends early cuts the music there).
+  Master the final mix with one gain, then mux the checked file without a second loudness pass.

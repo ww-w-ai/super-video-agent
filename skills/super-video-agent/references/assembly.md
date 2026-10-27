@@ -3,7 +3,7 @@
 Read this only for a film that shows something being built or assembled in many ordered steps
 (an object put together, a recipe, a construction timelapse), where step data drives the picture.
 Contents: What you need · Required before any render of an LDraw build · One technique: manual and
-3D side by side · Reading a model file · Timeline JSON and the drift guard · A film with no narration ·
+3D side by side · Reading a model file (minifig hands, sculpted subjects) · Timeline JSON and the drift guard · A film with no narration ·
 Fit to a target length · Short scenes, each rendered and marked done · Re-rendering what changed
 
 **Every technique here is an example, never a menu** — except the build-order gate below, which is
@@ -73,7 +73,10 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
 - It writes `order-check.json` beside the order file (the hashes of the files it checked).
   `render.mjs` and `verify.mjs` refuse a reel whose `data/build.json` (or `data/<dir>/build.json`) has no
   current passing stamp. `--skip-order-check "<reason>"` gets past it and appends the reason to
-  `out/order-check-override.log`; a bare flag is refused. Use it only for a probe that is not shown.
+  `out/order-check-override.log`; a bare flag is refused. Use it only for a probe that is not shown,
+  or for a fast pour shot (bricks raining in by the hundred per second, as in a seconds-long Short,
+  where no single landing can be read; reason `"pour shot"`). Every build shown part by part or step
+  by step passes the gate (EV-31).
 - **Any custom renderer, page or planner must run it too** (a project's own WebGL page, a staging or
   one-by-one planner, a re-sorted order): run the CLI on the order it wrote, or call
   `assertOrderChecked(<order file>)` from `scripts/lib/ldraw-order-check.mjs` before drawing.
@@ -109,6 +112,10 @@ How to fix a failing order:
   with `ids`, or a `--groups` range). Its own build is checked too; its first part is free.
 - Underside parts: turn the model (or build them into a sub-assembly upside down and turn it over)
   so they arrive from above; do not slide them up through the base.
+- When no order can pass because the model itself hangs (a course or plate held only by the parts
+  above it, common in generated terrain and voxel models), fix the model, not the order: give each
+  hanging stack support from below with the same outside look (a 1x1 column in the hollow inside),
+  then compare stills from the same cameras before and after (EV-31).
 - A part pushed sideways must have a clear path: not across studs it would drag through, not
   through a neighbour in the same course. Press it down from above, or let it come in last on that
   side.
@@ -224,6 +231,19 @@ Further assembly techniques, each an example; a different or better way may be c
 - **Load tips.** A large step list makes a heavy page. Load each part's geometry once and reuse it
   for repeats, group parts that never move apart into one object, and warm only the steps a segment
   draws (render in short scenes, see below).
+- **Pace of a long part-by-part build.** In a long film where parts land one after another (a
+  speed-build, a thousands-of-parts model), a slow start that speeds up reads as dragging
+  (owner 2026-10-26: "천천히 꽂히니 오히려 답답함"). Use one constant placement rate from the first
+  part to the last, the fastest rate the film uses, with the same slide time and click cadence;
+  sub-assemblies built on their own screen and page turns keep their own short pauses. For a very
+  large model (around 100,000 parts) land several parts on one beat, one click per beat, so the
+  build stays about 20–25 minutes; each part of a batch still passes the gate (EV-32).
+- **Booklet end pages and the ending.** A booklet panel stays opaque while its pages change: the
+  next page replaces the last one directly (or crossfades over an opaque page), so the scene behind
+  never shows between page 1/2 and 2/2. After the last booklet page the film does not freeze on a
+  still end screen: the camera keeps a slow orbit or pull-back with the model's moving parts alive,
+  the opening title card returns (clear of the platform's end-screen elements), and the music runs
+  to its final fade on the last frame (owner 2026-10-27; EV-33).
 
 ## Reading a model file
 
@@ -308,6 +328,31 @@ the clip; "레고 손에 꽂을 수 있는 부분과 아닌 부분이 있는데 
   angle and offset; bars come from the part's radius-4 cylinder primitives (holes marked
   `BFC INVERTNEXT` and studs are not bars). Run it after every model change that adds or moves a
   minifig, and before any render.
+
+### Sculpted subjects: statues, figures, organic shapes
+
+For a model designed freely (no set inventory): a statue, a person, an animal, a landmark with
+curves. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
+
+- **Parts by curvature, from every line.** A narrow part vocabulary looks forced ("사용한 블록의
+  종류가 제한적이라 억지로 끼워맞춘 느낌"). Choose parts per region by how the surface bends: big smooth
+  parts (2x2 to 2x4 curved slopes, double-curved and inverted slopes, wedges, large plates and tiles)
+  on broad areas, small expressive parts (cheese slopes, 1x1 curves, round and quarter tiles, tooth
+  plates, clips and bars) only at features. Take them from the whole catalogue (sculpting and SNOT
+  sets, car lines with curved panels, Technic, East-Asian roofs and ornaments, plant and animal
+  sets). Every part must exist in LDraw in its colour. Report a palette table: part, line, count,
+  where it is used. A people-shaped subject is never stacked boxy bricks.
+- **Faces first, mirror exact.** On a statue, finish the face before the body. A face is exactly
+  symmetric left to right: every part has a partner of the same part and colour at the mirrored
+  position and orientation (left/right pair parts swapped), seam splits included (a row split 2+3+2,
+  never 6+1). Check it by script and with a centre line drawn on a front render lit from the centre
+  plane. Do not force grooves or recesses that the reference does not show; a dark channel appears
+  only where the real subject has one.
+- **Resolution.** A face under about 14 studs wide turns eyes and mouth into plate steps; plan 20 or
+  more studs across the face, and hand-tune the face front even when the rest is generated.
+- **Angles** come only from real joints (hinges, click hinges, turntables, ball joints; HINGES above).
+- **From a photo.** For any curved subject, start from a 3D shape matched to reference photos and
+  turn it into bricks, rather than placing bricks by hand: `references/photo-to-3d.md`.
 
 ## Timeline JSON and the drift guard
 
