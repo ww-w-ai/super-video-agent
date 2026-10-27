@@ -332,9 +332,13 @@ the clip; "레고 손에 꽂을 수 있는 부분과 아닌 부분이 있는데 
 ### Sculpted subjects: statues, figures, organic shapes
 
 For a model designed freely (no set inventory): a statue, a person, an animal, a landmark with
-curves. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
+curves. This is the scope of mega builds only (landmarks, statues, scenes, official-set mega builds);
+owner 2026-10-27: "메가 빌드만 부품 상관없이 다 쓰는거고, 일반 따라하기는 실제 쉽게 구할 수 있는 부품으로 해야 해".
+A regular follow-along build (a car series, anything viewers build along with) uses parts viewers can
+easily get, by default the parts, colours and quantities of one Classic 10696 box, never the all-lines
+vocabulary below. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
 
-- **Parts by curvature, from every line.** A narrow part vocabulary looks forced ("사용한 블록의
+- **Parts by curvature, from every line (mega builds).** A narrow part vocabulary looks forced ("사용한 블록의
   종류가 제한적이라 억지로 끼워맞춘 느낌"). Choose parts per region by how the surface bends: big smooth
   parts (2x2 to 2x4 curved slopes, double-curved and inverted slopes, wedges, large plates and tiles)
   on broad areas, small expressive parts (cheese slopes, 1x1 curves, round and quarter tiles, tooth
