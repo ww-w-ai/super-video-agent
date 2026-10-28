@@ -306,6 +306,16 @@ Further assembly techniques, each an example; a different or better way may be c
   endings) with `scripts/shot-framing.mjs <shots.json>`: the subject's box corners (plus head and hand
   points) at least 5 % inside every edge; `fitCamera` pulls a camera back along its line until the
   subject fits (owner 2026-10-28: "얼굴과 상체가 더 중요한데! … 전체가 보여야지!"; EV-43).
+- **Scene vehicles drive along their own road (EV-53).** Every car, bus or truck placed in a scene
+  points along the road it stands on (heading parallel to that road's axis, either direction) and sits
+  inside one lane, never across a junction or a cross road. Give each road its axis and lanes in the
+  scene data, and make the scene build assert it for every vehicle (heading within a few degrees of the
+  road axis, footprint inside the lane) so a bad placement stops the build (ww-w-kids Gwanghwamun
+  2026-10-29: cars stood across the cross road).
+- **Title card over the real photo, end card over the live scene (EV-54).** A landmark film opens
+  with its cover look (the same chips, name and badge) laid over the real photo of the place, then
+  dissolves into the model; the end card sits over the live final orbit, never a frozen frame or a
+  blank background (ww-w-kids mega builds, owner 2026-10-29).
 
 ## Reading a model file
 
