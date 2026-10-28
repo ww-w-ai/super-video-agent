@@ -29,7 +29,8 @@ still, preview, verify or render, and again after every change to the order:
 ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <camera-track.json> [--order <order.json>] [--groups <groups.json>] [--json <report.json>]
 ```
 
-- It must end **PASS**: 0 SUPPORT, 0 CROSSING, 0 ORDER, 0 DIRECTION, 0 HIDDEN, 0 NO-CAMERA, 0 UNPLACED.
+- It must end **PASS**: 0 SUPPORT, 0 CROSSING, 0 ORDER, 0 DIRECTION, 0 STABILITY, 0 FIGURE, 0 HIDDEN,
+  0 NO-CAMERA, 0 UNPLACED.
   Exit 1 lists each violation with its landing index. Review until every count is 0 before rendering;
   a known non-zero count is not "small enough" (owner: "0% 가 될 때까지 검토하고 맞춰").
 - SUPPORT: at its landing every part (or sub-assembly) joins a part already placed, or the table:
@@ -70,6 +71,27 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   exception: a part flagged internal by design (`--internal <regex>`) that lands in a shot marked
   `"opening": true` (seen through an opening) is listed as excepted, still counted. `--structure-only`
   skips VISIBILITY for a planning run; its stamp opens no render or verify gate.
+  STABILITY (EV-40; owner 2026-10-28: "다리가 한쪽에만 있는데 불안정하게 허공에 꽂히는 경우"): a part that
+  joins by one stud at its far end passes SUPPORT and still looks like it hangs in the air. At its
+  landing the part's centre of mass (its box, or a sub-assembly's boxes by volume) must lie over what
+  holds it against gravity: the seated near-vertical studs under it (each standing for its stud cell,
+  ±10 LDU), the part it hangs under when it arrives from below, or the table; margin min(4 LDU, 25 % of
+  the holding width). A bridge lands only when both ends stand. A landing that would rest once the
+  parts under it are placed fails (land it after them); one that overhangs even in the finished model
+  is a designed cantilever: listed (`cantilevers` in the report), not failed. List those in the film
+  report for the owner, or give each a support from below with the same look. Parts held only
+  sideways (side studs, axles, hinges, clips) are judged by their joint, not here.
+  FIGURE (EV-41; owner 2026-10-28: "사람 몸보다 손이 먼저 생기는게 어딨니 ㅋ 사람은 그냥 하체가 한번에,
+  상체가 한번에, 얼굴이 한번에"): a minifig lands as three whole placements, bottom to top: hips + legs;
+  torso + arms + hands, with what the hands hold; head + hair, hat or helmet. One click each. A landing
+  holding an arm or hand without its torso, a leg without the hips, or hair without the head fails
+  (checked on `--ignore` landings too, not on the `--ignore-tail`). `figureUnits(titles)` in the lib
+  turns a build order's runs into `--groups` units (`{k0, k1, kind: "figure", rigid: true}`); a seated
+  figure with no legs has two.
+  PRECISION (EV-42, listed): a placement whose rotation is no longer a rotation (written with three
+  decimals: 0.707 for cos 45°) puts tilted parts a fraction of an LDU inside their neighbours, and the
+  sweep reads that as CROSSING. Any generator writes matrices and positions with 6 decimals; the report
+  lists placements off by more than 2e-5.
 - It writes `order-check.json` beside the order file (the hashes of the files it checked).
   `render.mjs` and `verify.mjs` refuse a reel whose `data/build.json` (or `data/<dir>/build.json`) has no
   current passing stamp. `--skip-order-check "<reason>"` gets past it and appends the reason to
@@ -86,8 +108,10 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   arrival from here, never a fixed "from above"), `visibleOf(candidate, camera)`,
   `visibleCandidates(candidates, camera)` and `proposeCamera(candidate, camera)` (the smallest orbit
   turn that shows it), `swingCheck(members, {from, swingFrom})` / `hingeOf` / `restAngle` for a hinged
-  half, then `place`. A planner picks only supported, clear, visible candidates with a
-  joint-matching arrival. When none is visible, turn the camera (`proposeCamera`) or move that area
+  half, `stabilityOf(candidate, {from})` (defer a part until it rests; the order of a slow build is
+  re-sequenced so each part waits until it is stable, with everything that depends on it), then
+  `place`. A planner picks only supported, clear, stable, visible candidates with a
+  joint-matching arrival, and folds minifigs into their three units (`figureUnits`) before the gate. When none is visible, turn the camera (`proposeCamera`) or move that area
   into a sub-assembly shot.
 - Options, each recorded in the stamp: `--ignore-tail <n>` (assembled minifigs added last),
   `--ignore <regex>` (landings not checked), `--loose <regex>` (odd parts held by any box contact;
@@ -119,6 +143,19 @@ How to fix a failing order:
 - A part pushed sideways must have a clear path: not across studs it would drag through, not
   through a neighbour in the same course. Press it down from above, or let it come in last on that
   side.
+- A hinged limb (an arm on a friction hinge or a ball joint): the moving half seats on its base's
+  pins from the side, never along a stud axis, so the moving half with everything built on it is one
+  unit (a `--groups` range): built aside (its first part free), then seated in one landing, trying
+  arrivals from several sides until its path clears (EV-46, Gwanghwamun statues). A ball-joint
+  landing has no stud axis: try arrivals around the ball, never only "from above" through the limb
+  before it.
+- The skin of an angled limb (stud-joined parts turned off the grid) may slide along a neighbour face
+  to face; arrive along its own stud axis leaned up to 10 degrees away from that neighbour (inside the
+  DIRECTION tolerance). If such parts still cross, check PRECISION first: rounded matrices are the
+  usual cause.
+- A project's own box pre-check (a quick support test on bounding boxes) cannot judge ball, hinge or
+  turntable parts or parts turned off the stud grid; give it an opt-in "articulated" mode that counts
+  them held where their box overlaps an earlier part, and leave the real joint to this gate.
 
 ### The order file
 
@@ -244,6 +281,31 @@ Further assembly techniques, each an example; a different or better way may be c
   still end screen: the camera keeps a slow orbit or pull-back with the model's moving parts alive,
   the opening title card returns (clear of the platform's end-screen elements), and the music runs
   to its final fade on the last frame (owner 2026-10-27; EV-33).
+- **Booklet page turns.** A page turns from the right edge to the left, as a real book does: the
+  page lifts at its right edge and curls over to the left, and the next page is underneath. The build
+  pauses for the turn so no click falls on it: last click of the step, a short beat (about 0.4 s),
+  the turn (about 1 s) with one soft page sound (a real CC0 recording near the click level or below,
+  never on a click; no click within 0.25 s of it), then the next step on a fresh beat. A booklet beside
+  a big model keeps a single page (a spread takes too much of the frame); a small corner booklet can
+  be a two-page spread that advances like a real book: [cover | 1] → [2 | 3] → [4 | 5], the turning
+  sheet's back is the next new page, never a copy of the front, so one turn moves two steps. Turns sit
+  on camera-hold boundaries (owner 2026-10-28; EV-48).
+- **Camera holds, not hops.** Pick each camera pose so it sees every landing of the next 8–20 s
+  (search angles around those landings against the parts placed before them, scored on visibility,
+  frame fill and a calm change from the last pose), hold it with a slow drift, and change it only at
+  a segment boundary in one slow eased move. Never jink around an occluder: choose an angle where
+  nothing is in the way ("애초에 안 가려지게 각도를 잡아야지"). In a long calm build, wides take about
+  30–40 % of the build time; a wide frames what is built so far (the placed parts' box plus a margin),
+  not the empty base, and only the opening shows the whole base. Wides come where the build moves to a
+  new area or a section is done, never on a timer. A small corner minimap of the whole model filling
+  in, with a count and a progress bar, keeps the whole in view while the main camera stays close
+  (owner 2026-10-28; EV-47).
+- **Whole subjects stay whole in frame.** A statue, a hero figure or the finished model in a showing
+  shot is framed whole: face, upper body and gesturing hands matter most, and only a pedestal's foot
+  may leave the frame. Check every frame that shows it (tour stops, build holds, moving beats,
+  endings) with `scripts/shot-framing.mjs <shots.json>`: the subject's box corners (plus head and hand
+  points) at least 5 % inside every edge; `fitCamera` pulls a camera back along its line until the
+  subject fits (owner 2026-10-28: "얼굴과 상체가 더 중요한데! … 전체가 보여야지!"; EV-43).
 
 ## Reading a model file
 
@@ -328,15 +390,28 @@ the clip; "레고 손에 꽂을 수 있는 부분과 아닌 부분이 있는데 
   angle and offset; bars come from the part's radius-4 cylinder primitives (holes marked
   `BFC INVERTNEXT` and studs are not bars). Run it after every model change that adds or moves a
   minifig, and before any render.
+- A correct grip is not yet a correct pose (EV-44; Gwanghwamun: a tourist's camera passed the grip
+  test held upside down). Try both bar ends and every turn about the grip, and keep the item's own up
+  pointing up and its front where the figure looks. The check lists a held item whose own up points
+  more than 120 degrees from up as a CHECK line (a sword held point-down may be meant). Swords and
+  spears go through the C-hand on the clip axis, shields use their real attachment, poses stay inside
+  real minifig joint limits. Before the owner sees armed or holding figures, render a close-up sheet
+  of them next to a photo of a real LEGO minifig and compare (owner 2026-10-28: "칼 방패 같은걸 손에
+  어색하지 않게 잘 껴야 해").
+- A minifig is assembled as three whole placements (FIGURE in the gate above): never hands before the
+  body.
 
 ### Sculpted subjects: statues, figures, organic shapes
 
 For a model designed freely (no set inventory): a statue, a person, an animal, a landmark with
 curves. This is the scope of mega builds only (landmarks, statues, scenes, official-set mega builds);
 owner 2026-10-27: "메가 빌드만 부품 상관없이 다 쓰는거고, 일반 따라하기는 실제 쉽게 구할 수 있는 부품으로 해야 해".
-A regular follow-along build (a car series, anything viewers build along with) uses parts viewers can
-easily get, by default the parts, colours and quantities of one Classic 10696 box, never the all-lines
-vocabulary below. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
+A build for young viewers is never the all-lines vocabulary below, and it declares one of two types in
+its brief, because the two have different goals (owner 2026-10-28: "예쁜게 최우선은 아니고, 둘의 목적이
+달라"; EV-52): a **watch build** (made to be watched, for views and subscribers) is a pretty model from
+common, easy-to-get parts; a **true follow-along** (made for viewers who really build along, so the
+watch time is long) uses only the parts, colours and quantities of the one set it names, by default one
+Classic 10696 box. Never mix the two goals in one film. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
 
 - **Parts by curvature, from every line (mega builds).** A narrow part vocabulary looks forced ("사용한 블록의
   종류가 제한적이라 억지로 끼워맞춘 느낌"). Choose parts per region by how the surface bends: big smooth
@@ -346,6 +421,25 @@ vocabulary below. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
   sets, car lines with curved panels, Technic, East-Asian roofs and ornaments, plant and animal
   sets). Every part must exist in LDraw in its colour. Report a palette table: part, line, count,
   where it is used. A people-shaped subject is never stacked boxy bricks.
+- **The palette gate (EV-45).** A part rule nothing checks gets skipped (owner 2026-10-28: "닌자고나
+  스피드 차 이런 블록 써도 된다니까 왜 한번도 안 써?"). Before any preview still of a mega model goes to the
+  owner, run `scripts/ldraw-part-palette.mjs <model> --lib <parts> --palette <project palette.json>`:
+  specialty (palette) parts at least 25 % of the model, and at least 50 % inside a statue or figure
+  (`--region <its sub-model> --min-specialty 0.5`). The palette is the project's curated list of parts
+  from every line, with LDraw ids; name it in every agent prompt for a mega model, and put the
+  checker's output (share by group, distinct specialty ids) next to the palette table in the report.
+- **Statues at scene scale, built by hand (EV-50).** Size the figure from the scene first: measure the
+  scene's scale from the model, compute the real statue's height at that scale and build at 1.0–1.3
+  times it; at that size a statue reads by silhouette, not by carved detail. Place parts like a LEGO
+  sculptor, silhouette features first, a small face from a few large curved parts; a voxel grid
+  surfaced into plates gives only stairs and right angles (owner 2026-10-27/28 on Sejong v1–v4: "너무
+  인위적으로 얼굴 만든 느낌", "우리 비율에서 이 정도로 가능해?"; a 10,000-part head was rejected). Use a
+  colour family on purpose (for a bronze or gold statue: tan, nougat, browns, gold), not one rare
+  colour that starves the part list. Report the share of non-rectilinear visible parts (target 50 %
+  or more) and the number of distinct part types; use a mesh only as a proportion guide.
+- **Keep every design round (EV-51).** Each round's stills and compare sheets are kept under a
+  versioned name (`-r2`, `-v3`, dated), never overwritten and never listed for deletion: they become a
+  behind-the-build film showing the model improve (owner 2026-10-28).
 - **Faces first, mirror exact.** On a statue, finish the face before the body. A face is exactly
   symmetric left to right: every part has a partner of the same part and colour at the mirrored
   position and orientation (left/right pair parts swapped), seam splits included (a row split 2+3+2,

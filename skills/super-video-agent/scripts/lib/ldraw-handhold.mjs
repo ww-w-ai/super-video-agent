@@ -23,6 +23,7 @@ import path from "node:path";
 const ANGLE_TOL = 8; // degrees between bar axis and grip axis
 const OFFSET_TOL = 1.2; // LDU between the bar axis and the grip axis (both grip ends)
 const COVER_MIN = 0.5; // share of the 11 LDU grip length the bar must fill
+const UPSIDE_DOWN = 0.5; // the item's own up (-Y) with a world-down component above this (more than 120 deg from up) is listed
 const IN_CLIP = 4.6; // LDU from the grip axis: geometry this close is inside the clip
 const GRIP = { p0: [0, 4.502, -8.518], p1: [0, -6.1478, -11.2716] }; // 3820.dat 2-4cylo r=4, the grip
 const HAND_FILES = new Set(["3820.dat", "983.dat"]);
@@ -202,7 +203,7 @@ export function handhold(modelFile, { lib, moving } = {}) {
   const parts = flatten(modelFile, L);
   const hands = []; // {idx, grip:{p0,p1} world}
   parts.forEach((p, idx) => { for (const h of A.info(p.file).hands) hands.push({ idx, p0: xf(p.T, h.p0), p1: xf(p.T, h.p1) }); });
-  const problems = [], passes = [], held = [];
+  const problems = [], passes = [], held = [], checks = [];
   for (const h of hands) {
     const hp = parts[h.idx], gl = len(sub(h.p1, h.p0)), gu = scl(sub(h.p1, h.p0), 1 / gl), gc = scl(add(h.p0, h.p1), 0.5);
     for (let j = 0; j < parts.length; j++) {
@@ -243,6 +244,11 @@ export function handhold(modelFile, { lib, moving } = {}) {
       for (const [a, b] of cover) { const s = Math.max(a, end); if (b > s) covered += b - s; end = Math.max(end, b); }
       const where = `${q.part} (colour ${q.color}, step ${q.step}${q.line ? `, line ${q.line}` : ""}) at ${fmt(q.T.t)} in hand ${hp.part} (step ${hp.step}) grip ${fmt(gc)}`;
       const rec = { item: q.part, itemStep: q.step, itemIdx: j, hand: hp.part, handStep: hp.step, handIdx: h.idx, grip: gc };
+      // ORIENTATION (EV-44, Gwanghwamun: a tourist's camera held upside down passed the grip test): the item's own up
+      // (its part frame's -Y) pointing down is listed for a look at a close-up sheet; a prop may also be held reversed
+      // on purpose (a sword pointing down), so this is a CHECK line, not a FAIL
+      const upY = -q.T.m[4] / (Math.hypot(q.T.m[1], q.T.m[4], q.T.m[7]) || 1);
+      if (upY > UPSIDE_DOWN) checks.push(`CHECK ${where}: its own up points ${Math.round((Math.acos(Math.max(-1, Math.min(1, -upY))) * 180) / Math.PI)} deg from up (upside down?); turn it about the grip or use the other bar end, keep its front where the figure looks, and compare a close-up sheet with a photo of a real minifig`);
       if (covered >= COVER_MIN * gl) { passes.push(`PASS ${where}: bar axis on the clip axis, fills ${covered.toFixed(1)}/${gl.toFixed(1)} LDU`); held.push({ ...rec, ok: true }); }
       else {
         const why = !qi.bars.length ? `presents no 3.18 mm bar (a body/stud/brick/plate/tile is in the clip, ${dmin.toFixed(1)} LDU from the clip axis)`
@@ -292,6 +298,6 @@ export function handhold(modelFile, { lib, moving } = {}) {
     movingNote = `moving: ${path.basename(moving)} (${entries.length} animation entries)`;
   }
   const info = `${hands.length} minifig hand(s), ${held.length} item(s) in a hand (${held.filter((h) => h.ok).length} on a bar)${movingNote ? `; ${movingNote}` : ""}`;
-  return { ok: problems.length === 0, problems, passes, info, held };
+  return { ok: problems.length === 0, problems, passes, checks, info, held };
 }
 

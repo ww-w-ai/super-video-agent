@@ -17,7 +17,7 @@ import { crossingsAt, surfaceOf, CELL as SURFACE_CELL } from "./surface-crossing
 import { connectionClass } from "./ldraw-connect.mjs";
 
 export const TOOL = "ldraw-order-check";
-export const VERSION = 4; // 2: DIRECTION check, 3: VISIBILITY required (EV-29), 4: hinge/ball joints on their pin (EV-30); a stamp of an older version no longer opens the gate
+export const VERSION = 5; // 2: DIRECTION check, 3: VISIBILITY required (EV-29), 4: hinge/ball joints on their pin (EV-30), 5: STABILITY (EV-40) and FIGURE (EV-41); a stamp of an older version no longer opens the gate
 export const STAMP_NAME = "order-check.json";
 
 const GRID = 40; // spatial hash cell for part boxes (LDU)
@@ -27,6 +27,9 @@ const STUD_REACH = 8.5; // half width of the zone around a stud where the receiv
 const OVERLAP = 0.5; // box overlap that counts as interpenetration
 const MAX_SAMPLES = 160;
 const DEFAULT_SEAT = 8;
+const PRECISION_TOL = 2e-5; // |R·Rᵀ − I| of a placement matrix: 6 decimals stay ~1e-6, 3 decimals reach ~1e-3
+const STUD_CELL = 10; // half a stud pitch: the footprint one seated stud holds
+const UPRIGHT = 0.9; // a stud axis this close to vertical holds against gravity (STABILITY)
 
 const unit = (v) => {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
@@ -306,6 +309,72 @@ function barsOf(lib, name, cache) {
   return out;
 }
 
+// ---------------------------------------------------------------- minifig placement units (EV-41)
+
+/**
+ * A minifig body part's class from its library title: "torso", "arm", "hand", "hips", "legs" (hips and legs in one
+ * part), "leg", "head", "headwear" (hair, hat, helmet, cap, headdress ...), or null (not a minifig body part; a held
+ * item, a tool or a brick).
+ */
+export function figureClassOf(title0) {
+  const t = String(title0).replace(/^[~_=]+/, "");
+  if (!/^Minifig\b/i.test(t)) return null;
+  if (/^Minifig Torso/i.test(t)) return "torso";
+  if (/^Minifig Arm/i.test(t)) return "arm";
+  if (/^Minifig Hand\b/i.test(t)) return "hand";
+  if (/^Minifig Hips and Legs/i.test(t)) return "legs";
+  if (/^Minifig Hips\b/i.test(t)) return "hips";
+  if (/^Minifig Legs?\b/i.test(t)) return "leg";
+  if (/^Minifig Head\b/i.test(t)) return "head";
+  if (/^Minifig (Hair|Hat|Helmet|Cap|Headdress|Headgear|Crown|Hood|Visor|Bandana|Turban|Beanie|Wig)/i.test(t)) return "headwear";
+  return null;
+}
+/** The placement a body class belongs to (owner 2026-10-28): lower body, upper body, head. */
+export const FIGURE_UNIT = { hips: "lower", legs: "lower", leg: "lower", torso: "upper", arm: "upper", hand: "upper", head: "head", headwear: "head" };
+// a landing with one of these must also hold the part it hangs on: never a hand or arm before (or apart from) its torso
+const FIGURE_NEEDS = { arm: ["torso"], hand: ["torso"], leg: ["hips", "legs"], headwear: ["head"] };
+
+/**
+ * FIGURE check of one landing's member titles: an arm or hand lands only with its torso, a leg only with the hips, hair or
+ * a hat only with the head. @returns {null | {missing:string, classes:string[]}}
+ */
+export function figureLanding(titles) {
+  const cls = new Set(titles.map(figureClassOf).filter(Boolean));
+  for (const c of cls) {
+    const need = FIGURE_NEEDS[c];
+    if (need && !need.some((n) => cls.has(n))) return { missing: need[0], classes: [...cls] };
+  }
+  return null;
+}
+
+/**
+ * Planner helper: the minifig units of a build order, from each landing's part title in order. A unit is a run of
+ * consecutive landings of one placement (lower body, upper body, head); runs of 2 or more become
+ * {k0, k1 (exclusive), kind: "figure", name, rigid: true, from: [0,-1,0]}, the `--groups` / stage.json format. A held
+ * item that lands right after its hand joins the upper body when `held(k)` says so.
+ */
+export function figureUnits(titles, { held = () => false } = {}) {
+  const out = [];
+  let run = null, fig = 0, lastRank = -1;
+  const rank = { lower: 0, upper: 1, head: 2 };
+  const close = () => {
+    if (run && run.k1 - run.k0 >= 2) out.push({ k0: run.k0, k1: run.k1, kind: "figure", rigid: true, name: `minifig ${run.fig} ${run.unit === "lower" ? "lower body" : run.unit === "upper" ? "upper body" : "head"}`, from: [0, -1, 0] });
+    run = null;
+  };
+  titles.forEach((t, k) => {
+    const c = figureClassOf(t);
+    const u = c ? FIGURE_UNIT[c] : run && run.unit === "upper" && held(k) ? "upper" : null;
+    if (run && u === run.unit && run.k1 === k) { run.k1 = k + 1; return; }
+    close();
+    if (!u) return;
+    if (rank[u] <= lastRank || fig === 0) fig++;
+    lastRank = rank[u];
+    run = { k0: k, k1: k + 1, unit: u, fig };
+  });
+  close();
+  return out;
+}
+
 // ---------------------------------------------------------------- articulated joints (EV-30): hinge, click hinge, turntable, ball
 
 /** The articulated family of a part from its title: "hinge" (hinge plates/bricks/tiles, finger and click hinges), "turntable", "ball" (ball joint, socket, tow ball), or null. */
@@ -505,6 +574,19 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
   });
   const byUid = new Map(P.map((p) => [p.uid, p.idx]));
   if (byUid.size !== P.length) throw new Error("two placements share a uid");
+  // PRECISION (EV-42): a rotation written with too few decimals is no longer a rotation; tilted parts then sit a fraction
+  // of an LDU inside their neighbours and show up as false CROSSING. Listed, not failed.
+  const imprecise = [];
+  for (const p of P) {
+    const r = [p.m[0], p.m[1], p.m[2], p.m[4], p.m[5], p.m[6], p.m[8], p.m[9], p.m[10]];
+    let err = 0;
+    for (let a = 0; a < 3; a++)
+      for (let b = a; b < 3; b++) {
+        const d = r[3 * a] * r[3 * b] + r[3 * a + 1] * r[3 * b + 1] + r[3 * a + 2] * r[3 * b + 2];
+        err = Math.max(err, Math.abs(d - (a === b ? 1 : 0)));
+      }
+    if (err > PRECISION_TOL) imprecise.push({ uid: p.uid, part: p.part.id, error: Number(err.toExponential(2)) });
+  }
   const invOf = (p) => p._inv || (p._inv = invert(p.m));
   const studsW = (p) => p._studs || (p._studs = p.part.studs.map((s) => ({ p: apply(p.m, ...s.p), a: unit(applyDir(p.m, ...s.a)), owner: p.idx })));
   let groundY = -Infinity;
@@ -563,7 +645,7 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
     if (key) jointCache.set(key, r);
     return r;
   };
-  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose, posed, articJoint };
+  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose, posed, articJoint, imprecise };
 }
 
 /**
@@ -1193,6 +1275,71 @@ export function createBuild(model, { ground = model.groundY } = {}) {
     return { hinge: { kind: hinge.kind, axis: hinge.axis, point: hinge.point, member: model.P[hinge.member].uid, with: model.P[hinge.with].uid }, swingFrom: start, from: fromU, crossings };
   }
 
+  /**
+   * STABILITY (EV-40, owner 2026-10-28: "다리가 한쪽에만 있는데 불안정하게 허공에 꽂히는 경우"): does the landing rest with
+   * its centre of mass over what holds it against gravity? Holding contacts = seated studs with a near-vertical axis
+   * between the members and placed non-member parts below them (and, for a part arriving from below, the part it hangs
+   * under), each standing for its stud cell (±10 LDU); the table holds a member's whole footprint. The centre of mass
+   * (members' boxes, by volume) must lie inside the box of those contacts with a margin of min(4 LDU, 25 % of its width),
+   * so a part on one stud at its end, or a bridge with one end held, fails; a part held only sideways (side studs, axles,
+   * hinges, clips) is not judged here (judged: false).
+   * @param {number[]} members
+   * @param {{from?: number[]}} [opts] the arrival (from below: contacts above count too)
+   * @returns {{judged:boolean, ok:boolean, com:number[], box:number[]|null, contacts:number}}
+   */
+  function stabilityOf(members, { from = [0, -1, 0] } = {}) {
+    const mine = new Set(members);
+    const hang = Array.isArray(from) && from[1] > 0.5;
+    const rects = [];
+    let vol = 0, cx = 0, cz = 0, lowest = -Infinity;
+    for (const i of members) {
+      const b = model.P[i].box;
+      lowest = Math.max(lowest, b[4]);
+      const v = Math.max(1, (b[3] - b[0]) * (b[4] - b[1]) * (b[5] - b[2]));
+      vol += v;
+      cx += (v * (b[0] + b[3])) / 2;
+      cz += (v * (b[2] + b[5])) / 2;
+    }
+    for (const i of members) {
+      const p = model.P[i];
+      const b = p.box;
+      if (ground != null && Number.isFinite(ground) && b[4] >= ground - 0.5) rects.push([b[0], b[2], b[3], b[5]]);
+      // its own studs into a placed part: pointing down (an inverted part) they rest on it; pointing up into a part above
+      // they hold only a part hung under that part (arriving from below)
+      for (const s of model.studsW(p)) {
+          if (Math.abs(s.a[1]) < UPRIGHT || (s.a[1] < 0 && !hang)) continue;
+          tag++;
+          let hit = false;
+          boxes.query(grow([s.p[0], s.p[1], s.p[2], s.p[0], s.p[1], s.p[2]], 1), seen, tag, (q) => {
+            if (hit || mine.has(q) || !inBox(s.p, model.P[q].box, 1)) return;
+            if (studInto(model, s, model.P[q])) hit = true;
+          });
+          if (hit) rects.push([s.p[0] - STUD_CELL, s.p[2] - STUD_CELL, s.p[0] + STUD_CELL, s.p[2] + STUD_CELL]);
+        }
+      // studs of placed parts below seated in it
+      tag++;
+      studs.cells(grow(b, 1), (k) => {
+        const a = studs.map.get(k);
+        if (!a) return;
+        for (const si of a) {
+          if (seenStud[si] === tag) continue;
+          seenStud[si] = tag;
+          const s = studList[si];
+          if (mine.has(s.owner) || Math.abs(s.a[1]) < UPRIGHT || !inBox(s.p, b, 1)) continue;
+          if (s.a[1] > 0 && !hang) continue; // a stud pointing down holds only a part hung under it
+          if (studInto(model, s, p)) rects.push([s.p[0] - STUD_CELL, s.p[2] - STUD_CELL, s.p[0] + STUD_CELL, s.p[2] + STUD_CELL]);
+        }
+      });
+    }
+    const com = [cx / vol, cz / vol];
+    if (!rects.length) return { judged: false, ok: true, com, box: null, contacts: 0 };
+    const x0 = Math.min(...rects.map((r) => r[0])), z0 = Math.min(...rects.map((r) => r[1]));
+    const x1 = Math.max(...rects.map((r) => r[2])), z1 = Math.max(...rects.map((r) => r[3]));
+    const ex = Math.min(4, 0.25 * (x1 - x0)), ez = Math.min(4, 0.25 * (z1 - z0));
+    const ok = com[0] >= x0 + ex && com[0] <= x1 - ex && com[1] >= z0 + ez && com[1] <= z1 - ez;
+    return { judged: true, ok, com: com.map((v) => Math.round(v * 10) / 10), box: [x0, z0, x1, z1].map((v) => Math.round(v * 10) / 10), contacts: rects.length };
+  }
+
   function place(members) {
     for (const i of members) {
       if (placed[i]) throw new Error(`${model.P[i].uid} is placed twice`);
@@ -1208,7 +1355,7 @@ export function createBuild(model, { ground = model.groundY } = {}) {
     }
   }
 
-  return { supportOf, jointsOf, directionOf, arrivalOptions, bestArrival, visibleOf, visibleCandidates, proposeCamera, blockersOf, crossingsOf, crossingsOfPl, hingeOf, restAngle, swingCheck, autoTravel, place, isPlaced: (i) => !!placed[i], get count() { return count; } };
+  return { supportOf, jointsOf, directionOf, arrivalOptions, bestArrival, visibleOf, visibleCandidates, proposeCamera, blockersOf, crossingsOf, crossingsOfPl, hingeOf, restAngle, swingCheck, stabilityOf, autoTravel, place, isPlaced: (i) => !!placed[i], get count() { return count; } };
 }
 
 // ---------------------------------------------------------------- running an order
@@ -1255,6 +1402,18 @@ function runEvents(model, events, scope, report, opts) {
       }
     }
     if (ev.ignore) report.ignored++;
+    // FIGURE (EV-41, main landings, regex-ignored ones too; not the ignored tail): a minifig lands as lower body, upper
+    // body, head; never a hand or arm before or apart from its torso, a leg apart from the hips, hair apart from the head
+    if (opts.main && !ev.ignoreTail) {
+      const fig = figureLanding(ev.members.map((i) => model.P[i].part.title));
+      if (fig) report.violations.figure.push({ ...where, missing: fig.missing, classes: fig.classes, uid: model.P[ev.members[0]].uid, title: model.P[ev.members[0]].part.title });
+    }
+    // STABILITY (EV-40, main landings): judged now; one that would rest with everything below it placed is an ORDER fault
+    // (a violation), one that does not even in the finished model is a designed overhang, listed for the owner
+    if (opts.main && opts.stability !== false && !ev.ignore && ev.arrive !== "swing" && sup.ok) {
+      const st = build.stabilityOf(ev.members, { from: Array.isArray(from) ? from : [0, -1, 0] });
+      if (st.judged && !st.ok) opts.unstable.push({ where, members: ev.members, from: Array.isArray(from) ? from : [0, -1, 0], st });
+    }
     // VISIBILITY (main landings): seen from the camera of its moment, with what is placed before it
     if (opts.main && opts.cameraFor && !ev.ignore) {
       const vis = report.visibility;
@@ -1273,6 +1432,12 @@ function runEvents(model, events, scope, report, opts) {
     }
     build.place(ev.members);
   });
+  if (opts.main && opts.unstable)
+    for (const u of opts.unstable) {
+      const fin = build.stabilityOf(u.members, { from: u.from });
+      const row = { ...u.where, uid: model.P[u.members[0]].uid, title: model.P[u.members[0]].part.title, com: u.st.com, contactBox: u.st.box, finished: fin.ok ? "rests once the parts under it are placed" : "overhangs even in the finished model" };
+      (fin.ok ? report.violations.stability : report.cantilevers).push(row);
+    }
 }
 
 /**
@@ -1304,11 +1469,11 @@ export function cameraResolver(spec, landings) {
  */
 export function checkOrder({ model, events, options = {} }) {
   const t0 = process.hrtime.bigint();
-  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], unplaced: options.unplaced || [] }, unchecked: [], swings: [], visibility: null };
+  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], stability: [], figure: [], unplaced: options.unplaced || [] }, cantilevers: [], unchecked: [], swings: [], visibility: null, precision: { tolerance: PRECISION_TOL, count: model.imprecise ? model.imprecise.length : 0, first: (model.imprecise || []).slice(0, 20) } };
   const ground = options.ground === undefined ? model.groundY : options.ground;
   const cameraFor = options.structureOnly ? null : cameraResolver(options.cameras, events.length);
   if (!options.structureOnly) report.visibility = { required: true, missingCameras: !cameraFor, checked: 0, hidden: [], noCamera: [], excepted: [], maxHidden: options.maxHidden ?? 0, minVisible: options.minVisible ?? 0.1 };
-  runEvents(model, events, "main", report, { ground, firstFree: false, main: true, forceTravel: options.travel ?? null, cameraFor, minVisible: options.minVisible ?? 0.1, internal: options.internal || null });
+  runEvents(model, events, "main", report, { ground, firstFree: false, main: true, forceTravel: options.travel ?? null, cameraFor, minVisible: options.minVisible ?? 0.1, internal: options.internal || null, stability: options.stability !== false, unstable: [] });
   const vis = report.visibility;
   if (vis) {
     vis.hiddenCount = vis.hidden.length;
@@ -1317,8 +1482,8 @@ export function checkOrder({ model, events, options = {} }) {
     vis.hidden = vis.hidden.slice(0, 500);
   }
   const v = report.violations;
-  report.counts = { parts: model.P.length, landings: report.landings, support: v.support.length, crossing: v.crossing.length, order: v.order.length, direction: v.direction.length, unplaced: v.unplaced.length, hidden: vis ? (vis.missingCameras ? null : vis.hiddenCount) : null, noCamera: vis ? vis.noCamera.length : null, excepted: vis ? vis.excepted.length : null, unchecked: report.unchecked.length, ignored: report.ignored };
-  report.pass = !v.support.length && !v.crossing.length && !v.order.length && !v.direction.length && !v.unplaced.length && (!vis || vis.pass);
+  report.counts = { parts: model.P.length, landings: report.landings, support: v.support.length, crossing: v.crossing.length, order: v.order.length, direction: v.direction.length, stability: v.stability.length, figure: v.figure.length, unplaced: v.unplaced.length, hidden: vis ? (vis.missingCameras ? null : vis.hiddenCount) : null, noCamera: vis ? vis.noCamera.length : null, excepted: vis ? vis.excepted.length : null, cantilevers: report.cantilevers.length, imprecise: report.precision.count, unchecked: report.unchecked.length, ignored: report.ignored };
+  report.pass = !v.support.length && !v.crossing.length && !v.order.length && !v.direction.length && !v.stability.length && !v.figure.length && !v.unplaced.length && (!vis || vis.pass);
   report.groundY = ground;
   report.ms = Number((process.hrtime.bigint() - t0) / 1000000n);
   return report;
@@ -1479,7 +1644,7 @@ function applyIgnore(events, model, re, tail) {
     if (e.internal) walk(e.internal);
   });
   walk(events);
-  if (tail > 0) for (let k = Math.max(0, events.length - tail); k < events.length; k++) events[k].ignore = true;
+  if (tail > 0) for (let k = Math.max(0, events.length - tail); k < events.length; k++) { events[k].ignore = true; events[k].ignoreTail = true; }
 }
 
 export const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
@@ -1545,9 +1710,9 @@ export function checkOrderStamp(orderFile) {
     if (!fs.existsSync(e.path)) return { ok: false, stamp: stampFile, reason: `${e.path} (checked as ${k}) is gone` };
     if (sha256(fs.readFileSync(e.path)) !== e.sha256) return { ok: false, stamp: stampFile, reason: `${e.path} changed after the order check` };
   }
-  if (!(s.version >= VERSION)) return { ok: false, stamp: stampFile, reason: `${stampFile} is from check version ${s.version ?? "?"}, before the checks of version ${VERSION} (DIRECTION, VISIBILITY): run the check again` };
+  if (!(s.version >= VERSION)) return { ok: false, stamp: stampFile, reason: `${stampFile} is from check version ${s.version ?? "?"}, before the checks of version ${VERSION} (DIRECTION, VISIBILITY, STABILITY, FIGURE): run the check again` };
   if (s.structureOnly || !s.visibilityChecked) return { ok: false, stamp: stampFile, reason: `${stampFile} has no VISIBILITY check: run the check with --cameras <the film's camera track> (a --structure-only run opens no gate)` };
-  if (!s.pass) return { ok: false, stamp: stampFile, reason: `the last order check FAILED (support ${s.counts?.support}, crossing ${s.counts?.crossing}, order ${s.counts?.order}, direction ${s.counts?.direction}, hidden ${s.counts?.hidden}, no camera ${s.counts?.noCamera}, unplaced ${s.counts?.unplaced})` };
+  if (!s.pass) return { ok: false, stamp: stampFile, reason: `the last order check FAILED (support ${s.counts?.support}, crossing ${s.counts?.crossing}, order ${s.counts?.order}, direction ${s.counts?.direction}, stability ${s.counts?.stability}, figure ${s.counts?.figure}, hidden ${s.counts?.hidden}, no camera ${s.counts?.noCamera}, unplaced ${s.counts?.unplaced})` };
   return { ok: true, stamp: stampFile, reason: "passed" };
 }
 

@@ -21,6 +21,10 @@ BFC INVERTNEXT and stud primitives are not bars).
                   named rod / camera / tool / held / item / paddle / oar / binoculars / prop moves parts no hand grips.
 --json <file>     also write the result as JSON
 
+CHECK lines (not failures): a held item whose own up (its part frame's -Y) points more than 120 deg from up, e.g. a
+camera held upside down. Turn it about the grip or take the bar's other end, keep its front where the figure looks,
+and look at a close-up sheet next to a photo of a real minifig before anyone else sees it.
+
 Reads the library directly (no bake), so it is fast on very large models. Exit 0 when nothing fails, 1 when an item fails.
 `;
 
@@ -31,7 +35,7 @@ export function main(argv) {
   try {
     const model = abs(positional[0]);
     const r = handhold(model, { lib: abs(flags.lib), moving: typeof flags.moving === "string" ? abs(flags.moving) : null });
-    const out = [`handhold ${path.basename(model)}: ${r.ok ? "OK" : `${r.problems.length} failing`}`, r.info, ...r.problems.map((p) => `- ${p}`), ...r.passes.map((p) => `- ${p}`)];
+    const out = [`handhold ${path.basename(model)}: ${r.ok ? "OK" : `${r.problems.length} failing`}${r.checks.length ? `, ${r.checks.length} to look at` : ""}`, r.info, ...r.problems.map((p) => `- ${p}`), ...r.checks.map((p) => `- ${p}`), ...r.passes.map((p) => `- ${p}`)];
     process.stdout.write(out.join("\n") + "\n");
     if (typeof flags.json === "string") fs.writeFileSync(abs(flags.json), JSON.stringify(r, null, 1));
     process.exitCode = r.ok ? 0 : 1;

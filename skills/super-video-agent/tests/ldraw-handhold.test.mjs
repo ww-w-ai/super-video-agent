@@ -74,3 +74,19 @@ test("moving.json: the held item may not turn without its hand, nor a rod about 
   const r2 = handhold(lone, { lib: root, moving: mv });
   assert.match(r2.problems.join("\n"), /no minifig hand grips it/);
 });
+
+test("orientation: a camera on its handle passes either way, but held upside down it is listed to look at (EV-44)", () => {
+  // a camera: its handle bar runs along its own Y (radius 4, 11 long), the body above it (-Y is up)
+  fs.writeFileSync(path.join(root, "parts/cam.dat"), "0 Minifig Camera with Handle\n1 16 0 -5.5 0 4 0 0 0 11 0 0 0 4 4-4cyli.dat\n" + boxDat("~body", [-8, 8, -22, -9, -6, 6]).split("\n").slice(1).join("\n"));
+  const withY = (y) => { // local x -> world x, local y -> y, local z -> x cross y
+    const x = [1, 0, 0], z = [x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]];
+    return [x[0], y[0], z[0], x[1], y[1], z[1], x[2], y[2], z[2]];
+  };
+  const upright = handhold(model("cam-up.ldr", [place("cam.dat", G, withY(U.map((v) => -v)))]), { lib: root }); // own Y along -U (down), so its -Y points up
+  assert.equal(upright.ok, true, upright.problems.join("\n"));
+  assert.equal(upright.checks.length, 0, upright.checks.join("\n"));
+  const flipped = handhold(model("cam-down.ldr", [place("cam.dat", G, withY(U))]), { lib: root });
+  assert.equal(flipped.ok, true, "the grip itself is right");
+  assert.equal(flipped.checks.length, 1);
+  assert.match(flipped.checks[0], /upside down\?/);
+});

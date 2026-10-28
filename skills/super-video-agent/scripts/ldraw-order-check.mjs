@@ -43,8 +43,19 @@ Per landing:
             (default 0.1) of them are in frame and unblocked. Any hidden landing, any landing with no camera, or no
             --cameras at all fails. A part matching --internal (internal by design) that lands hidden in a shot marked
             "opening": true is listed as excepted, not failed.
+  STABILITY (EV-40) the landing rests with its centre of mass over what holds it against gravity: the seated studs below
+            it (and, for a part arriving from below, the part it hangs under), each standing for its stud cell, or the
+            table. A part on one stud at its far end, or a bridge with one end held, fails when it would rest once the
+            parts under it are placed (an order fault: land it later); one that overhangs even in the finished model is
+            a designed cantilever, listed (not failed) for the film report. Parts held only sideways (side studs, axles,
+            hinges, clips) are judged by their joint, not here.
+  FIGURE    (EV-41) a minifig lands in three whole placements: hips + legs, torso + arms + hands (+ what it holds), head
+            + hair/hat. A landing with an arm or hand but no torso, a leg but no hips, or hair/hat but no head fails
+            (checked on --ignore landings too; not on the --ignore-tail). Fold a figure's runs into --groups units.
+  PRECISION (EV-42, listed) placement rotations that are not rotations any more (written with too few decimals): tilted
+            parts then sit inside their neighbours and read as false CROSSING. Write matrices with 6 decimals.
 
---lib <dir>         the LDraw parts library (holds parts/ and p/)
+--lib <dir>        the LDraw parts library (holds parts/ and p/)
 --order <file>      [{"id": "<uid>"|<index>, "from": [x,y,z]|"above"|"below"|"+x"|"-z"|"auto", "travel": <ldu>|"auto",
                     "seatLen": 8, "ids": [...], "build": [...], "arrive": "slide"|"swing", "swingFrom": <deg>,
                     "ignore": false}, ...]
@@ -79,7 +90,7 @@ const regex = (v, name) => {
 function lines(report, n) {
   const c = report.counts;
   const out = [`build model ${report.buildModel}: ${c.parts} parts, ${c.landings} landings, ground y ${report.groundY ?? "none"}, ${report.ms} ms`];
-  out.push(`SUPPORT ${c.support}  CROSSING ${c.crossing}  ORDER ${c.order}  DIRECTION ${c.direction}  UNPLACED ${c.unplaced}${report.visibility ? (report.visibility.missingCameras ? "  VISIBILITY no cameras" : `  HIDDEN ${c.hidden} (${report.visibility.pct}%)  NO-CAMERA ${c.noCamera}  excepted ${c.excepted}`) : "  (structure only)"}  unchecked ${c.unchecked}  ignored ${c.ignored}`);
+  out.push(`SUPPORT ${c.support}  CROSSING ${c.crossing}  ORDER ${c.order}  DIRECTION ${c.direction}  STABILITY ${c.stability}  FIGURE ${c.figure}  UNPLACED ${c.unplaced}${report.visibility ? (report.visibility.missingCameras ? "  VISIBILITY no cameras" : `  HIDDEN ${c.hidden} (${report.visibility.pct}%)  NO-CAMERA ${c.noCamera}  excepted ${c.excepted}`) : "  (structure only)"}  unchecked ${c.unchecked}  ignored ${c.ignored}`);
   const v = report.violations;
   for (const s of v.support.slice(0, n)) out.push(`  SUPPORT  ${s.scope} #${s.index} ${s.label} (${s.title}${s.parts > 1 ? `, ${s.parts} parts` : ""}): joins nothing placed before it`);
   for (const s of v.crossing.slice(0, n))
@@ -91,8 +102,15 @@ function lines(report, n) {
   const fmt = (a) => `[${a.map((x) => Math.round(x * 100) / 100).join(",")}]`;
   const rule = { exact: "from", axis: "along ±", perp: "square to bar" };
   for (const s of v.direction.slice(0, n)) out.push(`  DIRECTION ${s.scope} #${s.index} ${s.label} from ${fmt(s.from)}: its joints need ${s.need.map((j) => `${j.kind} with ${j.with} ${rule[j.rule]} ${fmt(j.axis)}`).join("; ")}`);
+  for (const s of v.stability.slice(0, n)) out.push(`  STABILITY ${s.scope} #${s.index} ${s.label} (${s.title}): centre ${fmt(s.com)} outside its holding studs x/z ${fmt(s.contactBox)}; it ${s.finished}: land it after them`);
+  for (const s of v.figure.slice(0, n)) out.push(`  FIGURE   ${s.scope} #${s.index} ${s.label} (${s.title}): lands without its ${s.missing}; a minifig lands as hips+legs, torso+arms+hands, head+hair (one unit each)`);
   for (const u of v.unplaced.slice(0, n)) out.push(`  UNPLACED ${u}`);
-  for (const k of ["support", "crossing", "order", "direction", "unplaced"]) if (v[k].length > n) out.push(`  ... ${v[k].length - n} more ${k}`);
+  for (const k of ["support", "crossing", "order", "direction", "stability", "figure", "unplaced"]) if (v[k].length > n) out.push(`  ... ${v[k].length - n} more ${k}`);
+  if (report.cantilevers && report.cantilevers.length) {
+    out.push(`  cantilevers (designed overhangs, they look hung on one side whatever the order; list them in the film report for the owner, or give each a support from below): ${report.cantilevers.length}`);
+    for (const s of report.cantilevers.slice(0, Math.min(n, 10))) out.push(`    #${s.index} ${s.label} (${s.title}) centre ${fmt(s.com)} vs studs ${fmt(s.contactBox)}`);
+  }
+  if (report.precision && report.precision.count) out.push(`  precision: ${report.precision.count} placement(s) whose rotation is off by more than ${report.precision.tolerance} (e.g. ${report.precision.first[0].uid}, ${report.precision.first[0].error}): rounded matrices make tilted parts overlap their neighbours (false CROSSING); write them with 6 decimals`);
   const vis = report.visibility;
   if (vis && vis.missingCameras) out.push("  VISIBILITY required: pass --cameras <the film's camera track> (per landing, or k/t ranges); --structure-only is for planning and opens no gate");
   if (vis) {

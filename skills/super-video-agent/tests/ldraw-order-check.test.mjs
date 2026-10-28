@@ -457,3 +457,55 @@ test("TURNED PARTS: stud joints are judged in the parts' own frames, so a stack 
   const { report } = run([line(T, "p1.dat"), line(M.mul(T, M.t(0, -8, 0)), "p1.dat"), line(M.mul(T, M.t(0, -16, 0)), "p1.dat")]);
   assert.equal(report.pass, true, JSON.stringify(report.violations));
 });
+
+// ---------------------------------------------------------------- EV-40 STABILITY, EV-41 FIGURE, EV-42 PRECISION
+fs.writeFileSync(path.join(lib, "parts", "p14.dat"), boxDat("Plate  1 x  4", [-40, 40, 0, 8, -10, 10], [-30, -10, 10, 30].map((x) => `1 16 ${x} 0 0 ${I} stud.dat`)));
+fs.writeFileSync(path.join(lib, "parts", "mtorso.dat"), boxDat("Minifig Torso", [-10, 10, -32, 0, -6, 6]));
+fs.writeFileSync(path.join(lib, "parts", "mhand.dat"), boxDat("Minifig Hand", [-3, 3, -14, -8, -12, -6]));
+fs.writeFileSync(path.join(lib, "parts", "mhair.dat"), boxDat("Minifig Hair Short", [-8, 8, -60, -44, -8, 8]));
+
+test("STABILITY: a plate held by one stud at its end fails when the order can fix it, and is listed as a cantilever when nothing can", () => {
+  const left = ref(-30, -24, 30, "b1.dat"), right = ref(30, -24, 30, "b1.dat");
+  // the 1x4 plate spans x -40..40 at z 30, resting on both 1x1 bricks once they stand
+  const plate = ref(0, -32, 30, "p14.dat");
+  const late = run([ref(0, 0, 0, "base.dat"), right, plate, left]).report; // plate lands on one brick, the other comes after
+  assert.equal(late.violations.stability.length, 1, JSON.stringify(late.violations.stability));
+  assert.equal(late.violations.stability[0].label, uid(3));
+  assert.equal(late.pass, false);
+  const good = run([ref(0, 0, 0, "base.dat"), right, left, plate]).report;
+  assert.equal(good.violations.stability.length, 0, JSON.stringify(good.violations.stability));
+  assert.equal(good.pass, true, JSON.stringify(good.violations));
+  // the same plate on one brick only, sticking out past it: an overhang by design, listed, not failed
+  const over = run([ref(0, 0, 0, "base.dat"), right, ref(60, -32, 30, "p14.dat")]).report;
+  assert.equal(over.violations.stability.length, 0);
+  assert.equal(over.cantilevers.length, 1, JSON.stringify(over.cantilevers));
+  assert.equal(over.counts.cantilevers, 1);
+  // a 1x1 brick on one stud is centred over it: stable
+  assert.equal(run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat")]).report.counts.stability, 0);
+});
+
+test("FIGURE: a hand or hair landing apart from its torso or head fails; a whole upper body passes; figureUnits folds the runs", async () => {
+  const lines = [ref(0, 0, 0, "base.dat"), ref(10, 0, 10, "mtorso.dat"), ref(10, 0, 10, "mhand.dat"), ref(10, 0, 10, "mhair.dat")];
+  const apart = run(lines, [uid(1), uid(3), uid(2), uid(4)]).report;
+  assert.deepEqual(apart.violations.figure.map((f) => [f.label, f.missing]), [[uid(3), "torso"], [uid(4), "head"]]);
+  const whole = run(lines, [uid(1), { ids: [uid(2), uid(3)] }, uid(4)]).report;
+  assert.deepEqual(whole.violations.figure.map((f) => f.label), [uid(4)], "the hair still has no head");
+  const ignored = run(lines, [uid(1), uid(3), uid(2), uid(4)], { ignore: /Minifig/ }).report;
+  assert.equal(ignored.counts.figure, 2, "an --ignore landing is still a figure landing");
+  const { figureUnits, figureClassOf } = await import("../scripts/lib/ldraw-order-check.mjs");
+  assert.equal(figureClassOf("Minifig Hips and Legs"), "legs");
+  assert.equal(figureClassOf("~Minifig Arm Left"), "arm");
+  assert.equal(figureClassOf("Minifig Camera with Side Sight"), null, "a held item is not a body part");
+  const titles = ["Brick  2 x  4", "Minifig Hips", "Minifig Leg Left", "Minifig Leg Right", "Minifig Torso", "Minifig Arm Left", "Minifig Arm Right", "Minifig Hand", "Minifig Hand", "Bar  4L", "Minifig Head", "Minifig Hair Short", "Minifig Hips", "Minifig Leg Left"];
+  const units = figureUnits(titles, { held: (k) => k === 9 });
+  assert.deepEqual(units.map((u) => [u.k0, u.k1, u.name]), [[1, 4, "minifig 1 lower body"], [4, 10, "minifig 1 upper body"], [10, 12, "minifig 1 head"], [12, 14, "minifig 2 lower body"]]);
+});
+
+test("PRECISION: a rotation written with 3 decimals is listed; with 6 it is not", () => {
+  const r3 = "0.707 0 0.707 0 1 0 -0.707 0 0.707", r6 = "0.707107 0 0.707107 0 1 0 -0.707107 0 0.707107";
+  const a = run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat", r3)]).report;
+  assert.equal(a.counts.imprecise, 1);
+  assert.equal(a.precision.first[0].uid, uid(2));
+  const b = run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat", r6)]).report;
+  assert.equal(b.counts.imprecise, 0);
+});
