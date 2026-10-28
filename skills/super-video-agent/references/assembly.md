@@ -410,8 +410,9 @@ A build for young viewers is never the all-lines vocabulary below, and it declar
 its brief, because the two have different goals (owner 2026-10-28: "예쁜게 최우선은 아니고, 둘의 목적이
 달라"; EV-52): a **watch build** (made to be watched, for views and subscribers) is a pretty model from
 common, easy-to-get parts; a **true follow-along** (made for viewers who really build along, so the
-watch time is long) uses only the parts, colours and quantities of the one set it names, by default one
-Classic 10696 box. Never mix the two goals in one film. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
+watch time is long) uses only the parts, colours and quantities of one box of the set for its age band:
+4+ = Classic 10696, 6+ = Classic 10698 Large Creative Brick Box (790 pcs; 10696 has too few bricks per
+colour for bigger models). Never mix the two goals in one film. Owner reviews of brick busts (2026-10-26/27, EV-34, EV-35):
 
 - **Parts by curvature, from every line (mega builds).** A narrow part vocabulary looks forced ("사용한 블록의
   종류가 제한적이라 억지로 끼워맞춘 느낌"). Choose parts per region by how the surface bends: big smooth
