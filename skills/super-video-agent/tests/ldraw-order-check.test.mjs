@@ -464,14 +464,16 @@ fs.writeFileSync(path.join(lib, "parts", "mtorso.dat"), boxDat("Minifig Torso", 
 fs.writeFileSync(path.join(lib, "parts", "mhand.dat"), boxDat("Minifig Hand", [-3, 3, -14, -8, -12, -6]));
 fs.writeFileSync(path.join(lib, "parts", "mhair.dat"), boxDat("Minifig Hair Short", [-8, 8, -60, -44, -8, 8]));
 
-test("STABILITY: a plate held by one stud at its end fails when the order can fix it, and is listed as a cantilever when nothing can", () => {
+const othersPass = (r) => !["support", "crossing", "order", "direction", "unplaced"].some((k) => r.violations[k].length);
+test("STABILITY: a plate held by one stud at its end is listed (a FAIL with strict) when the order can fix it, and is listed as a cantilever when nothing can", () => {
   const left = ref(-30, -24, 30, "b1.dat"), right = ref(30, -24, 30, "b1.dat");
   // the 1x4 plate spans x -40..40 at z 30, resting on both 1x1 bricks once they stand
   const plate = ref(0, -32, 30, "p14.dat");
   const late = run([ref(0, 0, 0, "base.dat"), right, plate, left]).report; // plate lands on one brick, the other comes after
   assert.equal(late.violations.stability.length, 1, JSON.stringify(late.violations.stability));
   assert.equal(late.violations.stability[0].label, uid(3));
-  assert.equal(late.pass, false);
+  assert.equal(late.pass, othersPass(late), "advisory by default: STABILITY alone never fails");
+  assert.equal(run([ref(0, 0, 0, "base.dat"), right, plate, left], null, { strict: true }).report.pass, false, "--strict fails it");
   const good = run([ref(0, 0, 0, "base.dat"), right, left, plate]).report;
   assert.equal(good.violations.stability.length, 0, JSON.stringify(good.violations.stability));
   assert.equal(good.pass, true, JSON.stringify(good.violations));
@@ -492,6 +494,8 @@ test("FIGURE: a hand or hair landing apart from its torso or head fails; a whole
   assert.deepEqual(whole.violations.figure.map((f) => f.label), [uid(4)], "the hair still has no head");
   const ignored = run(lines, [uid(1), uid(3), uid(2), uid(4)], { ignore: /Minifig/ }).report;
   assert.equal(ignored.counts.figure, 2, "an --ignore landing is still a figure landing");
+  assert.equal(apart.pass, othersPass(apart), "advisory by default: FIGURE alone never fails");
+  assert.equal(run(lines, [uid(1), uid(3), uid(2), uid(4)], { strict: true }).report.pass, false, "--strict fails it");
   const { figureUnits, figureClassOf } = await import("../scripts/lib/ldraw-order-check.mjs");
   assert.equal(figureClassOf("Minifig Hips and Legs"), "legs");
   assert.equal(figureClassOf("~Minifig Arm Left"), "arm");

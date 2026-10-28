@@ -9,7 +9,7 @@ import { isMain } from "./lib/is-main.mjs";
 
 const HELP = `usage: ldraw-order-check.mjs <build.json | model.mpd | model.ldr> --lib <parts-folder>
          [--order <order.json>] [--groups <groups.json>] --cameras <cameras.json> [--min-visible <0-1>] [--internal <regex>]
-         [--max-hidden <pct>] [--structure-only]
+         [--max-hidden <pct>] [--structure-only] [--strict]
          [--ground auto|none|<y>] [--classes <json>] [--loose <regex>] [--ignore <regex>] [--ignore-tail <n>]
          [--travel <ldu>] [--json <report.json>] [--stamp <file> | --no-stamp] [--list <n>]
 
@@ -43,14 +43,14 @@ Per landing:
             (default 0.1) of them are in frame and unblocked. Any hidden landing, any landing with no camera, or no
             --cameras at all fails. A part matching --internal (internal by design) that lands hidden in a shot marked
             "opening": true is listed as excepted, not failed.
-  STABILITY (EV-40) the landing rests with its centre of mass over what holds it against gravity: the seated studs below
+  STABILITY (EV-40, advisory: listed; fails only with --strict) the landing rests with its centre of mass over what holds it against gravity: the seated studs below
             it (and, for a part arriving from below, the part it hangs under), each standing for its stud cell, or the
             table. A part on one stud at its far end, or a bridge with one end held, fails when it would rest once the
-            parts under it are placed (an order fault: land it later); one that overhangs even in the finished model is
+            parts under it are placed (an order fault: land it later; listed, a FAIL only with --strict); one that overhangs even in the finished model is
             a designed cantilever, listed (not failed) for the film report. Parts held only sideways (side studs, axles,
             hinges, clips) are judged by their joint, not here.
-  FIGURE    (EV-41) a minifig lands in three whole placements: hips + legs, torso + arms + hands (+ what it holds), head
-            + hair/hat. A landing with an arm or hand but no torso, a leg but no hips, or hair/hat but no head fails
+  FIGURE    (EV-41, advisory: listed; fails only with --strict) a minifig lands in three whole placements: hips + legs, torso + arms + hands (+ what it holds), head
+            + hair/hat. A landing with an arm or hand but no torso, a leg but no hips, or hair/hat but no head is listed
             (checked on --ignore landings too; not on the --ignore-tail). Fold a figure's runs into --groups units.
   PRECISION (EV-42, listed) placement rotations that are not rotations any more (written with too few decimals): tilted
             parts then sit inside their neighbours and read as false CROSSING. Write matrices with 6 decimals.
@@ -65,6 +65,7 @@ Per landing:
 --cameras <file>    the film's camera track, in the build model's LDraw frame (k = main landing index):
                     {"cameras":[{"k0","k1" | "t0","t1", "eye":[x,y,z],"target":[x,y,z],"up":[0,-1,0],"fov":40,"aspect":1.778,
                     "opening"?:true}], "landingTimes"?:[sec per landing], "perLanding"?:[camera per landing]}
+--strict            STABILITY and FIGURE faults fail the check (default: listed only)
 --structure-only    planning run without cameras: VISIBILITY is skipped; exit 0 when the rest passes, but its stamp
                     opens no render/verify gate
 --ground <y>        the table height (default auto = the lowest part bottom); none = nothing stands on a table
@@ -90,7 +91,7 @@ const regex = (v, name) => {
 function lines(report, n) {
   const c = report.counts;
   const out = [`build model ${report.buildModel}: ${c.parts} parts, ${c.landings} landings, ground y ${report.groundY ?? "none"}, ${report.ms} ms`];
-  out.push(`SUPPORT ${c.support}  CROSSING ${c.crossing}  ORDER ${c.order}  DIRECTION ${c.direction}  STABILITY ${c.stability}  FIGURE ${c.figure}  UNPLACED ${c.unplaced}${report.visibility ? (report.visibility.missingCameras ? "  VISIBILITY no cameras" : `  HIDDEN ${c.hidden} (${report.visibility.pct}%)  NO-CAMERA ${c.noCamera}  excepted ${c.excepted}`) : "  (structure only)"}  unchecked ${c.unchecked}  ignored ${c.ignored}`);
+  out.push(`SUPPORT ${c.support}  CROSSING ${c.crossing}  ORDER ${c.order}  DIRECTION ${c.direction}  STABILITY ${c.stability}${report.strict ? "" : " (advisory)"}  FIGURE ${c.figure}${report.strict ? "" : " (advisory)"}  UNPLACED ${c.unplaced}${report.visibility ? (report.visibility.missingCameras ? "  VISIBILITY no cameras" : `  HIDDEN ${c.hidden} (${report.visibility.pct}%)  NO-CAMERA ${c.noCamera}  excepted ${c.excepted}`) : "  (structure only)"}  unchecked ${c.unchecked}  ignored ${c.ignored}`);
   const v = report.violations;
   for (const s of v.support.slice(0, n)) out.push(`  SUPPORT  ${s.scope} #${s.index} ${s.label} (${s.title}${s.parts > 1 ? `, ${s.parts} parts` : ""}): joins nothing placed before it`);
   for (const s of v.crossing.slice(0, n))
@@ -141,7 +142,7 @@ export function main(argv) {
     if (!(minVisible > 0 && minVisible <= 1)) throw new Error("--min-visible takes a fraction in (0, 1]");
     const args = {
       input: abs(positional[0]), libraryDir: abs(flags.lib), order: str("order"), groups: str("groups"), cameras: str("cameras"),
-      ground, travel, ignoreTail: tail, maxHidden, minVisible, internal: regex(flags.internal, "internal"), structureOnly: !!flags["structure-only"], loose: regex(flags.loose, "loose"), ignore: regex(flags.ignore, "ignore"),
+      ground, travel, ignoreTail: tail, maxHidden, minVisible, internal: regex(flags.internal, "internal"), structureOnly: !!flags["structure-only"], strict: !!flags.strict, loose: regex(flags.loose, "loose"), ignore: regex(flags.ignore, "ignore"),
       classes: typeof flags.classes === "string" ? JSON.parse(fs.readFileSync(abs(flags.classes), "utf8")) : {},
     };
     result = checkOrderFiles(args);

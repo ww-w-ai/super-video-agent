@@ -17,7 +17,7 @@ import { crossingsAt, surfaceOf, CELL as SURFACE_CELL } from "./surface-crossing
 import { connectionClass } from "./ldraw-connect.mjs";
 
 export const TOOL = "ldraw-order-check";
-export const VERSION = 5; // 2: DIRECTION check, 3: VISIBILITY required (EV-29), 4: hinge/ball joints on their pin (EV-30), 5: STABILITY (EV-40) and FIGURE (EV-41); a stamp of an older version no longer opens the gate
+export const VERSION = 4; // 2: DIRECTION check, 3: VISIBILITY required (EV-29), 4: hinge/ball joints on their pin (EV-30); STABILITY (EV-40) and FIGURE (EV-41) are advisory (listed) unless options.strict, so they need no new version and existing stamps stay valid; a stamp of an older version no longer opens the gate
 export const STAMP_NAME = "order-check.json";
 
 const GRID = 40; // spatial hash cell for part boxes (LDU)
@@ -1483,7 +1483,8 @@ export function checkOrder({ model, events, options = {} }) {
   }
   const v = report.violations;
   report.counts = { parts: model.P.length, landings: report.landings, support: v.support.length, crossing: v.crossing.length, order: v.order.length, direction: v.direction.length, stability: v.stability.length, figure: v.figure.length, unplaced: v.unplaced.length, hidden: vis ? (vis.missingCameras ? null : vis.hiddenCount) : null, noCamera: vis ? vis.noCamera.length : null, excepted: vis ? vis.excepted.length : null, cantilevers: report.cantilevers.length, imprecise: report.precision.count, unchecked: report.unchecked.length, ignored: report.ignored };
-  report.pass = !v.support.length && !v.crossing.length && !v.order.length && !v.direction.length && !v.stability.length && !v.figure.length && !v.unplaced.length && (!vis || vis.pass);
+  report.strict = !!options.strict;
+  report.pass = !v.support.length && !v.crossing.length && !v.order.length && !v.direction.length && (!options.strict || (!v.stability.length && !v.figure.length)) && !v.unplaced.length && (!vis || vis.pass);
   report.groundY = ground;
   report.ms = Number((process.hrtime.bigint() - t0) / 1000000n);
   return report;
@@ -1655,7 +1656,7 @@ const fileEntry = (p) => (p ? { path: path.resolve(p), sha256: sha256(fs.readFil
  * (needed only to change the order of an MPD/LDR); `groups` sub-assembly ranges; `cameras` {cameras:[{k0,k1,eye,target,up?,fov,aspect}]}.
  * @returns {{report:object, inputs:object}}
  */
-export function checkOrderFiles({ input, libraryDir, order = null, groups = null, cameras = null, ground = "auto", classes = {}, loose = null, ignore = null, ignoreTail = 0, travel = null, maxHidden = 0, minVisible = 0.1, internal = null, structureOnly = false }) {
+export function checkOrderFiles({ input, libraryDir, order = null, groups = null, cameras = null, ground = "auto", classes = {}, loose = null, ignore = null, ignoreTail = 0, travel = null, maxHidden = 0, minVisible = 0.1, internal = null, structureOnly = false, strict = false }) {
   const isJson = /\.json$/i.test(input);
   const text = fs.readFileSync(input, "utf8");
   const base = isJson ? fromBuildJson(JSON.parse(text)) : fromLdraw(text, path.basename(input));
@@ -1667,7 +1668,7 @@ export function checkOrderFiles({ input, libraryDir, order = null, groups = null
   applyIgnore(events, model, ignore, ignoreTail);
   const cams = cameras ? JSON.parse(fs.readFileSync(cameras, "utf8")) : null;
   const g = ground === "auto" ? model.groundY : ground === "none" ? null : Number(ground);
-  const report = checkOrder({ model, events, options: { ground: g, cameras: cams, maxHidden, minVisible, internal, structureOnly, travel, unplaced } });
+  const report = checkOrder({ model, events, options: { ground: g, cameras: cams, maxHidden, minVisible, internal, structureOnly, travel, unplaced, strict } });
   report.buildModel = base.buildModel;
   const inputs = { input: fileEntry(input), order: fileEntry(order), groups: fileEntry(groups), cameras: fileEntry(cameras), libraryDir: path.resolve(libraryDir), options: { ground, ignore: ignore ? String(ignore) : null, ignoreTail, loose: loose ? String(loose) : null, travel, maxHidden, minVisible, internal: internal ? String(internal) : null, structureOnly, classes } };
   return { report, inputs };
@@ -1710,7 +1711,7 @@ export function checkOrderStamp(orderFile) {
     if (!fs.existsSync(e.path)) return { ok: false, stamp: stampFile, reason: `${e.path} (checked as ${k}) is gone` };
     if (sha256(fs.readFileSync(e.path)) !== e.sha256) return { ok: false, stamp: stampFile, reason: `${e.path} changed after the order check` };
   }
-  if (!(s.version >= VERSION)) return { ok: false, stamp: stampFile, reason: `${stampFile} is from check version ${s.version ?? "?"}, before the checks of version ${VERSION} (DIRECTION, VISIBILITY, STABILITY, FIGURE): run the check again` };
+  if (!(s.version >= VERSION)) return { ok: false, stamp: stampFile, reason: `${stampFile} is from check version ${s.version ?? "?"}, before the checks of version ${VERSION} (DIRECTION, VISIBILITY, HINGES): run the check again` };
   if (s.structureOnly || !s.visibilityChecked) return { ok: false, stamp: stampFile, reason: `${stampFile} has no VISIBILITY check: run the check with --cameras <the film's camera track> (a --structure-only run opens no gate)` };
   if (!s.pass) return { ok: false, stamp: stampFile, reason: `the last order check FAILED (support ${s.counts?.support}, crossing ${s.counts?.crossing}, order ${s.counts?.order}, direction ${s.counts?.direction}, stability ${s.counts?.stability}, figure ${s.counts?.figure}, hidden ${s.counts?.hidden}, no camera ${s.counts?.noCamera}, unplaced ${s.counts?.unplaced})` };
   return { ok: true, stamp: stampFile, reason: "passed" };

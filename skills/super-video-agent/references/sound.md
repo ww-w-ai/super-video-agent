@@ -279,26 +279,3 @@ that worked, not a fixed recipe.
   tours, pauses and the ending. The music runs to the last frame with a fade of about 2.5 s; check
   that the dip envelope spans the whole film (an envelope that ends early cuts the music there).
   Master the final mix with one gain, then mux the checked file without a second loudness pass.
-
-### A slow, calm build (sleep / relaxing "ASMR"): the opposite case (EV-49)
-
-The pentatonic palette above is for a fast, dense build. A slow build meant to calm (no talking, for
-sleep, an hour or more) wants the reverse; owner reviews of a LEGO ASMR pilot (2026-10-28): "균일한
-리듬으로 같은 톤의 소리로 툭-툭-툭-툭 … 소리가 바뀌니 오히려 집중이 흐트러지거나 잠이 깨".
-
-- **One click sound, one tone, a steady beat.** The same short single-hit click at every landing (a
-  light, slightly high "tick", about 10 ms, low-passed, a little quieter than the usual mix, around
-  -30 LUFS for sparse ticks), still on each landing's seat frame. A multi-transient rattle or a
-  varied palette breaks the calm.
-- **Rhythm of a clock.** About one beat per second; 2 s felt too slow to watch and 0.8 s too fast to
-  rest ("초침소리에 익숙해서 그런가 이 리듬이 안정감이 드네"). A pattern of one part, then two in quick
-  succession (a "tick, ti-tick" in alternate 1 s slots, the second 0.17–0.23 s after the first) keeps
-  it watchable. Watchability wins over sleep-research tweaks.
-- **Nothing else.** No bag rustle, pours, rattles, music, ambience or voice; only the build until it is
-  done. An opening of slow drifts over the finished model with a few short caption cards, each with
-  one soft bell, and no ticks before the first landing; the end fades to black after the last tick.
-  A page turn (if a booklet is on screen) pauses the build and has its own soft sound, never on a tick.
-- **Picture to match.** The scene's own lighting and colours (a sunset grade was rejected as less
-  pleasant to watch); parts appear above their seat and drop straight in, one moving at a time; a
-  soft preview of the seat may darken the colours under the incoming part like a shadow, never a
-  glow or a bright tint.
