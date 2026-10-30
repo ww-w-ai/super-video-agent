@@ -62,7 +62,8 @@ with a single static gain (two-pass, not loudnorm), aac 192k.
 
 --preview     half resolution, crf 28, preset veryfast -> out/preview-<YYYYMMDD-HHMMSS>.mp4
               (default: full resolution, crf 18, preset medium -> out/final-<YYYYMMDD-HHMMSS>.mp4)
-              out/final.mp4 / out/preview.mp4 are symlinks to the newest render.
+              out/final.mp4 / out/preview.mp4 point at the newest render (a
+              symlink; on Windows a hard link, or a copy across volumes).
 --workers N   probe/render up to N segments concurrently (separate browser
               sessions). Default 1.
 --only id,id  re-render exactly these segments regardless of their probe
@@ -758,20 +759,49 @@ export function timestamp(d = new Date()) {
  * A render never overwrites a file a player may still have open; the link is
  * swapped with a rename, so readers see either the old or the new target.
  */
-export function pointLatest(outDir, name, stampedPath) {
+export function pointLatest(outDir, name, stampedPath, platform = process.platform) {
   const linkPath = path.join(outDir, name);
   // A plain file left by an older render keeps its content under its own stamp.
-  // A hard link (nlink > 1) is the pointer linkToStamped() made where symlinks
-  // are refused: its content already lives under its stamp, so the rename below
+  // A hard link (nlink > 1) is the pointer linkToStamped() made on Windows (or
+  // where symlinks are refused): its content already lives under its stamp, so the rename below
   // simply replaces it — moving it aside would leave a misdated duplicate.
+  // A plain copy that is byte-identical to a stamped sibling is the pointer the
+  // copy fallback made (a volume that cannot hard-link): replaced the same way.
   const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
-  if (existing && !existing.isSymbolicLink() && existing.nlink < 2) {
+  if (existing && !existing.isSymbolicLink() && existing.nlink < 2 && !isCopyOfStamp(outDir, name, linkPath, existing.size)) {
     fs.renameSync(linkPath, unusedStampName(outDir, name, existing.mtime));
   }
   const tmpLink = uniqueTempPath(`${linkPath}.tmp`);
-  linkToStamped(stampedPath, tmpLink);
+  linkToStamped(stampedPath, tmpLink, platform);
   fs.renameSync(tmpLink, linkPath);
   return linkPath;
+}
+
+/** True when `file` has the same bytes as some <stem>-*<ext> file next to it. */
+function isCopyOfStamp(outDir, name, file, size) {
+  const ext = path.extname(name);
+  const stem = path.basename(name, ext);
+  for (const f of fs.readdirSync(outDir)) {
+    if (f === name || !f.startsWith(`${stem}-`) || !f.endsWith(ext)) continue;
+    const other = path.join(outDir, f);
+    if (fs.statSync(other).size === size && sameBytes(file, other)) return true;
+  }
+  return false;
+}
+
+function sameBytes(a, b) {
+  const fa = fs.openSync(a, "r"), fb = fs.openSync(b, "r");
+  const ba = Buffer.alloc(1 << 20), bb = Buffer.alloc(1 << 20);
+  try {
+    for (;;) {
+      const na = fs.readSync(fa, ba, 0, ba.length, null), nb = fs.readSync(fb, bb, 0, bb.length, null);
+      if (na !== nb || !ba.subarray(0, na).equals(bb.subarray(0, nb))) return false;
+      if (na === 0) return true;
+    }
+  } finally {
+    fs.closeSync(fa);
+    fs.closeSync(fb);
+  }
 }
 
 /**
@@ -788,10 +818,16 @@ function unusedStampName(outDir, name, mtime) {
 }
 
 /**
- * Symlink first; Windows without Developer Mode refuses it (EPERM), so fall
- * back to a hard link, then to a copy (a different volume cannot hard-link).
+ * Windows: a hard link straight away, then a copy (a different volume cannot
+ * hard-link). Even where Windows allows a symlink (Developer Mode), the default
+ * player failed to open a symlinked final.mp4, while a hard link is a real file
+ * to every program. Elsewhere: symlink first, with the same fallbacks.
  */
-function linkToStamped(stampedPath, tmpLink) {
+function linkToStamped(stampedPath, tmpLink, platform = process.platform) {
+  if (platform === "win32") {
+    linkOrCopy(stampedPath, tmpLink);
+    return;
+  }
   try {
     fs.symlinkSync(path.basename(stampedPath), tmpLink);
   } catch {

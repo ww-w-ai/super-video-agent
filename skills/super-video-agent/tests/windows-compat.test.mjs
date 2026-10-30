@@ -45,11 +45,36 @@ function setup() {
   return { dir, stamped };
 }
 
-test("pointLatest uses a symlink when the platform allows it", () => {
+test("pointLatest uses a symlink off Windows when the platform allows it", (t) => {
   const { dir, stamped } = setup();
-  const out = pointLatest(dir, "final.mp4", stamped);
+  let out;
+  try {
+    out = pointLatest(dir, "final.mp4", stamped, "darwin");
+  } catch (e) {
+    if (e.code === "EPERM") return t.skip("this host refuses symlinks");
+    throw e;
+  }
   assert.ok(fs.lstatSync(out).isSymbolicLink());
   assert.equal(fs.readFileSync(out, "utf8"), "video-bytes");
+});
+
+test("pointLatest on win32 makes a hard link even where a symlink would be allowed", () => {
+  const { dir, stamped } = setup();
+  const real = fs.symlinkSync;
+  let called = false;
+  fs.symlinkSync = (...a) => {
+    called = true;
+    return real(...a);
+  };
+  try {
+    const out = pointLatest(dir, "final.mp4", stamped, "win32");
+    assert.equal(called, false);
+    assert.ok(!fs.lstatSync(out).isSymbolicLink());
+    assert.equal(fs.statSync(out).ino, fs.statSync(stamped).ino);
+    assert.equal(fs.readFileSync(out, "utf8"), "video-bytes");
+  } finally {
+    fs.symlinkSync = real;
+  }
 });
 
 test("pointLatest falls back to a hard link when symlink is denied", () => {
@@ -85,6 +110,24 @@ test("a repeat render after a hard-link fallback keeps the previous file under i
   assert.equal(fs.readFileSync(stamped, "utf8"), "video-bytes");
   // The hard-link pointer is replaced, not moved aside as a misdated duplicate.
   assert.deepEqual(fs.readdirSync(dir).sort(), ["final-20260101-000000.mp4", "final-20260102-000000.mp4", "final.mp4"]);
+});
+
+test("a repeat render after a copy fallback replaces the copy instead of keeping a duplicate", () => {
+  const { dir, stamped } = setup();
+  const realLink = fs.linkSync;
+  fs.linkSync = () => {
+    throw Object.assign(new Error("cross-device link"), { code: "EXDEV" });
+  };
+  try {
+    pointLatest(dir, "final.mp4", stamped, "win32");
+    const next = path.join(dir, "final-20260102-000000.mp4");
+    fs.writeFileSync(next, "newer");
+    const out = pointLatest(dir, "final.mp4", next, "win32");
+    assert.equal(fs.readFileSync(out, "utf8"), "newer");
+    assert.deepEqual(fs.readdirSync(dir).sort(), ["final-20260101-000000.mp4", "final-20260102-000000.mp4", "final.mp4"]);
+  } finally {
+    fs.linkSync = realLink;
+  }
 });
 
 test("a plain file moved aside never overwrites a render whose stamp equals its mtime", () => {
