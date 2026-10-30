@@ -293,7 +293,27 @@ function hasPlaywright() {
 
 function installPlaywright() {
   console.log("installing playwright-core …");
-  return run("npm", ["ci", "--omit=dev", "--prefix", SKILL_DIR]) && hasPlaywright();
+  return run(npmBinary(), ["ci", "--omit=dev", "--prefix", SKILL_DIR]) && hasPlaywright();
+}
+
+/** npm ships as a .cmd shim on Windows, which spawn cannot find under the bare name. */
+export function npmBinary(platform = process.platform) {
+  return platform === "win32" ? "npm.cmd" : "npm";
+}
+
+/**
+ * How run() spawns a command. A .cmd shim (npm.cmd / npx.cmd on Windows) cannot
+ * be spawned without a shell on Node 18.20.2+/20.12.2+ (CVE-2024-27980 refuses
+ * it with EINVAL), so it goes through cmd.exe as one command line: a shell
+ * joins arguments without quoting them (Node 24 warns, DEP0190, when an args
+ * array meets shell:true), so an argument with spaces (SKILL_DIR) is quoted
+ * here. Windows paths cannot contain '"'. Everything else spawns directly —
+ * the POSIX path never uses a shell.
+ */
+export function spawnSpec(cmd, args) {
+  if (!cmd.endsWith(".cmd")) return { command: cmd, args, shell: false };
+  const quoted = args.map((a) => (/\s/.test(a) ? `"${a}"` : a));
+  return { command: [cmd, ...quoted].join(" "), args: [], shell: true };
 }
 
 async function hasChromium() {
@@ -318,7 +338,8 @@ function onPath(tool) {
 }
 
 function run(cmd, args) {
-  return spawnSync(cmd, args, { stdio: "inherit" }).status === 0;
+  const spec = spawnSpec(cmd, args);
+  return spawnSync(spec.command, spec.args, { stdio: "inherit", shell: spec.shell }).status === 0;
 }
 
 if (isMain(import.meta.url)) {

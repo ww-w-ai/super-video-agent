@@ -72,8 +72,17 @@ No sharp beeps: the synthesized kit has no siren/alarm tone; a piercing beep gra
 that needs an alarm-like sound should come from the asset library instead (below).
 
 Cues live in the page as `SFX_CUES` (`{at, kind, gain, pan, sync}`) and read their times from the same timeline the picture uses
-(`tl.phrase(i, "단 한 줄")`, `tl.word(i, j)`). Each cue with `sync: true` also records a mark in
-`__reel.marks`, which `review.mjs` checks against the rendered audio.
+(`tl.phrase(i, "단 한 줄")`, `tl.word(i, j)`). Each cue with `sync: true` also records a mark in `__reel.marks`.
+
+**A `sync: true` cue and the visual event it lands on read the same time value**: take both the
+cue's `at` and the picture's event (the drop landing, the stamp hitting) from one `tl.word(...)` /
+`tl.phrase(...)` anchor, or from the page's own motion formula that places the event (§8). One value
+keeps the two aligned. On top of these, add cues freely from any angle the film calls for: the
+scene's composition, an effect, an expressive beat, the music, the script. `review.mjs` fails a `sync: true`
+cue that rendered no sound, and reports each mark's sound onset, but does **not** measure
+sound-vs-picture sync: the picture's moment lives in the scene's draw code. Where the event times are
+data (a build's landing frames, §8), compare detected onsets against them on the final file; otherwise
+confirm a `sync: true` hit lands on its beat by eye on the preview.
 
 ## 3. Music bed (optional)
 
@@ -171,7 +180,7 @@ sfx cue times are measured from the film's t = 0, lead included.
 ## 5. What to report
 
 The model cannot hear. `review.mjs` measures loudness, true peak, the longest silence, and each
-sync mark's onset offset. Report those numbers, then name a few timestamps for the owner to
+sync mark's sound onset (a `sync: true` cue with no sound fails). Report those numbers, then name a few timestamps for the owner to
 listen to: the first effect, a scene handoff, the loudest moment, the ending.
 
 ## 6. Recorded effects and reaction clips (file effects vs synthesized)

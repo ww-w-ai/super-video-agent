@@ -12,7 +12,7 @@
 | A/V | `review.mjs` | video vs narration duration ≤ 50 ms; last line ends before the final frame |
 | Layout | `review.mjs` via `__reel.issues()` | empty: no text overflow, nothing outside the safe area, no chip outside its box, no highlight missing or under its target (`references/pipeline.md` "Children, highlights and corners") |
 | Loudness | `review.mjs` (ebur128) | integrated -16 LUFS ± 1; true peak ≤ -1 dBTP |
-| Sync marks | `review.mjs` | each `sync:true` mark's audio onset is within -20..+40 ms of its frame |
+| Sync marks | `review.mjs` | every `sync:true` cue has a sound onset (FAIL: the cue rendered no sound); each onset is listed. Sound-vs-picture sync is not machine-checked (the picture's moment is in the scene's draw code): time a cue and its visual event from the same value (`references/sound.md`) and confirm the hit by eye on the preview |
 | Silence | `review.mjs` | every silence over 1 s inside the narration (first sound to last line end) is listed with the line ids around it; FAIL unless the plan asks for it (`pauseAfterMs`, or a long `meta.gapMs`) — a planned pause is listed, not failed. Same measurement as the voice stage's silence gate (`voice.mjs`, `dub.mjs`, `fit-track.mjs`), which runs before the voice is locked |
 | Caption breaks | `validate-plan.mjs --breaks [--dub <code>]` | not a gate — the table lists every break; the reviewer finds none that cuts a phrase (`script-review.md` "Caption breaks"; a dub reads it once per language) |
 

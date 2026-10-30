@@ -608,7 +608,9 @@
   // drawCaptions(t) — this film's own caption look for the picture-first +
   // dub path (references/pipeline.md "Picture first"); replace
   // Reel.caption() with custom draw code the same way the 2D scaffold
-  // documents. dubPlan carries that language's own per-line fields.
+  // documents. dubPlan carries that language's own per-line fields. A film
+  // whose scenes already set the line's words on screen can drop the
+  // Reel.caption() call; then the picture carries no caption.
   function drawCaptions(t) {
     var idx = currentLineIndex(t);
     var line = idx >= 0 ? timings.lines[idx] : null;

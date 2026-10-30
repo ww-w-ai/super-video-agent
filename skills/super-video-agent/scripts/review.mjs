@@ -102,8 +102,6 @@ reason; it is never counted as a pass.
 
 const AV_DELTA_MS_THRESHOLD = 50;
 const AUDIO_SAMPLE_RATE = 48000;
-const SYNC_OFFSET_MIN_MS = -20;
-const SYNC_OFFSET_MAX_MS = 40;
 const DEAD_AIR_STEP_SEC = 0.1;
 const DEAD_AIR_RUN_SEC_MIN = 0.8;
 const DENSE_SCAN_STEP_SEC_DEFAULT = 0.1;
@@ -610,14 +608,20 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
     const stems = hasSfxStems
       ? await session.page.evaluate((sr) => window.__reel.sfxStems(sr), AUDIO_SAMPLE_RATE)
       : [];
+    // soundOnsetMs is where the cue's sound starts inside its own stem at the
+    // mark's time — ~0 by construction (the stem IS the cue placed at m.at), so
+    // it shows the sound exists and where its attack sits, never whether the
+    // picture's event lands there; a range gate on it could not fail a cue drawn
+    // off its beat, so there is none. Picture-vs-sound alignment holds by timing
+    // the cue and its visual event from the same value (references/sound.md) and
+    // is confirmed by eye on the preview. A sync:true mark with no sound onset is
+    // a known defect (the cue did not render) and FAILs (qa.md: a known defect is
+    // never an information figure).
     const markResults = marks.map((m) => {
       const { offsetMs, source } = markOnsetOffset(m, { stems, mixPcm: pcm, sampleRate: AUDIO_SAMPLE_RATE, windowSec: 0.15 });
       const sync = !!m.sync;
       const duckedByNarration = narrationWindows.some((w) => m.at >= w.start && m.at <= w.end);
-      const pass =
-        !sync ||
-        (offsetMs != null && offsetMs >= SYNC_OFFSET_MIN_MS && offsetMs <= SYNC_OFFSET_MAX_MS);
-      return { at: m.at, kind: m.kind, sync, offsetMs, source, duckedByNarration, pass };
+      return { at: m.at, kind: m.kind, sync, soundOnsetMs: offsetMs, source, duckedByNarration, pass: !sync || offsetMs != null };
     });
     const silencePass = nothingOf("silence") ? null : silenceGaps.unplanned.length === 0;
     const marksPass = markResults.every((m) => m.pass);
@@ -636,7 +640,6 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
         deadAirChangedShareMax: FREEZE_FRACTION,
         deadAirRecheckSec: FREEZE_RECHECK_SEC,
         deadAirScanWidth: FREEZE_SCAN_WIDTH,
-        syncOffsetMsRange: [SYNC_OFFSET_MIN_MS, SYNC_OFFSET_MAX_MS],
       },
       checks: {
         avSync: {
@@ -660,7 +663,7 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           byShot: issuesByShot,
         },
         audio: {
-          // silence that checked nothing is neither a pass nor a fail; with no marks either, the audio check has no result.
+          // silence gate plus "every sync:true cue rendered"; silence that checked nothing is neither a pass nor a fail, and with no marks either the audio check has no result.
           pass: silencePass === null && markResults.length === 0 ? null : silencePass !== false && marksPass,
           silenceCheckedNothing: nothingOf("silence"),
           integratedLufs: loudness.integratedLufs,
@@ -674,9 +677,9 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
           marks: markResults,
           voiceClipFacts: await voiceClipFacts(timings, paths.voiceDir),
           onsetSourceNote:
-            "each mark's offsetMs is measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, so a mark on a spoken word measures the effect's onset, not the voice's; a mark with no matching stem falls back to the full mix (source:'mix'), same as before this page provided sfxStems.",
+            "soundOnsetMs is each mark's sound onset measured on its own effects-only stem (window.__reel.sfxStems(), source:'stems') when one exists, else on the full mix (source:'mix'). It is ~0 by construction — the stem is the cue placed at the mark's own time — so it confirms the sound rendered and where its attack sits, but says nothing about whether the picture's event lands there. A sync:true mark with no onset (soundOnsetMs null: the cue did not render) fails. Sound-vs-picture sync is NOT machine-checked: it holds by timing the cue and its visual event from the same value (references/sound.md), and is confirmed by eye on the preview.",
           duckingNote:
-            "render.mjs ducks library asset cue sounds (plan.json line `cues`) by meta.sound.sfxDuckDb (default -2.5dB, 0.8 s ramps, gaps under 1.5 s stay ducked) while a narration line speaks; each mark above carries duckedByNarration for whether it fell inside a narration window. The sync tolerance (-20..+40ms) is unchanged, but a mark on a ducked sound near that edge is expected, not a regression.",
+            "render.mjs ducks library asset cue sounds (plan.json line `cues`) by meta.sound.sfxDuckDb (default -2.5dB, 0.8 s ramps, gaps under 1.5 s stay ducked) while a narration line speaks; each mark above carries duckedByNarration for whether it fell inside a narration window — information only, not a gate.",
         },
       },
       checkedNothing,
@@ -754,7 +757,7 @@ function printSummary(report) {
     `audio: I=${c.audio.integratedLufs == null ? "n/a" : c.audio.integratedLufs.toFixed(1) + " LUFS"} truePeak=${c.audio.truePeakDb == null ? "n/a" : c.audio.truePeakDb.toFixed(1) + " dBFS"} longest silence in narration=${c.audio.longestSilenceSec.toFixed(3)}s (gate ${c.audio.silenceGateSec}s, ${c.audio.silenceGaps.planned.length} planned) [${verdict({ pass: c.audio.silencePass })}]${c.audio.silenceGaps.unplanned.map((g) => ` gap ${g.startSec.toFixed(2)}-${g.endSec.toFixed(2)}s after line ${g.afterId}`).join(";")}`,
     ...(c.audio.silenceNote ? [`  note: ${c.audio.silenceNote}`] : []),
     ...(c.audio.underTarget ? [`  note: ${c.audio.underTarget.text}`] : []),
-    `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync, ${c.audio.marks.filter((m) => m.source === "mix").length} measured on the mix fallback) offsets=${c.audio.marks.map((m) => (m.offsetMs == null ? "n/a" : m.offsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL"}]`,
+    `sync marks: ${c.audio.marks.length} (${c.audio.marks.filter((m) => m.sync).length} sync) sound onsets=${c.audio.marks.map((m) => (m.soundOnsetMs == null ? "none" : m.soundOnsetMs + "ms")).join(", ")} [${c.audio.marks.every((m) => m.pass) ? "PASS" : "FAIL: a sync cue has no sound"}] — sound-vs-picture sync is not machine-checked; verify hits by eye on the preview (see onsetSourceNote)`,
     ...report.checkedNothing.map((n) => `checked nothing: ${n.check}: ${n.reason}. ${checkedNothingNext()}`),
     ...(report.facts || []),
     ...voiceClipFactLines(c.audio.voiceClipFacts),

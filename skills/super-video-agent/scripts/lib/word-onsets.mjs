@@ -4,7 +4,7 @@ import { rmsWindow } from "./audio-analysis.mjs";
 
 /** Search this far either side of a recorded word start (s), never past halfway to the neighbour word. */
 export const ONSET_WINDOW_SEC = 0.25;
-/** A recorded start this far (s) from the measured onset is reported. Source: sync marks accept -20..+40 ms (references/qa.md); 120 ms is where a hard cut or a sound cue is seen as off. */
+/** A recorded start this far (s) from the measured onset is reported. 120 ms is where a hard cut or a sound cue is seen as off. */
 export const OFFSET_REPORT_SEC = 0.12;
 /** The steepest 10 ms rise must reach this share of the window's loudest 10 ms, else "no clear onset" (a steady tone or silence has no onset). */
 export const ONSET_MIN_RISE_SHARE = 0.25;

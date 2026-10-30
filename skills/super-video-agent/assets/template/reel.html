@@ -299,6 +299,12 @@
   // SFX_CUES times should be derived from the measured timeline (tl.line /
   // tl.phrase), not hardcoded constants, so retiming a line moves its cue
   // with it. Cue shape: {at, kind, gain, pan, sync}.
+  // A sync:true cue and the visual event it lands on read the same time value
+  // (one tl.word(...) anchor, or the motion formula that places the event);
+  // one value keeps them aligned. On top of these, add cues freely from the
+  // film's composition, effects, expression, music or script. review.mjs
+  // cannot measure sound-vs-picture sync, so check sync:true hits by eye on
+  // the preview.
   var SFX_CUES = [];
   function buildSfxCues() {
     SFX_CUES = [];
@@ -468,7 +474,10 @@
   // Reel.caption() call below with your own draw code (e.g. a word-by-word
   // highlight) — dubPlan (dub/<code>/plan.json, that language's own lines)
   // carries whatever per-line fields it needs to key off, such as an
-  // `emphasis` word list, for the language currently loaded.
+  // `emphasis` word list, for the language currently loaded. A film whose
+  // scenes already set the line's words on screen can drop the
+  // Reel.caption() call (keep drawNotes if it uses corner notes); then the
+  // picture carries no caption.
   // Captions follow this language's voice (timings / tl). Anything else drawn
   // here — a label, a beat, a word-keyed animation, a sound cue — takes its
   // time from the base clock instead: clk.base.line(i) / clk.word(lineId, "x")
@@ -519,7 +528,9 @@
     }
     sceneFn(t, line, u);
     drawLibCues(t);
-    drawNotes(t, basePlan && basePlan.meta && basePlan.meta.lang);
+    // Captions and corner notes; both draw nothing in a picture-first render
+    // (?captions=0) and a caption draws only on a line that has text.
+    drawCaptions(t);
   }
 
   window.__reel = {

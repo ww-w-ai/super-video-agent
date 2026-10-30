@@ -761,16 +761,42 @@ export function timestamp(d = new Date()) {
 export function pointLatest(outDir, name, stampedPath) {
   const linkPath = path.join(outDir, name);
   // A plain file left by an older render keeps its content under its own stamp.
+  // A hard link (nlink > 1) is the pointer linkToStamped() made where symlinks
+  // are refused: its content already lives under its stamp, so the rename below
+  // simply replaces it — moving it aside would leave a misdated duplicate.
   const existing = fs.lstatSync(linkPath, { throwIfNoEntry: false });
-  if (existing && !existing.isSymbolicLink()) {
-    const ext = path.extname(name); // ".mp4", ".wav", ... (picture.bed.wav -> ".wav")
-    const stem = path.basename(name, ext);
-    fs.renameSync(linkPath, path.join(outDir, `${stem}-${timestamp(existing.mtime)}${ext}`));
+  if (existing && !existing.isSymbolicLink() && existing.nlink < 2) {
+    fs.renameSync(linkPath, unusedStampName(outDir, name, existing.mtime));
   }
   const tmpLink = uniqueTempPath(`${linkPath}.tmp`);
-  fs.symlinkSync(path.basename(stampedPath), tmpLink);
+  linkToStamped(stampedPath, tmpLink);
   fs.renameSync(tmpLink, linkPath);
   return linkPath;
+}
+
+/**
+ * <stem>-<mtime stamp><ext> for a file moved aside, never the name of a file
+ * already there: a render stamps its start time, so the previous file's mtime
+ * (that render's end) can equal the new render's own stamp to the second.
+ */
+function unusedStampName(outDir, name, mtime) {
+  const ext = path.extname(name); // ".mp4", ".wav", ... (picture.bed.wav -> ".wav")
+  const base = `${path.basename(name, ext)}-${timestamp(mtime)}`;
+  let candidate = path.join(outDir, base + ext);
+  for (let i = 2; fs.existsSync(candidate); i++) candidate = path.join(outDir, `${base}-${i}${ext}`);
+  return candidate;
+}
+
+/**
+ * Symlink first; Windows without Developer Mode refuses it (EPERM), so fall
+ * back to a hard link, then to a copy (a different volume cannot hard-link).
+ */
+function linkToStamped(stampedPath, tmpLink) {
+  try {
+    fs.symlinkSync(path.basename(stampedPath), tmpLink);
+  } catch {
+    linkOrCopy(stampedPath, tmpLink);
+  }
 }
 
 /** The page's meta from the pool's first session, which stays open for the rest of the render. */

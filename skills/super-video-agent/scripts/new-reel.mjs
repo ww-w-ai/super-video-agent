@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, ensureDir, writeJson } from "./lib/reeldir.mjs";
-import { findPretendard, findHandwritingFont } from "./lib/fonts.mjs";
+import { findPretendard, findHandwritingFont, pretendardRemedy } from "./lib/fonts.mjs";
 import { ffmpeg } from "./lib/ffmpeg.mjs";
 import { isMain } from "./lib/is-main.mjs";
 
@@ -227,7 +227,7 @@ Record the installed three.js version and its MIT license in FILM.md (references
 `;
 }
 
-export async function scaffold({ dir, width, height, fps, title, ratio, threeD }) {
+export async function scaffold({ dir, width, height, fps, title, ratio, threeD, fontSearchDirs }) {
   const paths = reelPaths(dir);
   ensureDir(paths.root);
   ensureDir(path.join(paths.root, "source"));
@@ -240,7 +240,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
   ensureDir(imagesDir);
 
   // ---- fonts ---------------------------------------------------------
-  const { regular, bold } = findPretendard();
+  const { regular, bold, searched } = findPretendard({ dirs: fontSearchDirs });
   const fontStatus = { pretendard: false, handwriting: null };
   if (regular) {
     fs.copyFileSync(regular, path.join(fontsDir, "Pretendard-Regular.otf"));
@@ -252,9 +252,10 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD }
   }
   if (!regular || !bold) {
     fontStatus.pretendard = false;
+    console.error(pretendardRemedy(fontsDir, searched));
   }
 
-  const handwriting = findHandwritingFont();
+  const handwriting = findHandwritingFont({ dirs: fontSearchDirs });
   let handwritingFontFace = "";
   let hasHandwriting = false;
   if (handwriting) {

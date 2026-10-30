@@ -1,12 +1,12 @@
-// Pure helpers for review.mjs's sync-mark check. The old check measured
-// every mark's onset in the full rendered mix — an effect that lands on a
-// spoken word then measures the voice's onset instead of the effect's (two
-// film sessions moved effects just to pass this: sound.md, qa.md "Sync
-// marks"). window.__reel.sfxStems() renders each kit/custom cue alone (no
-// bed, no other cues, no narration), so a mark's own onset can be measured
-// there instead; this only falls back to the full mix when no stem exists
-// for a mark (an older page, or a mark whose kind sfxStems() could not
-// generate).
+// Pure helpers for review.mjs's sync-mark report: each mark's sound onset.
+// Measured in the full mix, an effect that lands on a spoken word reads the
+// voice's onset instead of its own, so window.__reel.sfxStems() renders each
+// kit/custom cue alone (no bed, no other cues, no narration) and the onset is
+// read there; this falls back to the full mix only when no stem exists for a
+// mark (an older page, or a mark whose kind sfxStems() could not generate).
+// The stem is the cue placed at the mark's own time, so the onset confirms the
+// sound rendered — it cannot say whether the picture's event lands there
+// (qa.md "Sync marks").
 import { findOnsetOffsetMs } from "./audio-analysis.mjs";
 
 /**

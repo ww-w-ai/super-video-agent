@@ -444,6 +444,46 @@ for (const threeD of [false, true]) {
   });
 }
 
+// Pixels that change when the same instant is drawn again with captions off: the caption a
+// voice-first render (captions on, no ?layer) burns into the picture.
+async function captionPixels(page, t) {
+  return page.evaluate(async (x) => {
+    const c = document.getElementById("stage");
+    const frame = async () => {
+      const r = window.__reel.seek(x);
+      if (r && r.then) await r;
+      return c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+    };
+    const on = await frame();
+    window.Reel.setCaptionsOn(false);
+    const off = await frame();
+    window.Reel.setCaptionsOn(true);
+    let n = 0;
+    for (let i = 0; i < on.length; i += 4) if (on[i] !== off[i] || on[i + 1] !== off[i + 1] || on[i + 2] !== off[i + 2]) n++;
+    return n;
+  }, t);
+}
+
+for (const threeD of [false, true]) {
+  test(`${threeD ? "3D" : "2D"} template: a voice-first render draws the spoken line's caption; before the line it draws none`, { skip: skipBrowser }, async () => {
+    const dir = await noteReel(threeD);
+    // No corner notes: they also vanish with captions off, and would be counted as the caption.
+    fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify({ meta: { lang: "ko-KR" }, lines: [{ id: "l1", text: "안녕 델타 하세요" }] }));
+    const server = await serveDir(dir);
+    let session;
+    try {
+      session = await openReel(server.url.replace(/\/$/, "") + "/reel.html", { width: 216, height: 384 });
+      assert.ok((await captionPixels(session.page, 2.0)) > 0, "inside line l1 (0.4–5.5 s): the caption is drawn");
+      assert.equal(await captionPixels(session.page, 0.1), 0, "before the line starts: no caption");
+      assert.deepEqual(session.errors, []);
+    } finally {
+      if (session) await session.close();
+      await server.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
 // ---- leader note: termination guard -------------------------------------------
 
 test("guard: one failed removal (a child still writing) does not stop the others or change the exit code", () => {
