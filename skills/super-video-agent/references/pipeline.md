@@ -1111,8 +1111,18 @@ shared with `dub.mjs`); the music bed
 
 ## Fonts
 
-`new-reel.mjs` copies Pretendard into `assets/fonts/`. For another face, drop a licensed font
-file there and register it in the page's `@font-face`.
+`new-reel.mjs` copies Pretendard into `assets/fonts/`. Captions and corner notes use it by default
+(`captionFonts` empty); set `captionFonts` when the user names a caption face.
+
+**Picture text takes any face the film's look calls for.** A title, a label, a stamp, a sign on
+the set: pick the face that fits the film's mood and the scene's expression, and mix faces across
+scenes as the picture needs. `scripts/fonts-list.mjs --text "<a line in the film's language>"` lists
+the installed families that have every character of that line (macOS, Linux and Windows alike);
+`--family "<name>"` prints its files. Copy the chosen files into `assets/fonts/` and register them
+in the page's `@font-face`, so the reel renders the same on any machine.
+
+Download a font only when the user names one that is not installed, and only after they confirm
+its licence allows the use. A reel folder holding copied fonts redistributes them if published.
 
 - **Symbols the font lacks show as boxes.** Pretendard covers Korean and Latin. Phonetic symbols
   (ˈ ʊ ə), arrows, math signs or another script may fall back or render as □. Look at a still of

@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, printHelpAndExit, fail, abs } from "./lib/cli.mjs";
 import { reelPaths, ensureDir, writeJson } from "./lib/reeldir.mjs";
-import { findPretendard, findHandwritingFont, pretendardRemedy } from "./lib/fonts.mjs";
+import { findPretendard, pretendardRemedy } from "./lib/fonts.mjs";
 import { ffmpeg } from "./lib/ffmpeg.mjs";
 import { isMain } from "./lib/is-main.mjs";
 
@@ -20,7 +20,7 @@ const HELP = `usage: new-reel.mjs <dir> [--ratio 9:16|1:1|16:9|4:5] [--title "..
 Scaffolds <dir>/ with:
   reel.html          template scene + engine inlined
   plan.json          starter 3-line plan
-  assets/fonts/       Pretendard (+ handwriting font if installed)
+  assets/fonts/       Pretendard (other installed faces: scripts/fonts-list.mjs)
   assets/images/      generated placeholder.png
   source/ voice/ out/  empty working directories
 
@@ -241,7 +241,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD, 
 
   // ---- fonts ---------------------------------------------------------
   const { regular, bold, searched } = findPretendard({ dirs: fontSearchDirs });
-  const fontStatus = { pretendard: false, handwriting: null };
+  const fontStatus = { pretendard: false };
   if (regular) {
     fs.copyFileSync(regular, path.join(fontsDir, "Pretendard-Regular.otf"));
     fontStatus.pretendard = true;
@@ -253,20 +253,6 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD, 
   if (!regular || !bold) {
     fontStatus.pretendard = false;
     console.error(pretendardRemedy(fontsDir, searched));
-  }
-
-  const handwriting = findHandwritingFont({ dirs: fontSearchDirs });
-  let handwritingFontFace = "";
-  let hasHandwriting = false;
-  if (handwriting) {
-    const ext = path.extname(handwriting);
-    const destName = "handwriting" + ext;
-    fs.copyFileSync(handwriting, path.join(fontsDir, destName));
-    handwritingFontFace = `  @font-face {\n    font-family: 'Handwriting';\n    src: url('assets/fonts/${destName}');\n  }`;
-    hasHandwriting = true;
-    fontStatus.handwriting = handwriting;
-  } else {
-    fontStatus.handwriting = null;
   }
 
   // ---- placeholder image ---------------------------------------------
@@ -306,8 +292,6 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD, 
     .replaceAll("{{WIDTH}}", String(width))
     .replaceAll("{{HEIGHT}}", String(height))
     .replaceAll("{{FPS}}", String(fps))
-    .replaceAll("{{HAS_HANDWRITING}}", String(hasHandwriting))
-    .replace("{{HANDWRITING_FONT_FACE}}", handwritingFontFace)
     .replace("{{ENGINE_SOURCE}}", () => engineSrc)
     .replace("{{AUDIO_SOURCE}}", () => audioSrc);
   fs.writeFileSync(paths.reelHtml, html, "utf8");
@@ -325,7 +309,7 @@ export async function scaffold({ dir, width, height, fps, title, ratio, threeD, 
       },
       style: {
         palette: ["#f2efe6", "#111111", "#e0563e", "#fff3a0"],
-        fonts: { body: "Pretendard", annotation: hasHandwriting ? "Handwriting" : "Pretendard" },
+        fonts: { body: "Pretendard" },
         boilHz: 8,
       },
       lines: [

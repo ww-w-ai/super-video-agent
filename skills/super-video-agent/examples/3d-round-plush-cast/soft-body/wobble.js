@@ -18,7 +18,6 @@
   var WIDTH = 1080;
   var HEIGHT = 1920;
   var FPS = 30;
-  var HAS_HANDWRITING = false;
 
   // Internal 3D render resolution vs the full frame. Headless Chromium has
   // no GPU (SwiftShader, a CPU WebGL2 implementation) — 0.75 keeps frame
