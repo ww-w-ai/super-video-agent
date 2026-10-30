@@ -287,7 +287,9 @@ test("lock.mjs run: the command's exit code comes back, and killing the wrapper 
   const wrapper = track(spawn(process.execPath, [lock, "run", "--dir", dir, "--no-gpu", "--poll", "0.01", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" }));
   await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8"));
   const childPid = Number(fs.readFileSync(pidFile, "utf8"));
-  assert.equal(readSlot(dir).owner.childPgid, childPid);
+  // The wrapper records the group after spawn() returns, and that write can land after the child has
+  // already started and written its pid file, so wait for the record instead of reading it once.
+  await until(() => (readSlot(dir).owner || {}).childPgid === childPid);
   wrapper.kill("SIGTERM");
   await until(() => !pidAlive(childPid));
   await until(() => !pidAlive(wrapper.pid));
@@ -301,6 +303,8 @@ test("a SIGKILLed wrapper leaves a slot that reads as dead; the next waiter take
   const wrapper = track(spawn(process.execPath, [path.join(RUNNER, "lock.mjs"), "run", "--dir", dir, "--no-gpu", "--", process.execPath, "-e", child, pidFile], { stdio: "ignore" }));
   await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8"));
   const childPid = Number(fs.readFileSync(pidFile, "utf8"));
+  // The next waiter finds the orphan through the recorded group, so kill only once it is written.
+  await until(() => (readSlot(dir).owner || {}).childPgid === childPid);
   wrapper.kill("SIGKILL");
   await until(() => !pidAlive(wrapper.pid));
   assert.equal(readSlot(dir).ownerAlive, false);
