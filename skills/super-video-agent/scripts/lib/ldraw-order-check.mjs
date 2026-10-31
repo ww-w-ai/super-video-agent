@@ -577,6 +577,7 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
   // PRECISION (EV-42): a rotation written with too few decimals is no longer a rotation; tilted parts then sit a fraction
   // of an LDU inside their neighbours and show up as false CROSSING. Listed, not failed.
   const imprecise = [];
+  const mirrored = [];
   for (const p of P) {
     const r = [p.m[0], p.m[1], p.m[2], p.m[4], p.m[5], p.m[6], p.m[8], p.m[9], p.m[10]];
     let err = 0;
@@ -586,6 +587,11 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
         err = Math.max(err, Math.abs(d - (a === b ? 1 : 0)));
       }
     if (err > PRECISION_TOL) imprecise.push({ uid: p.uid, part: p.part.id, error: Number(err.toExponential(2)) });
+    // MIRRORED (EV-61): a matrix with a negative determinant places the part's mirror image. Renderers that cull back
+    // faces draw it inside out (its hollow underside shows and z-fights frame to frame: Gwanghwamun 63864 plaque tiles).
+    // Listed, not failed; a symmetric part takes the proper rotation with the same box instead.
+    const det = r[0] * (r[4] * r[8] - r[5] * r[7]) - r[1] * (r[3] * r[8] - r[5] * r[6]) + r[2] * (r[3] * r[7] - r[4] * r[6]);
+    if (det < 0) mirrored.push({ uid: p.uid, part: p.part.id, det: Math.round(det * 1000) / 1000 });
   }
   const invOf = (p) => p._inv || (p._inv = invert(p.m));
   const studsW = (p) => p._studs || (p._studs = p.part.studs.map((s) => ({ p: apply(p.m, ...s.p), a: unit(applyDir(p.m, ...s.a)), owner: p.idx })));
@@ -645,7 +651,7 @@ export function createModel({ libraryDir, library, placements, classes = {}, loo
     if (key) jointCache.set(key, r);
     return r;
   };
-  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose, posed, articJoint, imprecise };
+  return { lib, P, byUid, partOf, surfaceOfPart, cornersOf, trisIn, samplesOf, invOf, studsW, groundY, hasLoose, posed, articJoint, imprecise, mirrored };
 }
 
 /**
@@ -1469,7 +1475,7 @@ export function cameraResolver(spec, landings) {
  */
 export function checkOrder({ model, events, options = {} }) {
   const t0 = process.hrtime.bigint();
-  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], stability: [], figure: [], unplaced: options.unplaced || [] }, cantilevers: [], unchecked: [], swings: [], visibility: null, precision: { tolerance: PRECISION_TOL, count: model.imprecise ? model.imprecise.length : 0, first: (model.imprecise || []).slice(0, 20) } };
+  const report = { tool: TOOL, version: VERSION, pass: false, structureOnly: !!options.structureOnly, landings: 0, ignored: 0, violations: { support: [], crossing: [], order: [], direction: [], stability: [], figure: [], unplaced: options.unplaced || [] }, cantilevers: [], unchecked: [], swings: [], visibility: null, precision: { tolerance: PRECISION_TOL, count: model.imprecise ? model.imprecise.length : 0, first: (model.imprecise || []).slice(0, 20) }, mirror: { count: model.mirrored ? model.mirrored.length : 0, first: (model.mirrored || []).slice(0, 20) } };
   const ground = options.ground === undefined ? model.groundY : options.ground;
   const cameraFor = options.structureOnly ? null : cameraResolver(options.cameras, events.length);
   if (!options.structureOnly) report.visibility = { required: true, missingCameras: !cameraFor, checked: 0, hidden: [], noCamera: [], excepted: [], maxHidden: options.maxHidden ?? 0, minVisible: options.minVisible ?? 0.1 };
@@ -1479,10 +1485,10 @@ export function checkOrder({ model, events, options = {} }) {
     vis.hiddenCount = vis.hidden.length;
     vis.pct = vis.checked ? Math.round((vis.hiddenCount / vis.checked) * 1000) / 10 : 0;
     vis.pass = !vis.missingCameras && !vis.noCamera.length && (vis.maxHidden > 0 ? vis.pct <= vis.maxHidden : vis.hiddenCount === 0);
-    vis.hidden = vis.hidden.slice(0, 500);
+    vis.hidden = vis.hidden.slice(0, options.hiddenListMax ?? 500); // hiddenListMax: a caller that re-checks every hidden landing needs the whole list
   }
   const v = report.violations;
-  report.counts = { parts: model.P.length, landings: report.landings, support: v.support.length, crossing: v.crossing.length, order: v.order.length, direction: v.direction.length, stability: v.stability.length, figure: v.figure.length, unplaced: v.unplaced.length, hidden: vis ? (vis.missingCameras ? null : vis.hiddenCount) : null, noCamera: vis ? vis.noCamera.length : null, excepted: vis ? vis.excepted.length : null, cantilevers: report.cantilevers.length, imprecise: report.precision.count, unchecked: report.unchecked.length, ignored: report.ignored };
+  report.counts = { parts: model.P.length, landings: report.landings, support: v.support.length, crossing: v.crossing.length, order: v.order.length, direction: v.direction.length, stability: v.stability.length, figure: v.figure.length, unplaced: v.unplaced.length, hidden: vis ? (vis.missingCameras ? null : vis.hiddenCount) : null, noCamera: vis ? vis.noCamera.length : null, excepted: vis ? vis.excepted.length : null, cantilevers: report.cantilevers.length, imprecise: report.precision.count, mirrored: report.mirror.count, unchecked: report.unchecked.length, ignored: report.ignored };
   report.strict = !!options.strict;
   report.pass = !v.support.length && !v.crossing.length && !v.order.length && !v.direction.length && (!options.strict || (!v.stability.length && !v.figure.length)) && !v.unplaced.length && (!vis || vis.pass);
   report.groundY = ground;
@@ -1656,7 +1662,7 @@ const fileEntry = (p) => (p ? { path: path.resolve(p), sha256: sha256(fs.readFil
  * (needed only to change the order of an MPD/LDR); `groups` sub-assembly ranges; `cameras` {cameras:[{k0,k1,eye,target,up?,fov,aspect}]}.
  * @returns {{report:object, inputs:object}}
  */
-export function checkOrderFiles({ input, libraryDir, order = null, groups = null, cameras = null, ground = "auto", classes = {}, loose = null, ignore = null, ignoreTail = 0, travel = null, maxHidden = 0, minVisible = 0.1, internal = null, structureOnly = false, strict = false }) {
+export function checkOrderFiles({ input, libraryDir, order = null, groups = null, cameras = null, ground = "auto", classes = {}, loose = null, ignore = null, ignoreTail = 0, travel = null, maxHidden = 0, minVisible = 0.1, internal = null, structureOnly = false, strict = false, hiddenListMax = 500 }) {
   const isJson = /\.json$/i.test(input);
   const text = fs.readFileSync(input, "utf8");
   const base = isJson ? fromBuildJson(JSON.parse(text)) : fromLdraw(text, path.basename(input));
@@ -1668,7 +1674,7 @@ export function checkOrderFiles({ input, libraryDir, order = null, groups = null
   applyIgnore(events, model, ignore, ignoreTail);
   const cams = cameras ? JSON.parse(fs.readFileSync(cameras, "utf8")) : null;
   const g = ground === "auto" ? model.groundY : ground === "none" ? null : Number(ground);
-  const report = checkOrder({ model, events, options: { ground: g, cameras: cams, maxHidden, minVisible, internal, structureOnly, travel, unplaced, strict } });
+  const report = checkOrder({ model, events, options: { ground: g, cameras: cams, maxHidden, minVisible, internal, structureOnly, travel, unplaced, strict, hiddenListMax } });
   report.buildModel = base.buildModel;
   const inputs = { input: fileEntry(input), order: fileEntry(order), groups: fileEntry(groups), cameras: fileEntry(cameras), libraryDir: path.resolve(libraryDir), options: { ground, ignore: ignore ? String(ignore) : null, ignoreTail, loose: loose ? String(loose) : null, travel, maxHidden, minVisible, internal: internal ? String(internal) : null, structureOnly, classes } };
   return { report, inputs };

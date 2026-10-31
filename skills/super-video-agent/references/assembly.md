@@ -94,6 +94,13 @@ ldraw-order-check.mjs <build.json | model.mpd> --lib <parts-folder> --cameras <c
   decimals: 0.707 for cos 45°) puts tilted parts a fraction of an LDU inside their neighbours, and the
   sweep reads that as CROSSING. Any generator writes matrices and positions with 6 decimals; the report
   lists placements off by more than 2e-5.
+  MIRRORED (EV-61, listed): a placement whose matrix has a negative determinant is the part's mirror
+  image (PRECISION does not see it: a mirror is still orthonormal). Renderers that cull back faces
+  draw it inside out, so its hollow underside shows and z-fights frame to frame (two 1x3 plaque tiles
+  placed with `[0,0,1,-1,0,0,0,1,0]` flickered in a landmark Short). Use the proper rotation; for a
+  symmetric part it covers the same box.
+  The report lists at most 500 hidden landings; a planner or custom gate that re-checks each hidden
+  landing itself passes `hiddenListMax: Infinity` to `checkOrderFiles` (CLI `--hidden-list all`).
 - It writes `order-check.json` beside the order file (the hashes of the files it checked).
   `render.mjs` and `verify.mjs` refuse a reel whose `data/build.json` (or `data/<dir>/build.json`) has no
   current passing stamp. `--skip-order-check "<reason>"` gets past it and appends the reason to

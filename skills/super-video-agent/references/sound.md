@@ -131,6 +131,15 @@ sfx cue times are measured from the film's t = 0, lead included.
   breath between two lines (a bed that rises and drops again there is heard as pumping). The
   music bed keeps its own, deeper **-10 dB** duck inside the page (`reel-audio.js` `duck()`, 120 ms
   ramps): words stay clear, effects stay audible, the bed all but disappears under speech.
+- **Music that carries the film is dipped, not ducked away** (EV-55). When the music is a featured
+  element and not a documentary bed (a scored Short, a build or timelapse film with a few narrated
+  lines), it dips only about **2.5 dB** under a line, with **0.8 s** linear ramps and the same
+  1.5 s window merge as the cue duck, over a static bed level about 4 LU under the voice. An
+  11 dB duck in a project mix was heard as "the music drops almost to silence under narration"
+  (owner 2026-10-31). The page's own -10 dB duck does not suit such a film: turn it off there and
+  mix the music this way. Measure the result on the separate stems, not by ear: momentary loudness
+  of voice and music during lines and of the music in the gaps (that film: voice -14.4, music
+  -23.7 during lines, music -19.7 in gaps, -16 LUFS master), and write the numbers in `FILM.md`.
 - **Fades.** Fade every decrease in sound level. Choose `fadeOutSec: 0` only for an intentional hard cut.
   `meta.sound.fadeOutSec` sets the final bed fade (default 30 ms); narration keeps its own clip fades.
   A file cue (a library file or a clip's sound) takes optional fade fields, in `plan.json`
@@ -142,6 +151,12 @@ sfx cue times are measured from the film's t = 0, lead included.
   cue is peak-normalised first and faded after, so a fade is never undone by the level; give the
   mix the unfaded source and the fade fields, not a file faded in advance. `scripts/lib/audio-mix.mjs`
   `resolveCueFades` is the rule; the filter graph shows it as `afade` after `volume`.
+- **The music ends, it is not cut** (EV-65). A film that ends on music lets the piece resolve: a
+  composed piece lands its final chord right after the last spoken line, nothing new starts after
+  it, and it rings and fades over the last 2–3 s (one narrated Short: final chord 0.05 s after the
+  last word, 2.5 s fade, end = last line + about 4 s). A piece shortened to the film is ended on a
+  cadence, never stopped mid-phrase; a mix tool never cuts a narration line at the music's end, and
+  ducks over each line's real file length.
 - **Two ducks stack on a dubbed bed.** The page's duck follows the base language's lines. `dub.mjs`
   then ducks the whole bed again against the dubbed language's own lines, so where the two
   narrations differ the bed drops by both. `dub.mjs` prints one `bed duck:` line: the dub's dB, the

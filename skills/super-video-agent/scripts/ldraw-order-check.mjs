@@ -54,6 +54,9 @@ Per landing:
             (checked on --ignore landings too; not on the --ignore-tail). Fold a figure's runs into --groups units.
   PRECISION (EV-42, listed) placement rotations that are not rotations any more (written with too few decimals): tilted
             parts then sit inside their neighbours and read as false CROSSING. Write matrices with 6 decimals.
+  MIRRORED  (EV-61, listed) placements whose matrix has a negative determinant (a mirror image of the part): renderers
+            that cull back faces draw them inside out, and they flicker. Use the proper rotation (same box for a
+            symmetric part).
 
 --lib <dir>        the LDraw parts library (holds parts/ and p/)
 --order <file>      [{"id": "<uid>"|<index>, "from": [x,y,z]|"above"|"below"|"+x"|"-z"|"auto", "travel": <ldu>|"auto",
@@ -78,6 +81,7 @@ Per landing:
 --stamp <file>      where the stamp goes (default: order-check.json beside the order file, or beside the input);
                     render.mjs and verify.mjs read it. --no-stamp writes none.
 --list <n>          violations printed per kind (default 20)
+--hidden-list <n|all>  hidden landings kept in the report (default 500; all for a caller that re-checks each one)
 
 Exit 0: every check passed. Exit 1: violations (listed). Exit 2: bad input.
 `;
@@ -112,6 +116,7 @@ function lines(report, n) {
     for (const s of report.cantilevers.slice(0, Math.min(n, 10))) out.push(`    #${s.index} ${s.label} (${s.title}) centre ${fmt(s.com)} vs studs ${fmt(s.contactBox)}`);
   }
   if (report.precision && report.precision.count) out.push(`  precision: ${report.precision.count} placement(s) whose rotation is off by more than ${report.precision.tolerance} (e.g. ${report.precision.first[0].uid}, ${report.precision.first[0].error}): rounded matrices make tilted parts overlap their neighbours (false CROSSING); write them with 6 decimals`);
+  if (report.mirror && report.mirror.count) out.push(`  mirrored: ${report.mirror.count} placement(s) with a negative-determinant matrix (e.g. ${report.mirror.first.slice(0, 5).map((m) => `${m.uid} ${m.part}`).join(", ")}): a mirror image renders inside out and flickers; use the proper rotation`);
   const vis = report.visibility;
   if (vis && vis.missingCameras) out.push("  VISIBILITY required: pass --cameras <the film's camera track> (per landing, or k/t ranges); --structure-only is for planning and opens no gate");
   if (vis) {
@@ -140,7 +145,10 @@ export function main(argv) {
     if (!Number.isFinite(maxHidden) || maxHidden < 0) throw new Error("--max-hidden takes a percentage");
     const minVisible = flags["min-visible"] === undefined ? 0.1 : Number(flags["min-visible"]);
     if (!(minVisible > 0 && minVisible <= 1)) throw new Error("--min-visible takes a fraction in (0, 1]");
+    const hiddenListMax = flags["hidden-list"] === undefined ? 500 : flags["hidden-list"] === "all" ? Infinity : Number(flags["hidden-list"]);
+    if (!(hiddenListMax >= 0)) throw new Error("--hidden-list takes a whole number or all");
     const args = {
+      hiddenListMax,
       input: abs(positional[0]), libraryDir: abs(flags.lib), order: str("order"), groups: str("groups"), cameras: str("cameras"),
       ground, travel, ignoreTail: tail, maxHidden, minVisible, internal: regex(flags.internal, "internal"), structureOnly: !!flags["structure-only"], strict: !!flags.strict, loose: regex(flags.loose, "loose"), ignore: regex(flags.ignore, "ignore"),
       classes: typeof flags.classes === "string" ? JSON.parse(fs.readFileSync(abs(flags.classes), "utf8")) : {},

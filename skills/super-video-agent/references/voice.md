@@ -88,6 +88,16 @@ a dub's placed narration and on a track made by `fit-track.mjs`.
 
 A starting point before a full run: make about four lines once and listen; then make all lines together.
 
+**Choosing a new voice: the user picks by ear** (EV-58). When a film needs a voice the user has not
+chosen before, make a numbered audition reel: the same one or two lines in each candidate voice (4–8
+candidates, at speed 1.0 and the delivery the film will use), each clip introduced by its number on
+screen, one file the user can play straight through, with the list of numbers, names and ids next
+to it. The user answers with a number. Do not pick by measurements (pitch, pace, a profile
+distance): a narrated Short's voice chosen as "lowest pitch, slowest pace" was rejected on its
+delivery, and the voice the owner then picked by ear from an 8-voice reel was not the measured
+favourite. Slowing a voice below 1.0 to sound calmer read as awkward; for a calmer read choose a
+calmer voice. Keep the runner-up in `FILM.md` for later films.
+
 To listen before any picture exists, run `review.mjs <dir> --copy`: it builds `out/review-copy-<code>.mp4`
 from `voice/narration.wav` under a black 640x360 picture as long as the narration, with a subtitle track
 `<line id> <text>`, so the listener can name a line.

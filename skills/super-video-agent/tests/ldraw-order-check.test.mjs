@@ -513,3 +513,24 @@ test("PRECISION: a rotation written with 3 decimals is listed; with 6 it is not"
   const b = run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat", r6)]).report;
   assert.equal(b.counts.imprecise, 0);
 });
+
+test("MIRRORED (EV-61): a negative-determinant matrix is listed, not failed; a proper rotation is not listed", () => {
+  const mirror = "-1 0 0 0 1 0 0 0 1", turn = "0 0 1 0 1 0 -1 0 0";
+  const a = run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat", mirror)]).report;
+  assert.equal(a.counts.mirrored, 1);
+  assert.equal(a.mirror.first[0].uid, uid(2));
+  assert.equal(a.mirror.first[0].det, -1);
+  assert.equal(a.counts.imprecise, 0, "a mirror is still orthonormal: PRECISION does not see it");
+  assert.equal(a.pass, othersPass(a), "listed only");
+  assert.equal(run([ref(0, 0, 0, "base.dat"), ref(10, -24, 10, "b1.dat", turn)]).report.counts.mirrored, 0);
+});
+
+test("VISIBILITY: hiddenListMax trims only the listed hidden landings, never the count or the verdict", () => {
+  const cams = camFile(tmp(), LOW);
+  const none = run(WALL, null, { cameras: cams, hiddenListMax: 0 }).report;
+  assert.equal(none.visibility.hidden.length, 0);
+  assert.equal(none.counts.hidden, 1);
+  assert.equal(none.pass, false);
+  const all = run(WALL, null, { cameras: cams, hiddenListMax: Infinity }).report;
+  assert.equal(all.visibility.hidden.length, 1);
+});
