@@ -228,6 +228,46 @@
         "boilHz": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
+    "footage": {
+      "type": "array",
+      "description": "Real camera clips the page draws as a layer (references/pipeline.md \"Footage spans\"). The page resolves them with Reel.footageSpans(plan.footage, timings, fps) into window.__reel.footage and draws each frame from await Reel.footageFrame(id, t); frames are decoded by the native renderer (SVA_RENDERER=native).",
+      "items": {
+        "type": "object",
+        "required": ["id", "src"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "src": { "type": "string", "minLength": 1, "description": "The video file, relative to the reel folder (or absolute)." },
+          "in": { "type": "number", "minimum": 0, "description": "Source seconds of the span's first frame (default 0); a freeze holds this frame." },
+          "out": { "type": "number", "minimum": 0, "description": "Source seconds where the span ends; its film length is (out - in) / speed." },
+          "dur": { "type": "number", "exclusiveMinimum": 0, "description": "Film seconds the span lasts (a freeze needs dur or line)." },
+          "at": { "type": "number", "minimum": 0, "description": "Film seconds where the span starts." },
+          "line": { "type": "string", "minLength": 1, "description": "A voice/timings.json line id: the span starts at that line's start (+ offset) and, without dur or out, lasts to its end." },
+          "offset": { "type": "number", "description": "Seconds added to the line's start." },
+          "speed": { "type": "number", "exclusiveMinimum": 0, "description": "Playback speed (default 1; 0.5 = slow motion, each source frame shown twice)." },
+          "freeze": { "type": "boolean", "description": "Hold the frame at in for the span's length." },
+          "size": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": 1 }, "description": "Decode size [width, height] in px (default: the source with its long side at most the frame's long side)." },
+          "filter": { "type": "string", "minLength": 1, "description": "An ffmpeg video filter chain applied while decoding, e.g. a colour grade \"eq=saturation=1.1\"." },
+          "audio": {
+            "oneOf": [
+              { "type": "boolean", "enum": [false] },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "gainDb": { "type": "number", "description": "Added to the field audio's level." },
+                  "lufs": { "type": "number", "description": "Bring the span's field audio to this integrated loudness (measured over the span) before gainDb; absent keeps the source level." },
+                  "stretch": { "type": "boolean", "description": "At a speed other than 1, play the sound slowed or sped by the same factor (otherwise that span is silent)." },
+                  "fadeInSec": { "type": "number", "minimum": 0 },
+                  "fadeOutSec": { "type": "number", "minimum": 0 }
+                }
+              }
+            ],
+            "description": "The span's field audio: false mutes it. A speed-1 span plays its source sound in sync; a freeze is silent."
+          }
+        }
+      }
+    },
     "lines": {
       "type": "array",
       "minItems": 1,

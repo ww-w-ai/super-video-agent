@@ -27,6 +27,7 @@ import {
 import { buildCueMixFilter, measureMasterGain, formatMasterCap, createWavPcm16Writer, TO_STEREO, endFadeFilter } from "./lib/audio-mix.mjs";
 import { withTransportRetry } from "./lib/retry.mjs";
 import { cueFadeFields } from "./lib/cues.mjs";
+import { fieldAudioCues } from "./lib/footage.mjs";
 import { DUCK_DB_DEFAULT } from "./lib/duck.mjs";
 import {
   computeSegments,
@@ -57,8 +58,12 @@ Renders <reel-dir>/reel.html by segment (one segment per tiled run of
 window.__reel.shots), encoding each to out/segments/<quality>/<id>.mp4 and
 joining them (concat demuxer, -c copy) into the video track, then muxing
 voice/narration.wav (+ page SFX via __reel.audio.renderSfx, + any library
-sound cues via __reel.soundCues()), mastered to -16 LUFS
-with a single static gain (two-pass, not loudnorm), aac 192k.
+sound cues via __reel.soundCues(), + the field audio of each footage span in
+__reel.footage at its own film seconds), mastered to -16 LUFS with a static
+gain (two-pass, not loudnorm; when the peak limiter takes loudness away the
+gain is measured again and corrected, at most 3 times, to within 0.3 LU),
+aac 192k. A reel with footage spans renders only with SVA_RENDERER=native
+(references/pipeline.md "Footage spans").
 
 --preview     half resolution, crf 28, preset veryfast -> out/preview-<YYYYMMDD-HHMMSS>.mp4
               (default: full resolution, crf 18, preset medium -> out/final-<YYYYMMDD-HHMMSS>.mp4)
@@ -2270,9 +2275,11 @@ function decodeFloat32Base64(b64) {
  * then untouched (byte-for-byte the same as before this feature).
  */
 async function resolveSoundCues(pool, dir) {
-  const cues = await pool.use(async (session) => {
+  const { cues, footage, fps } = await pool.use(async (session) => {
     const hasFn = await session.page.evaluate(() => typeof window.__reel.soundCues === "function");
-    return hasFn ? session.page.evaluate(() => window.__reel.soundCues()) : null;
+    const own = hasFn ? await session.page.evaluate(() => window.__reel.soundCues()) : null;
+    const spans = await session.page.evaluate(() => (Array.isArray(window.__reel.footage) ? window.__reel.footage : []));
+    return { cues: own, footage: spans, fps: session.meta.fps };
   });
   const resolved = [];
   for (const cue of cues || []) {
@@ -2284,7 +2291,19 @@ async function resolveSoundCues(pool, dir) {
     const peakDb = await probePeakDb(absPath, leadSec + trimSec);
     resolved.push({ absPath, atSec: cue.at, gainDb: cue.gainDb, trimSec, peakDb, leadSec, ...cueFadeFields(cue) });
   }
+  if (footage.length) {
+    // Field audio of the footage spans, on the same film seconds the picture shows them (references/pipeline.md "Footage spans").
+    const field = await fieldAudioCues(footage, { root: dir, fps, duck: !silentClock(dir) });
+    for (const note of field.notes) process.stdout.write(`${note}\n`);
+    resolved.push(...field.cues);
+  }
   return resolved;
+}
+
+/** True when the reel has no narration to duck under: a silent clock (silent-clock.mjs) or no timings at all. */
+function silentClock(dir) {
+  const file = reelPaths(dir).timingsJson;
+  return !fs.existsSync(file) || !!readJson(file).clock;
 }
 
 const MAX_LEAD_SKIP_SEC = 0.3;

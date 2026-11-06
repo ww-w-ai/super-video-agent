@@ -628,6 +628,75 @@
     ctx.restore();
   }
 
+  // imageContain(ctx, img, x,y,w,h) — draws the whole img inside the box (bars where the
+  // aspects differ) and returns the rect it filled, {x, y, w, h}.
+  function imageContain(ctx, img, x, y, w, h) {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return null;
+    const scale = Math.min(w / iw, h / ih);
+    const rect = { x: x + (w - iw * scale) / 2, y: y + (h - ih * scale) / 2, w: iw * scale, h: ih * scale };
+    ctx.drawImage(img, rect.x, rect.y, rect.w, rect.h);
+    return rect;
+  }
+
+  // ---------------------------------------------------------------------
+  // footage — real camera clips the page draws as a layer (references/pipeline.md "Footage spans").
+  // footageSpans resolves plan.json `footage` to film frames; footageFrame(id, t) returns a Promise of
+  // {image, width, height, index, frame, sourceSec}, the span's frame shown at film time t (t clamped
+  // into the span), decoded by the native renderer. A page that draws footage awaits it in seek(t).
+  // ---------------------------------------------------------------------
+  function footageSpans(list, timings, fps) {
+    if (list == null) return [];
+    if (!Array.isArray(list)) throw new Error("footage must be an array of spans");
+    if (!(fps > 0)) throw new Error("Reel.footageSpans(list, timings, fps) needs the film's fps");
+    const lines = Object.create(null);
+    ((timings && timings.lines) || []).forEach(function (l) { lines[l.id] = l; });
+    const seen = Object.create(null);
+    const num = function (v, at, name, min) {
+      if (!(typeof v === "number" && isFinite(v) && v >= min)) throw new Error(at + ': "' + name + '" must be a number >= ' + min + " (got " + v + ")");
+      return v;
+    };
+    return list.map(function (f, i) {
+      const at = "footage[" + i + "]" + (f && f.id ? ' "' + f.id + '"' : "");
+      if (!f || typeof f.id !== "string" || !f.id) throw new Error(at + " needs an id");
+      if (seen[f.id]) throw new Error(at + ": the id is used twice");
+      seen[f.id] = true;
+      if (typeof f.src !== "string" || !f.src) throw new Error(at + " needs src (a video file, relative to the reel folder)");
+      const inSec = f.in == null ? 0 : num(f.in, at, "in", 0);
+      const freeze = f.freeze === true;
+      const speed = f.speed == null ? 1 : num(f.speed, at, "speed", 0);
+      if (!(speed > 0)) throw new Error(at + ': "speed" must be > 0 (use "freeze": true to hold a frame)');
+      const line = f.line == null ? null : lines[f.line];
+      if (f.line != null && !line) throw new Error(at + ': line "' + f.line + '" is not in voice/timings.json');
+      let start;
+      if (line) start = line.start + (f.offset == null ? 0 : f.offset);
+      else if (typeof f.at === "number") start = num(f.at, at, "at", 0);
+      else throw new Error(at + ' needs "at" (film seconds) or "line" (a timings line id)');
+      let dur;
+      if (f.dur != null) dur = num(f.dur, at, "dur", 0);
+      else if (f.out != null && !freeze) dur = (num(f.out, at, "out", 0) - inSec) / speed;
+      else if (line) dur = line.end - start;
+      else throw new Error(at + ' needs "dur", "out" or "line" for its length');
+      if (!(dur > 0)) throw new Error(at + ": its length comes out as " + dur + " s; check in/out/dur");
+      const first = Math.round(start * fps);
+      const frames = Math.max(1, Math.round(dur * fps));
+      const span = { id: f.id, src: f.src, in: inSec, start: first / fps, end: (first + frames) / fps, dur: frames / fps, frames: frames, speed: speed, freeze: freeze };
+      if (f.size != null) span.size = f.size;
+      if (f.filter != null) span.filter = f.filter;
+      if (f.audio != null) span.audio = f.audio;
+      return span;
+    });
+  }
+
+  function footageFrame(id, t) {
+    const host = globalThis.__svaFootage;
+    if (!host) {
+      return Promise.reject(new Error('footage "' + id + '": footage frames are decoded by the native renderer for 2D reels; run with SVA_RENDERER=native (the browser renderer does not decode footage)'));
+    }
+    return host.frame(id, t);
+  }
+
   // ---------------------------------------------------------------------
   // text — wrap + overflow detection. Reading text never boils.
   // ---------------------------------------------------------------------
@@ -2137,6 +2206,9 @@
     hold,
     drawOn,
     imageCover,
+    imageContain,
+    footageSpans,
+    footageFrame,
     textBlock,
     balanceRows,
     balanceParts,

@@ -32,6 +32,7 @@ Claude Code에서 **설치**:
 | 쇼츠, 16:9 설명 영상, 1:1·4:5 피드 영상 | HTML 페이지 하나 안의 Canvas, SVG, Web Audio로 시간에 따라 그림 | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) |
 | 3D 영상 | 설치된 Blender가 테스트 렌더를 통과하면 Blender, 아니면 Three.js/WebGL | [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md) |
 | 2.5D 사진 패럴랙스 | 사진 한 장을 깊이별 레이어로 잘라 카메라 한 번의 움직임으로 | [`references/parallax.md`](skills/super-video-agent/references/parallax.md) |
+| 실사 촬영 영상 | 직접 찍은 클립을 프레임 단위로 받아 그 위나 주변에 자막·이름표·그래픽을 그리고, 현장음은 화면에 맞춰 넣습니다(네이티브 렌더러) | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Footage spans" |
 | 조립 과정 영상 | LDraw 모델 파일에서 조립 순서, 위치, 끼우는 방향을 뽑아냄 | [`references/assembly.md`](skills/super-video-agent/references/assembly.md) |
 | 언어별 버전 | 그림은 한 번만 렌더하고, 언어마다 목소리와 자막을 그 위에 얹음 | [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs) |
 

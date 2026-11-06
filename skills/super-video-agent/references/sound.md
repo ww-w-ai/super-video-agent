@@ -113,7 +113,9 @@ sfx cue times are measured from the film's t = 0, lead included.
 
 - Master to **-16 LUFS integrated**, true peak ≤ -1 dBTP (render does this) with one static gain
   measured over the whole mix, never a single-pass `loudnorm`: it ramps its gain as it reads, so
-  the start comes out quiet. The gain is capped at **+12 dB**: a mix that measures under -28 LUFS
+  the start comes out quiet. When the gain needs the peak limiter, the limiter takes some loudness
+  back, so the result is measured again and the gain corrected (at most 3 times, to within
+  0.3 LU). The gain is capped at **+12 dB**: a mix that measures under -28 LUFS
   stays under -16. `render.mjs` prints `master gain capped at +12 dB: ...` with the gap in dB when
   that happens, and `review.mjs` prints a `note:` under the audio line when a file sits more than
   0.5 dB under -16 LUFS. Both are facts; raise the page's own sound level (below) or accept the level.

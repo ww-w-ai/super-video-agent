@@ -1,6 +1,6 @@
 ---
 name: super-video-agent
-description: Make a narrated video drawn in code from any source. Use for any video, short, reel, promo or explainer — 영상·쇼츠·릴스·홍보영상, card news/images/article/blog/YouTube/topic → video — even unnamed. Not for AI video models.
+description: Make a narrated video drawn in code from any source. Use for any video, short, reel, promo or explainer — 영상·쇼츠·릴스·홍보영상, card news/images/footage/article/blog/YouTube/topic → video — even unnamed. Not for AI video models.
 ---
 
 # Super Video Agent
@@ -141,6 +141,8 @@ use, adapt or ignore; none of it is a template.
    natural instead of forcing the clip to fill a slot. A final hold can be as short
    as a spoken breath, about 0.5 seconds. Keep the clip's effects below the narration.
    Prefer the existing clip insertion path; no separate demonstration tool is needed.
+   To draw over real footage (captions, name tags, a clip in a drawn panel, slow motion, a freeze)
+   instead of replacing frames, declare footage spans (`references/pipeline.md` "Footage spans").
    For familiar reactions or gestures, try a stronger expression specific to this
    moment first. If it does not communicate better, use a familiar example: a brief
    celebration for a payoff, or a directional gesture toward comments or a description.
@@ -450,6 +452,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | picture set | `scripts/render.mjs <dir> --check-pair [--lang <code>]`; `--no-captions --fix-picture-duration`; `--no-captions --bed-only` | check that picture, bed and timings are one render; write the picture's length into the timings; rebuild only the sound bed (`references/pipeline.md`) |
 | picture-only probe | `still.mjs`, `verify.mjs`, `render.mjs` with `--stub <sec>` | runs on a reel with no `voice/timings.json` yet, as one silent line of that length; `render.mjs --stub <sec> --segments N` splits it into N segments |
 | final | `scripts/render.mjs <dir>` | `out/final-<YYYYMMDD-HHMMSS>.mp4` at -16 LUFS; `out/final.mp4` links to the newest |
+| footage layer | `plan.json` `footage` spans, `Reel.footageSpans` + `await Reel.footageFrame(id, t)` in `seek`; `SVA_RENDERER=native` | real camera clips the page draws with (captions, tags and frames over them, a clip in a panel, slow motion, a freeze); each span's field audio mixed on its own seconds; one segment per span, reused like any segment (`references/pipeline.md` "Footage spans") |
 | picture (picture first) | `scripts/render.mjs <dir> --no-captions [--insert <clip.mp4>@<sec>]` | `out/picture.mp4` (video only) + `out/picture.bed.wav` + `out/picture.timings.json` — the picture, rendered once, no caption baked in; `--insert` puts an approved clip in from `<sec>` (`references/pipeline.md`) |
 | language (picture first) | `scripts/dub.mjs <dir> --lang <code> [--min-gap <sec>] [--max-speed <x>]` | `out/final-<code>.mp4` — that language's caption + voice laid over `out/picture.mp4`; each line is trimmed, sped up by at most 10% (`--max-speed`), kept at least 0.5 s of breath, then left its voice-free gap (up to 1.0 s, else slowed to 0.95x); `--min-gap` widens the tight slots for that language; neutral spans are encoded once and shared by every language; reports caption contrast (`dub/<code>/contrast.json`), bed duck swing and cut clicks |
 | language audio / time insert | `scripts/dub.mjs <dir> --lang <code> --audio-only [--audio-format m4a\|wav]`; `dub.mjs <dir> --insert-time <sec> --seconds <n>` | only that language's track, for a video already uploaded or one whose languages ship as audio tracks (decide in the brief, slot 7, before any per-language final: a video per language costs a full picture encode each); shift every language's placed timings and SRTs for a hold inserted before upload (`references/pipeline.md` "More dub reports and operations") |
@@ -481,5 +484,5 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 | `references/voice.md` | Voice providers, cloning, pronunciation |
 | [Audio editing guide](guides/audio-editing.md) | Local pause and tempo edits, timing updates, and replacing narration in a finished video |
 | `references/unattended.md` | Running the stages with nobody watching: the bundled runner, one short session per job, long jobs owned by the runner, done-files, resuming, safety rules |
-| `references/pipeline.md` | The page contract, per-language cover stills, render reuse (`--span`, `--assemble`), picture first and dubs, and the checks and reports (`still`, `verify`, `state-checks`, `review`, `srt`, `setup`) — read when you build on the bundled scripts |
+| `references/pipeline.md` | The page contract, footage spans (real clips as a drawn layer), per-language cover stills, render reuse (`--span`, `--assemble`), picture first and dubs, and the checks and reports (`still`, `verify`, `state-checks`, `review`, `srt`, `setup`) — read when you build on the bundled scripts |
 | `references/qa.md` | What the review numbers mean and what they cannot see |

@@ -53,6 +53,7 @@ is definitely wrong.
 | `visibleAt` | `function(t)` returning `[{id, opacity?: 0..1}]` | `state-checks.mjs` flicker |
 | `segments` | `[{from, to, key}]`, one entry per world | `verify.mjs --world <key>` |
 | `parallaxReport` | `function()` returning `Reel.parallaxCoverage(spec, width, height)` | `render.mjs` and `verify.mjs` print each layer with a bare edge; reports only (`references/parallax.md`) |
+| `footage` | the resolved spans `Reel.footageSpans(plan.footage, timings, fps)` returns | the native host decodes their frames for `Reel.footageFrame`; `render.mjs` mixes their field audio; a page with spans stops on the browser renderer ("Footage spans") |
 
 A line's `notes` in `plan.json` (`[{at: "start" | "word:<text>", text, corner?: "tl"|"tr"|"bl"|"br",
 holdSec?}]`) are corner notes: the caption step draws them (`Reel.cornerNotes`, `Reel.drawCornerNotes`),
@@ -108,6 +109,8 @@ rules come first.
 | `rng(key)` / `hash(str)` | the only randomness |
 | `drawOn(ctx, path, u, key, t, opts)` | reveal a stroke in point order. `path` is `{x, y}` objects; stroke colour and width come from `opts.color` / `opts.width` (default `#111`, 3), not from `ctx.strokeStyle` |
 | `imageCover(ctx, img, x, y, w, h)` | cover-fit an image into a box |
+| `imageContain(ctx, img, x, y, w, h)` | fit the whole image inside a box (bars where the aspects differ); returns the rect it filled |
+| `footageSpans(list, timings, fps)` / `footageFrame(id, t)` | resolve `plan.json` `footage` to film frames; the frame a span shows at `t`, as a Promise ("Footage spans") |
 | `textBlock(ctx, text, x, y, w, h, opts)` | wrapped text; a `\n` in the text forces a break where the automatic wrap splits badly; overflow and text outside the safe area recorded to `issues()` |
 | `caption(ctx, line, t, opts)` | a narration caption box, at the bottom of the safe area, centred on the frame |
 | `safeArea(w, h)` / `setSafeArea("shorts" \| "ads" \| "none" \| {top, bottom, left, right})` | the box text must stay inside; `"none"` = the whole frame, an object = the film's own margins in canvas px |
@@ -204,6 +207,90 @@ once at load, so this film's kit sfx carry a character of their own (`sound.md` 
 `ReelAudio.sfxPool` gives a kind that returns many times several sounds, and `master` has a fixed
 drive. See `sound.md`.
 
+## Footage spans
+
+Real camera footage (home video, event footage, a screen or product clip) as a layer the page
+draws with: captions, name tags, stamps and frames over it, a clip inside a drawn panel, a still
+that shrinks into a photo. The page draws each frame like any image, so everything else in this
+file (pure `seek`, segments, reuse, checks) applies unchanged. `--insert` is the other path: it
+replaces whole frames with a finished clip.
+
+**Renderer.** Footage frames are decoded by the native renderer for 2D reels:
+`SVA_RENDERER=native`. A reel whose `window.__reel.footage` has spans stops on the browser renderer
+with a message saying so; the 3D host does not decode footage either.
+
+**Declare** the spans in `plan.json` `footage` (validated by `validate-plan.mjs`):
+
+| Field | Meaning |
+|---|---|
+| `id`, `src` | the span's name; the video file, relative to the reel folder (keep clips under `assets/footage/`) |
+| `in`, `out` | source seconds where the span starts and ends (`in` default 0) |
+| `at` or `line` (+ `offset`) | film seconds where it starts, or the start of a `voice/timings.json` line plus `offset` |
+| `dur` | film seconds it lasts; else `(out - in) / speed`; else to the line's end |
+| `speed` | 1 by default; 0.5 is slow motion (each source frame twice), 2 is double speed |
+| `freeze` | `true` holds the frame at `in` for the span's length |
+| `size` | decode size `[w, h]`; default: the source at its display size (phone rotation applied), long side at most the frame's long side, never enlarged. Set it when the page draws the clip larger than that |
+| `filter` | an ffmpeg video filter chain run while decoding, e.g. a grade `"eq=saturation=1.1"` |
+| `audio` | the span's field audio: `false` mutes; `{gainDb, lufs, stretch, fadeInSec, fadeOutSec}` (below) |
+
+**Draw** them. After the timings load, resolve the spans once and expose them; in `seek(t)`,
+await the frame and draw `f.image` anywhere, under any transform:
+
+```js
+spans = Reel.footageSpans(plan.footage, timings, FPS);   // start snapped to the frame grid
+window.__reel = { /* ... */ get footage() { return spans; }, seek: seek };
+
+async function seek(t) {
+  drawBackdrop(t);                                        // anything under the footage
+  for (const s of spans) {
+    if (t < s.start || t >= s.end) continue;
+    const f = await Reel.footageFrame(s.id, t);           // {image, width, height, index, frame, sourceSec}
+    if (s.id === "arrival") Reel.imageCover(ctx, f.image, 0, 0, W, H);      // footage under a caption
+    if (s.id === "solo") { drawPanel(t); Reel.imageContain(ctx, f.image, 660, 60, 600, 960); } // a vertical clip in a panel
+  }
+  drawCaptions(t);                                        // anything over it
+}
+```
+
+`footageFrame(id, t)` clamps `t` into the span, so after a span ends the page can keep drawing its
+last frame (a freeze that shrinks into a photo: scale and move `f.image` by `t`, then frame it).
+A frame is a pure function of `t`: each span has one fixed decode command, so a seek in any order,
+a cold page and a render give the same pixels (`verify.mjs` checks it as for any page). A render
+reads each span's frames in order and decodes each once; a freeze or slow motion repeats a frame
+from a small cache. A span that runs past its source's end stops with the span, the frame and the
+source's length. Declare freezes in `holds` so `review.mjs` lists them as intended.
+
+Example spans (one horizontal and one vertical source):
+
+```json
+"footage": [
+  { "id": "arrival", "src": "assets/footage/wide.mp4", "in": 12.4, "out": 18.0, "line": "s1" },
+  { "id": "solo", "src": "assets/footage/tall.mp4", "in": 3.0, "line": "s2", "audio": { "lufs": -20 } },
+  { "id": "replay", "src": "assets/footage/tall.mp4", "in": 5.2, "out": 7.0, "speed": 0.5, "line": "s3" },
+  { "id": "photo", "src": "assets/footage/wide.mp4", "in": 17.9, "freeze": true, "line": "s4" }
+]
+```
+
+**Field audio.** `render.mjs` mixes each span's own sound from `in`, at the span's film start, for
+its length: the same seconds its picture shows, so it stays in sync by the frame math (no separate
+alignment). It goes into the final mix and into the picture-first bed (`out/picture.bed.wav`), so
+dubs keep it. A speed-1 span plays; a freeze is silent; another speed is silent unless
+`audio.stretch` (then the sound is slowed or sped by the same factor). The source level is kept
+and `gainDb` is added; clips recorded at different distances or on different devices differ in
+level, and `lufs` brings a span to that loudness over its own seconds first. A 15 ms fade in and 30 ms fade
+out keep cuts from clicking (`fadeInSec`, `fadeOutSec`). Under narration it ducks like library
+cues (`meta.sound.sfxDuckDb`); with a silent clock or no timings it never ducks. A source with no
+sound is named in the output and skipped.
+
+**Reuse.** Give the page one shot per span. A segment's probe frames draw the footage too, so a
+changed caption, trim or grade re-encodes only that span's segment, and the rest is stream-copied
+as in any render ("Render reuse"). `--plan`'s cache fingerprints files inside the reel folder
+only; a clip outside it is not seen by that cache (a real render always probes).
+
+**A film with no narration** gets its clock from the spans: write their timeline as scenes and
+run `silent-clock.mjs` (`references/assembly.md` "A film with no narration"), then anchor each span
+with `line`.
+
 ## Re-rendering part of a film
 
 `render.mjs` never renders the whole film as one pass. It tiles `window.__reel.shots` into
@@ -292,6 +379,9 @@ the inserted span's frame hashes (framemd5) are checked against the clip, and
 
 Stills and previews render the page, not the clip. For them to show the shot, the page draws
 JPEG stills of the clip for that span: `--insert-stills <dir>` writes them at the page's fps.
+
+`--insert` replaces frames. To draw over a clip (captions, a name tag, a frame) or to place it
+inside a drawn layout, declare it as a footage span instead ("Footage spans" above).
 
 ### Drafts with handles
 

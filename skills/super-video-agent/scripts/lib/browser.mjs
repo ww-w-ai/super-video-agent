@@ -330,8 +330,14 @@ export async function openReel(url, opts = {}) {
       layers: r.layers || [], // e.g. ["captions"] — dub.mjs's own-caption-layer support (references/pipeline.md "Picture first")
       drift: typeof r.driftReport === "function" ? r.driftReport() : null, // reel-drift.js: graded notes for the model to judge
       parallax: typeof r.parallaxReport === "function" ? r.parallaxReport() : null, // Reel.parallaxCoverage result (references/parallax.md)
+      footageSpans: Array.isArray(r.footage) ? r.footage.length : 0, // references/pipeline.md "Footage spans"
     };
   });
+  // A caption-layer page (?layer=captions: dub.mjs, review --layer) draws no picture, so no footage.
+  if (meta.footageSpans && !page.native && !new URL(url).searchParams.get("layer")) {
+    await close();
+    throw new Error(`this reel draws footage (window.__reel.footage has ${meta.footageSpans} span(s)), and footage frames are decoded only by the native renderer: run it with SVA_RENDERER=native (references/pipeline.md "Footage spans")`);
+  }
   // Headless Chromium's text/font rendering caches are not fully warm the
   // instant a custom @font-face resolves (document.fonts.ready only
   // guarantees the face is parsed, not that first-paint glyph shaping has

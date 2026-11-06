@@ -14,6 +14,7 @@ import fs from "node:fs";
 import { buildDuckVolumeExpr } from "./duck.mjs";
 import { measureLoudness } from "./audio-analysis.mjs";
 import { computeLineGainDb, lineNeedsLimiter, lineLevelFilter, LINE_MAX_BOOST_DB } from "./line-level.mjs";
+import { atempoChain } from "./footage.mjs";
 
 const FADE_OUT_SEC = 0.03;
 /** Default fade-out of a cue that ends at a picture cut (`endsAtCut`). */
@@ -95,11 +96,57 @@ export function formatMasterCap(report, measured) {
   return `master gain capped at +${LINE_MAX_BOOST_DB} dB: the mix measured ${measured.integratedLufs.toFixed(1)} LUFS, so the film sits ${report.shortDb.toFixed(1)} dB under ${MASTER_TARGET_LUFS} LUFS (raise the page's own sound level; references/sound.md "Mix")\n`;
 }
 
-/** Measures `premasterWavPath` (pass 1's rendered mix) and returns both the
- * measurement (for logging/reporting), the pass-2 filter string and the gain report. */
-export async function measureMasterGain(premasterWavPath) {
-  const measured = await measureLoudness(premasterWavPath);
-  return { measured, filter: masterGainFilter(measured), report: masterGainReport(measured) };
+/** How close (LU) a limited master must land to MASTER_TARGET_LUFS. */
+export const MASTER_TOLERANCE_LU = 0.3;
+/** Most gain corrections after the first estimate when the limiter works. */
+export const MASTER_MAX_CORRECTIONS = 3;
+
+/**
+ * Measures `premasterWavPath` (pass 1's rendered mix) and returns the
+ * measurement (for logging/reporting), the pass-2 filter string and the gain
+ * report. A static gain alone lands exactly on the target, so that case needs
+ * no more passes. When the limiter is in the chain it takes loudness away,
+ * so the static gain alone lands under the target: the result is measured
+ * through the same filter and the gain before the same limiter corrected,
+ * until it lands within MASTER_TOLERANCE_LU, at most MASTER_MAX_CORRECTIONS
+ * times, never past the boost cap. The first
+ * correction adds the shortfall; later ones divide it by the loudness each
+ * dB bought in the last two passes (the limiter can make a dB buy 0.2 LU).
+ * `report.passes` lists each measured pass {gainDb, landedLufs}.
+ * @param {string} premasterWavPath
+ * @param {{measure?: (path: string, opts?: {filter?: string}) => Promise<{integratedLufs:number|null, truePeakDb:number|null}>}} [opts]
+ */
+export async function measureMasterGain(premasterWavPath, { measure = measureLoudness } = {}) {
+  const measured = await measure(premasterWavPath);
+  const report = masterGainReport(measured);
+  let gainDb = computeLineGainDb(measured, { targetLufs: MASTER_TARGET_LUFS });
+  const limit = lineNeedsLimiter(measured, gainDb, { maxTruePeakDb: MASTER_MAX_TRUE_PEAK_DB });
+  const filterFor = (g) => `${lineLevelFilter(g, limit, { maxTruePeakDb: MASTER_MAX_TRUE_PEAK_DB })},${MASTER_TAIL}`;
+  let filter = filterFor(gainDb);
+  if (!limit || !report) return { measured, filter, report };
+  const passes = [];
+  for (let i = 0; i <= MASTER_MAX_CORRECTIONS; i++) {
+    const landedLufs = (await measure(premasterWavPath, { filter })).integratedLufs;
+    passes.push({ gainDb, landedLufs });
+    if (landedLufs == null || !Number.isFinite(landedLufs)) break;
+    const shortDb = MASTER_TARGET_LUFS - landedLufs;
+    const next = Math.min(gainDb + shortDb / loudnessPerDb(passes), LINE_MAX_BOOST_DB);
+    if (Math.abs(shortDb) <= MASTER_TOLERANCE_LU || i === MASTER_MAX_CORRECTIONS || Math.abs(next - gainDb) < 0.01) break;
+    gainDb = next;
+    filter = filterFor(gainDb);
+  }
+  const landed = passes[passes.length - 1].landedLufs;
+  const shortDb = landed == null ? report.shortDb : Math.max(0, MASTER_TARGET_LUFS - landed);
+  const capped = report.capped || (gainDb >= LINE_MAX_BOOST_DB - 1e-9 && shortDb > MASTER_TOLERANCE_LU);
+  return { measured, filter, report: { ...report, gainDb, capped, shortDb, passes } };
+}
+
+/** LU gained per dB between the last two measured passes, held to 0.1..1; 1 with one pass. */
+function loudnessPerDb(passes) {
+  if (passes.length < 2) return 1;
+  const [a, b] = passes.slice(-2);
+  const slope = (b.landedLufs - a.landedLufs) / (b.gainDb - a.gainDb);
+  return Number.isFinite(slope) ? Math.min(1, Math.max(0.1, slope)) : 1;
 }
 
 /** A sound's final decrease at the picture boundary. Zero explicitly chooses a hard cut. */
@@ -153,7 +200,9 @@ function crossfadePartner(cues, i) {
 }
 
 /**
- * @param {{narrationIndex?:number, hasSfx:boolean, cues:{trimSec:number, peakDb:number, gainDb?:number, atSec:number, leadSec?:number, fadeInSec?:number, fadeOutSec?:number, endsAtCut?:boolean, crossfadeSec?:number, track?:string}[], includeNarration?:boolean, narrationWindows?:{start:number,end:number}[], duckDb?:number, rampSec?:number, durationSec?:number, fadeOutSec?:number}} args
+ * @param {{narrationIndex?:number, hasSfx:boolean, cues:{trimSec:number, peakDb?:number, levelDb?:number, gainDb?:number, atSec:number, leadSec?:number, tempo?:number, duck?:boolean, fadeInSec?:number, fadeOutSec?:number, endsAtCut?:boolean, crossfadeSec?:number, track?:string}[], includeNarration?:boolean, narrationWindows?:{start:number,end:number}[], duckDb?:number, rampSec?:number, durationSec?:number, fadeOutSec?:number}} args
+ *   A cue's `leadSec` is where in its file it starts; `levelDb` replaces the peak leveling (field audio
+ *   keeps its source level); `tempo` plays it faster or slower over the same `trimSec` film seconds.
  *   `narrationIndex` is narration's `-i` position in the ffmpeg command
  *   (default 1: video is always input 0). Sfx (if `hasSfx`) is assumed to
  *   be the next input, then one input per cue, in `cues` order.
@@ -206,19 +255,25 @@ export function buildCueMixFilter({
     const label = `cue${i}`;
     const { trimSec, fadeInSec, fadeOutSec } = fades[i];
     const fadeStart = Math.max(0, trimSec - fadeOutSec);
-    const gainDb = (TARGET_PEAK_DB - cue.peakDb) + (cue.gainDb || 0);
+    // `levelDb` (a footage span's field audio) replaces the peak leveling: the source level plus levelDb.
+    const gainDb = (cue.levelDb != null ? cue.levelDb : TARGET_PEAK_DB - cue.peakDb) + (cue.gainDb || 0);
     const delayMs = Math.max(0, Math.round(cue.atSec * 1000));
     const leadSec = cue.leadSec || 0;
-    const trim = leadSec > 0 ? `atrim=${leadSec}:${leadSec + trimSec},asetpts=PTS-STARTPTS` : `atrim=0:${trimSec}`;
+    // `tempo` plays the source that much faster or slower; trimSec stays the length heard in the film.
+    const tempo = cue.tempo > 0 && cue.tempo !== 1 ? cue.tempo : 1;
+    const sourceSec = trimSec * tempo;
+    const trim = leadSec > 0 || tempo !== 1 ? `atrim=${leadSec}:${leadSec + sourceSec},asetpts=PTS-STARTPTS` : `atrim=0:${trimSec}`;
+    const stretch = tempo !== 1 ? `,${atempoChain(tempo)}` : "";
     // The source is leveled first (volume), then faded: a fade is never undone by the level.
     const fadeIn = fadeInSec > 0 ? `afade=t=in:st=0:d=${fadeInSec},` : "";
     const fadeOut = fadeOutSec > 0 ? `afade=t=out:st=${fadeStart}:d=${fadeOutSec},` : "";
     // adelay shifts this cue's samples onto the absolute narration
     // timeline, so a duck filter chained right after it reads `t` as the
     // film's own absolute seconds — the same seconds narrationWindows uses.
-    const duckStage = duckFilter ? `,${duckFilter}` : "";
+    // `duck: false` keeps a cue at its level under narration.
+    const duckStage = duckFilter && cue.duck !== false ? `,${duckFilter}` : "";
     parts.push(
-      `[${inIdx}:a]${trim},${TO_STEREO},volume=${gainDb}dB,${fadeIn}` +
+      `[${inIdx}:a]${trim}${stretch},${TO_STEREO},volume=${gainDb}dB,${fadeIn}` +
         `${fadeOut}adelay=${delayMs}:all=1${duckStage}${endFade}[${label}]`
     );
     sumLabels.push(`[${label}]`);

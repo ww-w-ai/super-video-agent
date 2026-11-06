@@ -9,15 +9,16 @@ import { run, ffmpeg } from "./ffmpeg.mjs";
  * Integrated loudness (LUFS) and true peak (dBFS) of `mp4Path`, via
  * ffmpeg's ebur128 filter. ebur128's summary prints at ffmpeg's default
  * (info) loglevel — the shared `ffmpeg()` wrapper hides it at
- * `-loglevel error`, so this calls `run` directly.
+ * `-loglevel error`, so this calls `run` directly. `filter` (an audio filter
+ * chain) measures the file as that chain leaves it, writing nothing.
  */
-export async function measureLoudness(mp4Path) {
+export async function measureLoudness(mp4Path, { filter = null } = {}) {
   const { stderr } = await run("ffmpeg", [
     "-hide_banner",
     "-i",
     mp4Path,
     "-af",
-    "ebur128=peak=true",
+    filter ? `${filter},ebur128=peak=true` : "ebur128=peak=true",
     "-f",
     "null",
     "-",

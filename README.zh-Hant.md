@@ -31,6 +31,7 @@
 | Shorts、16:9 講解影片、1:1 與 4:5 動態消息影片 | 在一個 HTML 頁面裡用 Canvas、SVG、Web Audio 依時間繪製 | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) |
 | 3D 影片 | 已安裝的 Blender 通過測試渲染就用 Blender，否則用 Three.js/WebGL | [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md) |
 | 2.5D 照片視差 | 把一張照片切成不同深度的圖層，配上一條鏡頭運動 | [`references/parallax.md`](skills/super-video-agent/references/parallax.md) |
+| 實拍影片 | 逐格讀取你自己拍的片段，在畫面上或周圍繪製字幕、名牌與圖形，現場聲音與畫面同步（原生渲染器） | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Footage spans" |
 | 組裝過程影片 | 從 LDraw 模型檔取得組裝順序、位置與插入方向 | [`references/assembly.md`](skills/super-video-agent/references/assembly.md) |
 | 多語言版本 | 畫面只渲染一次，每種語言的配音與字幕疊在上面 | [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs) |
 

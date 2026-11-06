@@ -31,6 +31,7 @@
 | Shorts、16:9 讲解视频、1:1 与 4:5 信息流视频 | 在一个 HTML 页面里用 Canvas、SVG、Web Audio 按时间绘制 | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) |
 | 3D 视频 | 已安装的 Blender 通过测试渲染就用 Blender，否则用 Three.js/WebGL | [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md) |
 | 2.5D 照片视差 | 把一张照片切成不同深度的图层，配一条镜头运动 | [`references/parallax.md`](skills/super-video-agent/references/parallax.md) |
+| 实拍视频 | 逐帧读取你自己拍的片段，在画面上或周围绘制字幕、名牌和图形，现场声音与画面同步（原生渲染器） | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Footage spans" |
 | 拼装过程视频 | 从 LDraw 模型文件得出拼装顺序、位置和插入方向 | [`references/assembly.md`](skills/super-video-agent/references/assembly.md) |
 | 多语言版本 | 画面只渲染一次，每种语言的配音和字幕叠加在上面 | [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs) |
 

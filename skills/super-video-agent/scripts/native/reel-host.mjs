@@ -22,6 +22,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import skia from "skia-canvas";
 import { mimeOf } from "../lib/server.mjs";
 import { nativeRaster } from "./raster.mjs";
+import { createFootageHost } from "./footage-host.mjs";
 
 const { Canvas, Image: SkiaImage, ImageData, FontLibrary, Path2D, DOMMatrix, CanvasGradient, CanvasPattern } = skia;
 
@@ -525,6 +526,9 @@ export function createReelRealm({ htmlPath, pageUrl = pathToFileURL(htmlPath).hr
   global.window = global;
   global.self = global;
   trapReelSeek(global, { stage });
+  // Reel.footageFrame(id, t) reads footage frames through this (references/pipeline.md "Footage spans").
+  const footage = createFootageHost({ reelDir, stage, makeCanvas: (w, h) => new classes.Canvas(w, h), ImageData, readReel: () => global.__reel });
+  global.__svaFootage = { frame: (id, t) => footage.frame(id, t), stats: () => footage.stats() };
 
   const compiled = new Map();
   const evaluate = (fn, arg) => {
@@ -547,6 +551,7 @@ export function createReelRealm({ htmlPath, pageUrl = pathToFileURL(htmlPath).hr
   const dispose = () => {
     timers.clearAll();
     compiled.clear();
+    footage.dispose();
   };
 
   return { global, stage, width, height, evaluate, runScripts, dispose };

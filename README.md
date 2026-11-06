@@ -32,6 +32,7 @@ read how it works before you install anything.
 | Shorts, 16:9 explainers, 1:1 and 4:5 feed posts | Canvas, SVG and Web Audio in one HTML page, drawn as a function of time | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) |
 | 3D films | Blender when an installed copy passes a test render; Three.js/WebGL otherwise | [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md) |
 | 2.5D photo parallax | one photo cut into depth layers under one camera move | [`references/parallax.md`](skills/super-video-agent/references/parallax.md) |
+| Live footage films | your own camera clips decoded frame by frame, with captions, name tags and graphics drawn over or around them and the field audio kept in sync (native renderer) | [`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Footage spans" |
 | Build and assembly films | an LDraw model file baked into build order, placement and insertion direction | [`references/assembly.md`](skills/super-video-agent/references/assembly.md) |
 | Language versions | the picture rendered once; each language's voice and captions laid over it | [`scripts/dub.mjs`](skills/super-video-agent/scripts/dub.mjs) |
 
