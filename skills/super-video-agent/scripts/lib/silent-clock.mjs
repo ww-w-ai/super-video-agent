@@ -20,7 +20,7 @@ export function buildClock(timeline, opts = {}) {
   if (!items.length) throw new Error(`the timeline's "${key}" is empty`);
   validate(items, timeline.duration);
   const duration = timeline.duration ?? items[items.length - 1].end;
-  const lines = items.map((s) => ({ id: s.id, text: "", start: s.start, end: s.end, words: [] }));
+  const lines = items.map((s) => ({ id: s.id, text: "", silent: true, start: s.start, end: s.end, words: [] }));
   return { timings: { duration, clock: "silent clock from a timeline, no narration", lines }, facts: factsOf(items, duration, opts.fps) };
 }
 

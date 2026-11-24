@@ -697,14 +697,21 @@ export async function reviewReel({ dir, paths, mp4Flag }) {
 export async function voiceClipFacts(timings, voiceDir, { decode = decodeMonoPcm } = {}) {
   const lines = [];
   const unavailable = [];
-  const all = timings?.lines || [];
+  const silent = [];
+  // A line with `silent: true` has no narration by design (silent-clock.mjs writes it); a
+  // timings file with `clock` and no flags is an older silent-clock file, every line silent.
+  const all = (timings?.lines || []).filter((l) => {
+    const isSilent = l.silent === true || (timings?.clock && l.silent === undefined);
+    if (isSilent) silent.push(l.id);
+    return !isSilent;
+  });
   for (const line of all) {
     const result = await measureVoiceClip(line, voiceDir, decode);
     if (result.reason) unavailable.push({ id: line.id, reason: result.reason });
     else if (result.facts.length) lines.push(result);
   }
   return { lines, measured: all.length - unavailable.length, unmeasured: unavailable.length,
-    unavailable, source: "current-clips", sampleRate: AUDIO_SAMPLE_RATE };
+    unavailable, silent, source: "current-clips", sampleRate: AUDIO_SAMPLE_RATE };
 }
 
 async function measureVoiceClip(line, voiceDir, decode) {
@@ -732,14 +739,16 @@ async function currentRawTake(line, voiceDir, decode) {
 }
 
 /** Missing measurements remain explicit and never fall back to saved clipFacts. */
-export function voiceClipFactLines({ lines, measured, unmeasured, unavailable = [] }) {
+export function voiceClipFactLines({ lines, measured, unmeasured, unavailable = [], silent = [] }) {
+  const skipped = silent.length ? [`voice clip facts: skipped ${silent.length} silent line(s) (marked silent: no narration by design): ${silent.join(", ")}`] : [];
+  if (silent.length && measured === 0 && !unmeasured) return skipped;
   const out = lines.map((l) => (l.flag
     ? `WARN voice clip ${l.flag}, line "${l.id}": ${l.facts.join("; ")} (current clip, ${l.reinstall ? `compared with its raw take; install that take again: voice.mjs <reel> --use ${l.id}=<reel>/voice/raw/${l.id}.wav` : `perceived-level evidence; re-make the line: voice.mjs <reel> --lines ${l.id}`})`
     : `voice clip facts, line "${l.id}": ${l.facts.join("; ")} (current clip measurement)`));
   if (measured === 0) out.push("voice clip facts: CHECKED NOTHING; no current clips measured.");
   for (const clip of unavailable) out.push(`voice clip facts: CHECKED NOTHING, line "${clip.id}": ${clip.reason}`);
   if (unmeasured && !unavailable.length) out.push(`voice clip facts: CHECKED NOTHING; ${unmeasured} current clip(s) unavailable.`);
-  return out;
+  return [...out, ...skipped];
 }
 
 /** pass is true / false, or null when the check looked at nothing: null is never a pass and never a fail. */

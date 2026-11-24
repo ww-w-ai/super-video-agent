@@ -84,3 +84,33 @@ test("corrupt and empty current clips retain explicit failure evidence", async (
     assert.match(empty.unavailable[0].reason, /no samples/);
   } finally { fs.rmSync(dir, {recursive:true,force:true}); }
 });
+
+test("a line marked silent is skipped and listed; an unmarked line with no voice file is still flagged", async () => {
+  const result = await voiceClipFacts({ lines: [{ id: "s1", silent: true }, { id: "v1" }] }, "/unused");
+  assert.deepEqual(result.silent, ["s1"]);
+  assert.deepEqual(result.unavailable.map((u) => u.id), ["v1"]);
+  const text = voiceClipFactLines(result).join("\n");
+  assert.match(text, /CHECKED NOTHING, line "v1"/);
+  assert.doesNotMatch(text, /CHECKED NOTHING, line "s1"/);
+  assert.match(text, /skipped 1 silent line\(s\).*s1/);
+});
+
+test("all lines marked silent: one skipped line, no CHECKED NOTHING", async () => {
+  const result = await voiceClipFacts({ lines: [{ id: "s1", silent: true }, { id: "s2", silent: true }] }, "/unused");
+  const text = voiceClipFactLines(result).join("\n");
+  assert.doesNotMatch(text, /CHECKED NOTHING/);
+  assert.match(text, /skipped 2 silent line\(s\).*s1, s2/);
+});
+
+test("an older silent-clock file (clock, no silent flags) is still skipped", async () => {
+  const timings = { clock: "silent clock from a timeline, no narration", lines: [{ id: "s1", text: "" }, { id: "s2", text: "" }] };
+  const text = voiceClipFactLines(await voiceClipFacts(timings, "/unused")).join("\n");
+  assert.doesNotMatch(text, /CHECKED NOTHING/);
+  assert.match(text, /skipped 2 silent line/);
+});
+
+test("silent-clock.mjs writes silent: true on every line", async () => {
+  const { buildClock } = await import("../scripts/lib/silent-clock.mjs");
+  const { timings } = buildClock({ steps: [{ id: "a", start: 0, end: 1 }, { id: "b", start: 1, end: 2 }] });
+  assert.ok(timings.lines.every((l) => l.silent === true));
+});

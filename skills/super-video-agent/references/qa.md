@@ -31,6 +31,11 @@ So ask whether the film needs it. If it does, make what the check looks at (a wo
 break, a safe area, a named font) and run only that check again; if it does not, write in
 `FILM.md` that it did not apply. The printed message carries the same sentence ("Confirm this
 video needs this check; if it does, make … and rerun only this check").
+A `timings.json` line marked `silent: true` has no narration by design (`silent-clock.mjs` marks
+every line it writes): `review.mjs` skips its voice clip check and lists the ids in one
+`voice clip facts: skipped N silent line(s)` line. A line with no voice file that is not marked
+silent is still `CHECKED NOTHING`: that is a real problem. An older silent-clock file (`clock`,
+no `silent` flags) is read as all lines silent.
 
 **Show a gate fail before you trust it pass.** A check that has never failed is unproven. Before
 relying on a new or changed check, run it on an old output that is known to be wrong (a render

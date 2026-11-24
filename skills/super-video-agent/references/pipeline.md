@@ -87,6 +87,11 @@ Each `timings.json` line also records who spoke it: `voice: {provider, voiceId}`
 line's own `voice` (any `meta.voice` keys, merged over `meta.voice` for that line) gives a film
 several speakers (`references/voice.md` "Several speakers in one film").
 
+A line with `silent: true` is a span with no narration by design (sound side; captions live in
+`text`): it has no `line-<id>.wav`, and `review.mjs` skips its voice checks. `silent-clock.mjs`
+writes the flag on every line it creates; any tool that writes a line with no voice by design does
+the same. A line with no voice file and no flag is reported `CHECKED NOTHING`.
+
 A picture-only probe made before any voice
 (a hard shot, a look test) has no `voice/timings.json`: `still.mjs`, `verify.mjs` and
 `render.mjs` accept `--stub <sec>` and use one silent line of that length instead. Nothing is
@@ -417,6 +422,15 @@ moved. Whether to use a stale draft is your decision.
 Render reuse is the base principle of this stage: render and encode only what changed, stream-copy
 the rest, and build what several versions share once. The tools below follow it; use the smallest
 one that covers the change.
+
+Trigger table: the change you made picks the command.
+
+| Change | Command |
+| --- | --- |
+| named scenes' drawing or footage | `render.mjs <dir> --only <shotIds>`, or `--span <from>-<to>` for seconds |
+| voice only, same slots | no picture render; remix the audio |
+| first render (nothing cached) | plain `render.mjs <dir>` |
+| cannot name what changed: shared helper, style, font or asset; shifted line timings (a moved frame range re-renders); resuming an interrupted render (finished segments are reused) | plain `render.mjs <dir>`: reuses a segment whose range and first, middle and last frames match; an edit between those frames is missed, so add those shots with `--only` |
 
 Every segment is encoded with a keyframe every `round(fps)` frames (one second), so a later cut
 copies whole GOPs and re-encodes only the frames up to the next keyframe. A segment from an older

@@ -63,6 +63,12 @@ use, adapt or ignore; none of it is a template.
    several versions share (a picture, a language-neutral span) once. Before any render, synthesis or
    dub, list what changed and make only that; redo the whole thing only when you can say in one line
    why the parts cannot be reused (`references/pipeline.md` "Render reuse").
+   Triggers: you changed named scenes (drawing or footage) -> `render.mjs --only <shotIds>` or
+   `--span <from>-<to>`. Voice-only change, same slots -> no picture render; remix the audio. First
+   render, or you cannot name what changed (a shared helper, style, font or asset; shifted line
+   timings; resuming an interrupted render) -> plain `render.mjs`, which reuses a segment whose
+   range and first, middle and last frames match; an edit between those frames is missed, so add
+   those shots with `--only`.
 
 ## Flow
 
