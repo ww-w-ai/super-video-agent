@@ -1312,6 +1312,22 @@
       .join("\n");
   }
 
+  // Ink extent of the current font above and below the alphabetic baseline, measured on a fixed
+  // sample (Hangul, Latin caps and descender, digits, punctuation) so the row height is the same
+  // for every line. null when the context lacks actualBoundingBox metrics (then callers keep the
+  // font-metric placement).
+  const INK_SAMPLE = "가힣ABCHgp0123.,";
+  function measureInk(ctx) {
+    const prev = ctx.textBaseline;
+    ctx.textBaseline = "alphabetic";
+    const m = ctx.measureText(INK_SAMPLE);
+    ctx.textBaseline = prev;
+    const ascent = m && m.actualBoundingBoxAscent;
+    const descent = m && m.actualBoundingBoxDescent;
+    if (!Number.isFinite(ascent) || !Number.isFinite(descent) || ascent + descent <= 0) return null;
+    return { ascent, descent };
+  }
+
   // textBlock(ctx, text, x,y,w,h, opts) — wraps `text` inside the box.
   // Records an issue if the wrapped lines overflow h. Never boils (still).
   function textBlock(ctx, text, x, y, w, h, opts) {
@@ -1376,7 +1392,18 @@
       ctx.fillRect(left - padX, y - padY, right - left + padX * 2, totalHeight + padY * 2);
       ctx.fillStyle = color;
     }
-    placed.forEach((p, i) => ctx.fillText(p.line, p.dx, y + i * lineHeight));
+    // A band is drawn behind the rows: centre the glyph ink in it (equal space above the first
+    // row's ink and below the last row's) instead of trusting the font's em box, which sits the
+    // ink off-centre in many display fonts. Falls back to top-baseline rows without ink metrics.
+    const ink = lines.length && o.band ? measureInk(ctx) : null;
+    if (ink) {
+      const inkBlock = (lines.length - 1) * lineHeight + ink.ascent + ink.descent;
+      const firstBase = y + totalHeight / 2 - inkBlock / 2 + ink.ascent;
+      ctx.textBaseline = "alphabetic";
+      placed.forEach((p, i) => ctx.fillText(p.line, p.dx, firstBase + i * lineHeight));
+    } else {
+      placed.forEach((p, i) => ctx.fillText(p.line, p.dx, y + i * lineHeight));
+    }
     if (lines.length && !o.outsideSafeOk) checkSafe(ctx, text, left, y, right, y + totalHeight, o.width, o.height);
     ctx.restore();
     return { lines: lines.length, height: totalHeight, overflow: totalHeight > h };
