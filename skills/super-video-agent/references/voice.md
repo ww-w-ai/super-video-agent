@@ -644,6 +644,12 @@ node scripts/voice.mjs <reel> --lines <lineId>[,<lineId>]
 - A line's own `rate` (0.5–2) replaces the film's rate for that line — for a deliberately rushed
   run, such as a quick list of extras that should feel like "and much more".
 
+**One sentence, one take.** Never put a gap inside a sentence so the narration reaches a later
+picture beat: keep the sentence continuous (re-synthesize it as one line when it exists only in
+pieces). When the picture leaves long quiet stretches, write more lines about what is on screen
+at that moment and insert them between the existing takes, reusing every take that still fits.
+A chopped sentence with sparse gaps was heard as forced (owner 2026-11-25).
+
 ## Local edits and finished-video replacement
 
 Use [audio editing guide](../guides/audio-editing.md) to resize pauses or adjust tempo in existing

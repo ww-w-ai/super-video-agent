@@ -473,7 +473,7 @@ build on the `window.__reel` page contract (`references/pipeline.md`):
 |---|---|
 | `references/community.md` | How the viral Opus 5.5 films were prompted and built — read first |
 | `references/3d.md` | WebGL/three.js films — when to use them, capture path, determinism, speed, characters and the cast stage |
-| `references/blender.md` | Installed Blender path — scene authoring, render validation, and existing audio/caption pipeline |
+| `references/blender.md` | Installed Blender path — scene authoring, render validation, and existing audio/caption pipeline; Cycles product stills for covers and hero cuts (read for any 3D cover) |
 | `references/shorts-formula.md` | The Shorts formula: structure, pacing, banded layout, captions — only when the user chose it |
 | `references/openings.md` | Opening types (result first, question, number card, title sting, mid-scene, preview, cover then motion, ...): what each looks like, when it fits, how to build it — read at the start to recommend three |
 | `references/assembly.md` | A film that shows something built in many ordered steps, driven by data (the required build-order gate for LDraw builds, reading a model file, insertion direction, surface check, timeline JSON, drift guard, the clock of a film with no narration, short scenes) — read only for that film type, and always for an LDraw build |

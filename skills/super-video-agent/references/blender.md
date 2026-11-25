@@ -63,6 +63,32 @@ For partial edits, render only the affected frame ranges and reassemble the pict
 stateful simulations before rendering isolated ranges. Do not use browser pixel-determinism,
 overlap or blink hooks as evidence about Blender geometry.
 
+## Product stills (covers and hero cuts)
+
+For a still that has to sell the object (cover, thumbnail, final reveal), light it like a product
+photo and render it in Cycles. Test the Cycles device and time one frame first.
+
+**Lighting (any product):**
+- A soft photo-studio HDRI as the world, for light and reflections (confirmed: Poly Haven CC0
+  `studio_small_09`, 2k, strength 0.6; record the source and license of the one you use). Camera
+  rays see a plain seamless backdrop, not the HDRI.
+- Aim the HDRI's brightest area at the subject's face or front: derive the yaw from the model's
+  front direction and the camera (about 25 degrees off the camera axis, slightly above). Never
+  reuse a fixed world yaw on another model.
+- If the front still reads dull, add one large camera-side fill above the lens, its emission
+  fading to zero at the edges, hidden from the camera and from shadows.
+- Measure clipping on the light surfaces (share of pixels at 254 or above, about 1% at most) and
+  look at the render.
+- Avoid thin strip softboxes and plain rectangular area lights on glossy surfaces: they reflect
+  as hard-edged windows and tint the colour under them. When a stray tint appears, switch lights
+  off one at a time in test renders to find the one that makes it.
+
+**Material (per subject).** Confirmed only on glossy ABS toy bricks: Principled BSDF roughness
+0.09, coat weight 0.6, coat roughness 0.07; 32 samples with denoising looked the same as 64 and
+256. Metal, glass and matte subjects are unverified: tune them on the first film that needs them,
+and check that metal does not mirror the HDRI's shapes badly and that clear parts keep an edge
+against the backdrop.
+
 ## Reuse the audio and caption pipeline
 
 1. Scaffold a normal browser reel with `new-reel.mjs <dir>` (without `--3d`). Keep its timing,

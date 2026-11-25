@@ -200,6 +200,14 @@ The model cannot hear. `review.mjs` measures loudness, true peak, the longest si
 sync mark's sound onset (a `sync: true` cue with no sound fails). Report those numbers, then name a few timestamps for the owner to
 listen to: the first effect, a scene handoff, the loudest moment, the ending.
 
+**Prove the bed is in the final file.** Verify a level change to a bed or effect track on the
+delivered file, not on the mix settings or an intermediate. Measure each stretch where the bed
+should be heard alone
+(`ffmpeg -ss <start> -t <seconds> -i <final.mp4> -vn -af volumedetect -f null -`)
+and fail near-silence (mean below about -50 dB). This matters most for a mix built outside the
+bundled pipeline: a sidechain ducking filter once muted the whole bed, and a later "+8 dB" fix
+changed nothing because there was nothing to raise (mean -91 dB).
+
 ## 6. Recorded effects and reaction clips (file effects vs synthesized)
 
 `ReelAudio.sfx` is synthesized — no recordings, so it ships with the repo and never sounds like a
