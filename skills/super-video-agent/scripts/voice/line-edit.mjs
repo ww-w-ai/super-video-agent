@@ -236,6 +236,8 @@ export function carriedWords(prevLine, timedText, newStart, strip = (s) => s) {
 /** meta.lang ("ko-KR", "en-US", ...) -> a Whisper language code. */
 export function sttLangCode(lang) {
   const s = String(lang || "ko").toLowerCase();
+  // Filipino: BCP 47 "fil" has no Whisper code of its own; Whisper's Tagalog is "tl" (slice(0,2) would give "fi" = Finnish).
+  if (s === "fil" || s.startsWith("fil-")) return "tl";
   return s.slice(0, 2) || "ko";
 }
 

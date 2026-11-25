@@ -677,7 +677,9 @@ else the timings' `duration`). It prints the same fill and gap warnings and the 
 writes no track when a line needs more than `--max-speed`. With `--draft` it writes the track anyway:
 a line that needs more than `--max-speed` is placed at `--max-speed`, runs past its slot, and is
 listed as `DRAFT: <id> needs <x>x`. A draft is for listening to; reword the listed lines before the
-final. A failure with no factor (a missing clip or line) still stops.
+final. A failure with no factor (a missing clip or line) still stops. Pass `--video` the exact file that
+will be uploaded, and check the finished track against it with `ffprobe` (within 0.02 s, intro included): a picture
+with a spoken intro that the timings lack gives a track Studio rejects ("audio track and video length must match").
 
 **Render with a track kept beside the reel's own.** `render.mjs <reel> --narration <wav> --timings
 <json>` renders with that narration and those timings in place of `voice/narration.wav` and
