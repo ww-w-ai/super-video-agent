@@ -96,6 +96,11 @@ Blender 做。否則使用內建的 Three.js 流程。你不需要安裝 Blender
 選擇為準，修改既有影片時保留原本的渲染器。
 詳見 [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md)。
 
+用 Blender 做封面或結尾的主打鏡頭時，skill 有一套用 Cycles 拍成產品照的方法：用柔和的攝影棚 HDRI 對準主體正面，
+正面顯得沉悶時再從相機一側補一盞柔光，並檢查高光是否過曝。打光方法適用於任何產品；材質參數只在有光澤的玩具積木上
+驗證過，金屬、玻璃與霧面表面尚未驗證。儲存庫裡不附 HDRI 檔案
+（[`references/blender.md`](skills/super-video-agent/references/blender.md) "Product stills"）。
+
 ### 照片 組裝過程 其他語言
 
 ```
@@ -111,7 +116,9 @@ Blender 做。否則使用內建的 Three.js 流程。你不需要安裝 Blender
   右邊是 3D 模型，兩邊由同一個步驟序號驅動。沒有旁白的影片用靜音時鐘（`scripts/silent-clock.mjs`）執行
   （[`references/assembly.md`](skills/super-video-agent/references/assembly.md)）。
 - **一個畫面，任何語言。** 先產生你的語言的配音，由它定下時間軸。畫面只渲染一次，不燒錄字幕，包括你的語言在內，
-  每種語言都用 `dub.mjs` 疊上去。偏長的句子最多加速 10%，或列出來請你改短；畫面不動。
+  每種語言都用 `dub.mjs` 疊上去。偏長的句子最多加速 10%，或列出來請你改短；畫面不動。替上傳的影片掛語言音軌之前，
+  skill 的規則是用 `ffprobe` 對照那個實際上傳的檔案檢查：包含片頭在內，長度相差不超過 0.02 秒
+  （[`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Fit a track to an existing video"）。
 
 ### 接入圖像與影片模型
 
@@ -195,6 +202,9 @@ Super Video Agent 保留模型的自由（除非你自帶範本，否則外觀�
 | 某種語言裡句子之間的換氣空間 | `dub.mjs --min-gap <sec>` 只在句子擠到下一句的位置，把畫面與音效一起放慢，直到間隔達到 `<sec>`；配音速度不變 | 配音、第一格與最後一格畫面、其他語言版本 |
 | 重新對時或重新擺放的配音音軌 | `render.mjs --narration <wav> --timings <json>` 用這條音軌取代影片自己的配音來渲染 | `voice/narration.wav` 與 `voice/timings.json` |
 | 上傳用的片頭與片尾 | `join.mjs` 接上它們，並回報每個接縫處的響度、喀噠聲風險與畫面吻合度 | 正片 |
+
+改了哪些場景很明確時，skill 用 `--only` 或 `--span` 渲染它們。不帶參數的 `render.mjs` 只要片段的影格範圍以及首格、
+中間格、末格仍然一致就會重用該片段，所以只出現在這幾格之間的改動會被漏掉。
 
 修改分好幾輪提出時，每項要求都記在 `FILM.md` 裡的同一份清單上，並標明狀態（已完成、未完成、被後來的要求變更）。
 每一輪都對照整份清單來規劃與檢查，新的修改不會把先前改好的東西改回去。
@@ -295,6 +305,8 @@ Super Video Agent 保留模型的自由（除非你自帶範本，否則外觀�
 
 - **流暢的旁白。** 每句話都有自己的停頓：下一句延續同一個想法時短，換場時長。句子收尾時接得上，逗號只在強調時用，
   聽起來不像照著稿子念。
+- **一句話錄一條。** skill 不會為了等後面的畫面而在句子中間插入空隙。畫面留出很長的無聲段落時，它就針對當時螢幕上的內容
+  寫新的句子，插在既有的錄音之間，仍然合適的錄音全部重用。
 - **換氣長度寫在計畫裡。** `meta.minBreathMs`（預設 500 ms）是句子之間最短的停頓。運動賽事播報這類快節奏的現場話語，可以把
   `meta.gapMs` 設在 250 左右、最短換氣設在 200 ms 左右；某句話的 `pauseAfterMs` 設定的靜默會照原樣保留。
 - **配音之前五輪審閱。** 對照來源的事實、故事、口語表達、讀法，以及最後通讀。腳本鎖定之後才產生一次配音。
@@ -305,14 +317,23 @@ Super Video Agent 保留模型的自由（除非你自帶範本，否則外觀�
 - **文字避開 App 按鈕。** 字幕避開 Shorts 與 TikTok 放按鈕和標題的區域（1080×1920 下為 x 80–888、y 200–1470）。
   畫面仍然鋪滿整個畫幅。
 - **在閱讀停頓處斷開的字幕。** 字幕先在標點處斷開，再分成長度平均的行，只剩一個字詞時併入相鄰一行。在腳本裡加 `|` 可以
-  手動指定斷行，配音不會讀出它。
+  手動指定斷行，配音不會讀出它。帶底條的字幕依實測的字形讓文字上下留白相等（取不到字形測量值時沿用字型本身的間距）。
 - **測量字幕對比。** 渲染與每個語言版本都會回報每句字幕和背後畫面的對比，以 WCAG 比值表示（語言版本寫在
   `dub/<code>/contrast.json`）。
 
 ### 檢查與輸出
 
 - **影片會自我檢查。** 渲染之後，[`scripts/review.mjs`](skills/super-video-agent/scripts/review.mjs) 產生縮圖總表，並檢查定格的畫面、超出框的文字、響度、沒踩準時刻的音效
-  與無聲的空檔。你得到的是數字，外加值得去聽的時間點。
+  與無聲的空檔。你得到的是數字，外加值得去聽的時間點。刻意標為靜音的句子（靜音時鐘影片的每一句）略過配音片段檢查並列出來；
+  既沒有配音檔又沒有標記的句子仍然回報為未檢查。
+- **聲音改動要在成品檔案裡證實。** 改了背景聲或音效軌的音量之後，skill 的規則是在交付檔案裡測量本該單獨聽到該聲音的段落，
+  接近無聲（平均低於約 -50 dB）即判為失敗（[`references/sound.md`](skills/super-video-agent/references/sound.md) §5）。
+- **3D 分步組裝影片的兩道影格檢查。** [`scripts/frame-gates.mjs`](skills/super-video-agent/scripts/frame-gates.mjs) `plate`
+  在以下情況判為失敗：計畫內的鏡頭轉動之外，底板每格移動超過 2 px；或轉動期間幅度過大、速度過快（每格超過 45 px 或每秒超過
+  270°）。`road` 在以下情況判為失敗：鏡頭靜止時地面顏色在影格間變化超過 255 中的 0.5，或在計畫內轉動之外出現閃爍。
+  `render.mjs` 不會執行它們。兩者讀取從影片中取得的逐格 JSON：來自頁面的鏡頭與底板位置，`road` 還需要在成片上測得的地面
+  顏色。skill 不附帶產生這些檔案的腳本
+  （[`references/3d.md`](skills/super-video-agent/references/3d.md) "Stable frame in step builds"）。
 - **每次渲染都保留。** 每次渲染都有自己的帶時間戳記的檔案，`out/final.mp4` 一律指向最新的一份。正在播放這支影片的播放器
   不會被新的渲染打斷，你也能比較不同版本。
 

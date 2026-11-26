@@ -105,6 +105,13 @@ Blender to test. Three.js is not bundled; the agent installs it into your reel w
 An explicit renderer choice takes precedence, and existing films keep their renderer.
 Details: [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md).
 
+For a cover or a final hero shot made with Blender, the skill has a product-photo method in Cycles:
+a soft photo-studio HDRI aimed at the subject's front, a soft fill from the camera side if the front
+looks dull, and a check for blown-out highlights. The lighting applies to any product. The material
+settings are confirmed only on glossy toy bricks; metal, glass and matte surfaces are unverified.
+No HDRI file ships with this repo
+([`references/blender.md`](skills/super-video-agent/references/blender.md) "Product stills").
+
 ### Photos, builds and other languages
 
 ```
@@ -125,7 +132,10 @@ Details: [`references/blender.md`](skills/super-video-agent/references/blender.m
 - **Any language over one picture.** Your language's voice is made first and sets the clock. The
   picture renders once with no captions baked in, and every language, yours included, is laid over
   it with `dub.mjs`. A line that runs long is sped up by at most 10% or listed for rewording; the
-  picture does not move.
+  picture does not move. Before you attach a language track to a video you upload, the skill's rule
+  is to check it with `ffprobe` against that exact file: the lengths match within 0.02 s, intro
+  included ([`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Fit a track
+  to an existing video").
 
 ### Adding image and video models
 
@@ -223,6 +233,10 @@ already approved stay exactly as they were.
 | Room to breathe between a language's lines | `dub.mjs --min-gap <sec>` slows only the slots where a line runs into the next, picture and effects together, until the gap reaches `<sec>`; the voice keeps its speed | the voice, the first and last frames, every other language |
 | A re-timed or re-placed voice track | `render.mjs --narration <wav> --timings <json>` renders with that track in place of the reel's own | `voice/narration.wav` and `voice/timings.json` |
 | An opening and an ending for upload | `join.mjs` attaches them and reports loudness, click risk and frame match at each join | the body film |
+
+When you change named scenes, the skill renders them with `--only` or `--span`. A plain
+`render.mjs` reuses a segment when its frame range and its first, middle and last frames still
+match, so it misses an edit that falls only between those frames.
 
 When changes come over several rounds, every request goes into one cumulative list in `FILM.md`
 with its state (done, open, changed by a later request). Each round is planned and checked against
@@ -350,6 +364,9 @@ for this film, up to three rounds.
 - **Narration that flows.** Each line gets its own pause: short when the next line continues the
   thought, long at a scene change. Sentences end so they connect, and commas are kept for
   emphasis, so the voice does not sound read off a page.
+- **One sentence, one take.** The skill puts no gap inside a sentence to wait for a later picture.
+  When the picture leaves a long quiet stretch, it writes new lines about what is on screen, puts
+  them between the existing takes and reuses every take that still fits.
 - **Breath is a plan setting.** `meta.minBreathMs` (default 500 ms) is the shortest pause between
   lines. Fast live talk such as sports play-by-play can run near 200 ms with `meta.gapMs` near 250,
   while a line's `pauseAfterMs` keeps a held silence exactly as written.
@@ -365,7 +382,9 @@ for this film, up to three rounds.
   frame.
 - **Captions that break where you read.** Captions split at punctuation first, then into rows of
   even length, and a one-word leftover joins its neighbor. A `|` in the script sets a break by
-  hand; the voice never reads it.
+  hand; the voice never reads it. Behind a banded caption, the space above and below the letters is
+  equal, based on their measured shapes (without those measurements, the font's own spacing is
+  used).
 - **Caption contrast, measured.** The render and every language version report each line's caption
   contrast against the picture behind it as a WCAG ratio (`dub/<code>/contrast.json` for a dub).
 
@@ -373,7 +392,22 @@ for this film, up to three rounds.
 
 - **The film checks itself.** After rendering, [`scripts/review.mjs`](skills/super-video-agent/scripts/review.mjs) makes a contact sheet and
   checks for frozen frames, text that spills out of its box, loudness, sound effects that miss
-  their moment, and silent gaps. You get numbers, plus the timestamps worth listening to.
+  their moment, and silent gaps. You get numbers, plus the timestamps worth listening to. Lines
+  marked silent on purpose (every line of a silent-clock film) skip the voice clip check and are
+  listed; a line with no voice file and no mark is still reported as not checked.
+- **Sound changes are proven in the final file.** After a level change to the background sound or an
+  effect track, the skill's rule is to measure the delivered file where that sound should be heard
+  alone, and to fail near-silence (mean below about -50 dB)
+  ([`references/sound.md`](skills/super-video-agent/references/sound.md) §5).
+- **Two frame gates for 3D step-build films.**
+  [`scripts/frame-gates.mjs`](skills/super-video-agent/scripts/frame-gates.mjs) `plate` fails a cut
+  whose base plate moves more than 2 px per frame outside planned camera turns, or that turns too
+  far or too fast during them (over 45 px per frame or 270° per second). `road` fails ground color
+  that changes by more than 0.5 of 255 between frames in a static camera, or flickers outside
+  planned turns. `render.mjs` does not run them. They read per-frame JSON that you get from the film:
+  the camera and plate positions from its page, and, for `road`, ground colors measured on the final
+  video. No script that writes those files ships with the skill
+  ([`references/3d.md`](skills/super-video-agent/references/3d.md) "Stable frame in step builds").
 - **Every render is kept.** Each render gets its own timestamped file, and `out/final.mp4`
   always points to the newest one. A player that has the film open is never broken by a new
   render, and you can compare versions.

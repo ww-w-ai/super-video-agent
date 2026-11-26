@@ -20,7 +20,7 @@ reels/<slug>/
   brief.md       facts extracted from the source, each with a source pointer
   style.md       design language: extracted from the source, or chosen and justified
   plan.json      lines (one sentence = one scene), per-line visual intent, voice settings
-  voice/         line-NN.wav, narration.wav, timings.json   (measured, never guessed)
+  voice/         line-<id>.wav, narration.wav, timings.json   (measured, never guessed)
   reel.html      the film: engine + scenes; exposes window.__reel
   assets/        images and fonts the page loads (copied, never hot-linked)
   out/           frames sheets, review.json, preview.mp4, final.mp4   (disposable)
@@ -71,11 +71,11 @@ window.__reel = {
 |---|---|
 | `new-reel.mjs <dir> --ratio 9:16` | 템플릿 reel.html, 인라인 엔진, 복사된 폰트로 릴 폴더를 만든다. |
 | `validate-plan.mjs <dir>` | plan.json을 스키마로 검사하고, 실패한 경로와 함께 0이 아닌 코드로 종료한다. |
-| `voice.mjs <dir> [--provider qwen3\|melotts\|fishspeech\|fish\|elevenlabs\|say\|file\|none]` | 각 줄을 합성하고 길이를 측정해 narration.wav + timings.json을 쓴다. |
+| `voice.mjs <dir> [--provider qwen3\|melotts\|fishspeech\|fish\|elevenlabs\|typecast\|say\|file\|none]` | 각 줄을 합성하고 길이를 측정해 narration.wav + timings.json을 쓴다. |
 | `still.mjs <dir> --at <t\|shotId> [--out png]` | 원본 크기로 프레임 하나를 렌더링한다. |
 | `verify.mjs <dir>` | 정적 계약 스캔 + 결정론 검사(순서대로/뒤섞은 seek 비교, 픽셀 해시). |
-| `render.mjs <dir> [--preview] [--workers N] [--plan] [--only ids]` | 샷 단위로 렌더링하고(안 바뀐 것은 재사용), 이어붙이고, 전체 영상 오디오(내레이션 + 페이지 SFX)를 먹싱하고, 라우드니스를 정규화한다. |
-| `review.mjs <dir> [--mp4 path]` | 각 샷의 readAt 시점 콘택트 시트, 무음 구간, 흔들림 주기, 오디오/비디오 길이 차이, 엔진 issues를 review.json으로 만든다. |
+| `render.mjs <dir> [--preview] [--workers N] [--plan] [--only ids]` | 샷 단위로 렌더링하고(안 바뀐 것은 재사용), 이어붙이고, 전체 영상 오디오(내레이션 + 페이지 SFX)를 먹싱하고, 고정 게인으로 -16 LUFS에 맞춘다. |
+| `review.mjs <dir> [--mp4 path]` | 각 샷의 readAt 시점 콘택트 시트, 무음 구간, 오디오/비디오 길이 차이, 엔진 issues를 review.json으로 만든다. |
 
 음성 제공자는 하나의 인터페이스를 공유한다(`scripts/voice/<name>.mjs`):
 `synth({text, voice, lang, params}) → {wavPath, words?: [{w, start, end}]}`와 선택적으로
@@ -84,8 +84,7 @@ window.__reel = {
 
 ### 2.4 QA 기준값 (기본값, plan.json에서 조정 가능)
 
-- 무음: 픽셀 변화가 0.2 % 미만인 구간이 0.8 s 이상 이어지지 않아야 한다(64-px 그레이스케일 차이 기준).
-- 흔들림 확인: 전환 장면이 아닌 프레임에서 포즈 변화가 계획된 주기대로 일어난다(±1 프레임).
+- 무음: 픽셀 변화가 0.2 % 미만인 구간이 0.8 s 이상 이어지지 않아야 한다(320-px 그레이스케일 차이 기준).
 - 오디오/비디오: 영상과 내레이션 길이 차이가 50 ms 이하이며, 마지막 줄이 마지막 프레임보다 먼저 끝난다.
 - 결정론: 뒤섞은 순서로 seek한 해시와 순서대로 seek한 해시가 샷 경계를 포함한 12개 이상의 확인 시점에서
   같아야 한다.

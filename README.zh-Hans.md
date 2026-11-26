@@ -96,6 +96,11 @@ Blender 做。否则使用内置的 Three.js 流程。你不需要安装 Blender
 以你的选择为准，修改已有视频时保留原来的渲染器。
 详见 [`references/blender.md`](skills/super-video-agent/references/blender.md), [`references/3d.md`](skills/super-video-agent/references/3d.md)。
 
+用 Blender 做封面或结尾的主打镜头时，skill 有一套用 Cycles 拍成产品照的方法：用柔和的摄影棚 HDRI 对准主体正面，
+正面显得发闷时再从相机一侧补一盏柔光，并检查高光是否过曝。打光方法适用于任何产品；材质参数只在有光泽的玩具积木上
+验证过，金属、玻璃和哑光表面尚未验证。仓库里不附带 HDRI 文件
+（[`references/blender.md`](skills/super-video-agent/references/blender.md) "Product stills"）。
+
 ### 照片 拼装过程 其他语言
 
 ```
@@ -111,7 +116,9 @@ Blender 做。否则使用内置的 Three.js 流程。你不需要安装 Blender
   右边是 3D 模型，两边由同一个步骤序号驱动。没有旁白的视频用静音时钟（`scripts/silent-clock.mjs`）运行
   （[`references/assembly.md`](skills/super-video-agent/references/assembly.md)）。
 - **一个画面，任何语言。** 先生成你的语言的配音，由它定下时间轴。画面只渲染一次，不烧录字幕，包括你的语言在内，
-  每种语言都用 `dub.mjs` 叠加上去。偏长的句子最多加速 10%，或者列出来请你改短；画面不动。
+  每种语言都用 `dub.mjs` 叠加上去。偏长的句子最多加速 10%，或者列出来请你改短；画面不动。给上传的视频挂语言音轨之前，
+  skill 的规则是用 `ffprobe` 对照那个实际上传的文件检查：包括片头在内，长度相差不超过 0.02 秒
+  （[`references/pipeline.md`](skills/super-video-agent/references/pipeline.md) "Fit a track to an existing video"）。
 
 ### 接入图像和视频模型
 
@@ -195,6 +202,9 @@ Super Video Agent 保留模型的自由（除非你自带模板，否则外观�
 | 某种语言里句子之间的换气空间 | `dub.mjs --min-gap <sec>` 只在句子挤到下一句的位置，把画面和音效一起放慢，直到间隔达到 `<sec>`；配音速度不变 | 配音、第一帧和最后一帧、其他语言版本 |
 | 重新对时或重新摆放的配音音轨 | `render.mjs --narration <wav> --timings <json>` 用这条音轨代替视频自己的配音来渲染 | `voice/narration.wav` 和 `voice/timings.json` |
 | 上传用的片头和片尾 | `join.mjs` 接上它们，并报告每个接缝处的响度、咔哒声风险和画面匹配 | 正片 |
+
+改了哪些场景是明确的时候，skill 用 `--only` 或 `--span` 渲染它们。不带参数的 `render.mjs` 只要片段的帧范围以及首帧、
+中间帧、末帧仍然一致就会复用该片段，所以只出现在这几帧之间的改动会被漏掉。
 
 修改分好几轮提出时，每条要求都记在 `FILM.md` 里的同一份清单上，并标明状态（已完成、未完成、被后来的要求改动）。
 每一轮都对照整份清单来计划和检查，新的修改不会把之前改好的东西改回去。
@@ -295,6 +305,8 @@ Super Video Agent 保留模型的自由（除非你自带模板，否则外观�
 
 - **流畅的旁白。** 每句话都有自己的停顿：下一句延续同一个想法时短，换场时长。句子收尾时能接得上，逗号只在强调时用，
   听起来不像照着稿子念。
+- **一句话录一条。** skill 不会为了等后面的画面而在句子中间插入空隙。画面留出很长的无声段时，它就针对当时屏幕上的内容
+  写新的句子，插在已有的录音之间，仍然合适的录音全部复用。
 - **换气长度写在计划里。** `meta.minBreathMs`（默认 500 ms）是句子之间最短的停顿。体育解说这类快节奏的现场话语，可以把
   `meta.gapMs` 设在 250 左右、最短换气设在 200 ms 左右；某句话的 `pauseAfterMs` 设定的静默会按原样保留。
 - **配音之前五轮审阅。** 对照来源的事实、故事、口语表达、读法，以及最后通读。脚本锁定之后才生成一次配音。
@@ -305,14 +317,23 @@ Super Video Agent 保留模型的自由（除非你自带模板，否则外观�
 - **文字避开应用按钮。** 字幕避开 Shorts 和 TikTok 放按钮和标题的区域（1080×1920 下为 x 80–888、y 200–1470）。
   画面仍然铺满整个画幅。
 - **在阅读停顿处断开的字幕。** 字幕先在标点处断开，再分成长度均匀的行，只剩一个词时并入相邻一行。在脚本里加 `|` 可以
-  手动指定断行，配音不会读出它。
+  手动指定断行，配音不会读出它。带底条的字幕按实测的字形让文字上下留白相等（取不到字形测量值时沿用字体自身的间距）。
 - **测量字幕对比度。** 渲染和每个语言版本都会报告每句字幕与背后画面的对比度，以 WCAG 比值表示（语言版本写在
   `dub/<code>/contrast.json`）。
 
 ### 检查与输出
 
 - **视频会自我检查。** 渲染之后，[`scripts/review.mjs`](skills/super-video-agent/scripts/review.mjs) 生成联系表，并检查定格的画面、超出框的文字、响度、没踩准时刻的音效
-  和无声的空隙。你得到的是数字，外加值得去听的时间点。
+  和无声的空隙。你得到的是数字，外加值得去听的时间点。有意标为静音的句子（静音时钟视频的每一句）跳过配音片段检查并列出来；
+  既没有配音文件又没有标记的句子仍然报告为未检查。
+- **声音改动要在成品文件里证实。** 改了背景声或音效轨的电平之后，skill 的规则是在交付文件里测量本该单独听到该声音的段落，
+  接近无声（平均低于约 -50 dB）即判为失败（[`references/sound.md`](skills/super-video-agent/references/sound.md) §5）。
+- **3D 分步拼装视频的两道帧检查。** [`scripts/frame-gates.mjs`](skills/super-video-agent/scripts/frame-gates.mjs) `plate`
+  在以下情况判为失败：计划内的镜头转动之外，底板每帧移动超过 2 px；或转动期间幅度过大、速度过快（每帧超过 45 px 或每秒超过
+  270°）。`road` 在以下情况判为失败：镜头静止时地面颜色在帧间变化超过 255 中的 0.5，或在计划内转动之外出现闪烁。
+  `render.mjs` 不会运行它们。两者读取从视频中取得的逐帧 JSON：来自页面的镜头与底板位置，`road` 还需要在成片上测得的地面
+  颜色。skill 不附带生成这些文件的脚本
+  （[`references/3d.md`](skills/super-video-agent/references/3d.md) "Stable frame in step builds"）。
 - **每次渲染都保留。** 每次渲染都有自己的带时间戳的文件，`out/final.mp4` 始终指向最新的一份。正在播放这支视频的播放器
   不会被新渲染打断，你也能比较不同版本。
 

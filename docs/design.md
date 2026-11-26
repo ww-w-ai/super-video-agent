@@ -20,7 +20,7 @@ reels/<slug>/
   brief.md       facts extracted from the source, each with a source pointer
   style.md       design language: extracted from the source, or chosen and justified
   plan.json      lines (one sentence = one scene), per-line visual intent, voice settings
-  voice/         line-NN.wav, narration.wav, timings.json   (measured, never guessed)
+  voice/         line-<id>.wav, narration.wav, timings.json   (measured, never guessed)
   reel.html      the film: engine + scenes; exposes window.__reel
   assets/        images and fonts the page loads (copied, never hot-linked)
   out/           frames sheets, review.json, preview.mp4, final.mp4   (disposable)
@@ -67,11 +67,11 @@ Deterministic helpers, each a pure function:
 |---|---|
 | `new-reel.mjs <dir> --ratio 9:16` | Scaffold a reel folder with template reel.html, engine inlined, fonts copied. |
 | `validate-plan.mjs <dir>` | Check plan.json against the schema; exit non-zero with the failing path. |
-| `voice.mjs <dir> [--provider qwen3\|melotts\|fishspeech\|fish\|elevenlabs\|say\|file\|none]` | Synthesize each line, measure it, write narration.wav + timings.json. |
+| `voice.mjs <dir> [--provider qwen3\|melotts\|fishspeech\|fish\|elevenlabs\|typecast\|say\|file\|none]` | Synthesize each line, measure it, write narration.wav + timings.json. |
 | `still.mjs <dir> --at <t\|shotId> [--out png]` | Render one frame at full size. |
 | `verify.mjs <dir>` | Static contract scan + determinism probe (in-order vs shuffled seeks, pixel hashes). |
-| `render.mjs <dir> [--preview] [--workers N] [--plan] [--only ids]` | Render per-shot segments (reusing unchanged ones), join, mux whole-film audio (narration + page SFX), loudnorm. |
-| `review.mjs <dir> [--mp4 path]` | Contact sheet at each shot's readAt, dead-air runs, boil cadence, A/V duration delta, engine issues → review.json. |
+| `render.mjs <dir> [--preview] [--workers N] [--plan] [--only ids]` | Render per-shot segments (reusing unchanged ones), join, mux whole-film audio (narration + page SFX), master to -16 LUFS with a static gain. |
+| `review.mjs <dir> [--mp4 path]` | Contact sheet at each shot's readAt, dead-air runs, A/V duration delta, engine issues → review.json. |
 
 Voice providers share one interface (`scripts/voice/<name>.mjs`):
 `synth({text, voice, lang, params}) → {wavPath, words?: [{w, start, end}]}` and optional
@@ -80,8 +80,7 @@ Voice providers share one interface (`scripts/voice/<name>.mjs`):
 
 ### 2.4 QA thresholds (defaults, tunable in plan.json)
 
-- Dead air: no run ≥ 0.8 s where < 0.2 % of pixels change (64-px greyscale diff).
-- Boil present: in non-transition frames, pose changes occur at the planned cadence (±1 frame).
+- Dead air: no run ≥ 0.8 s where < 0.2 % of pixels change (320-px greyscale diff).
 - A/V: video and narration durations differ ≤ 50 ms; last line ends before final frame.
 - Determinism: shuffled-seek hashes equal in-order hashes for ≥ 12 probe times incl. shot edges.
 - Layout: `issues()` empty (no text overflow, nothing outside safe area).
